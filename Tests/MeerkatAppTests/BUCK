@@ -1,0 +1,19 @@
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_test")
+
+# The rule sources the app writes are type-checked with the tsrs Meerkat.app
+# bundles.
+meerkat_swift_test(
+    name = "MeerkatAppTests",
+    env = {
+        "MEERKAT_RUNTIME_TYPES": "$(location //Sources/meerkat-rules:deno.d.ts)",
+        "MEERKAT_TSRS": "$(location //buck2/third_party/js:tsrs)/tsrs",
+    },
+    deps = [
+        "//Sources/MeerkatAgent:MeerkatAgent",
+        "//Sources/MeerkatApp:module",
+        "//Sources/MeerkatIPC:MeerkatIPC",
+        "//Sources/MeerkatKit:MeerkatKit",
+        "//Sources/MeerkatRules:MeerkatRules",
+        "//buck2/third_party/swift:LanguageServerProtocol",
+    ],
+)

@@ -1,0 +1,8 @@
+{
+  "file_types": {
+    "INI": [".buckconfig", ".buckconfig.local"]
+  },
+  "languages": {
+    "Starlark": { "language_servers": ["buck2-lsp", "!starpls", "!tilt"] }
+  }
+}

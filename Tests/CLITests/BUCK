@@ -1,0 +1,15 @@
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_test")
+
+meerkat_swift_test(
+    name = "CLITests",
+    # The built CLI, which the contract tests run.
+    env = {"MEERKAT_CLI": "$(location //Sources/meerkat:meerkat)"},
+    deps = [
+        "//Sources/MeerkatIPC:MeerkatIPC",
+        "//Sources/MeerkatKit:MeerkatKit",
+        "//Sources/MeerkatRules:MeerkatRules",
+        "//Sources/MeerkatStore:MeerkatStore",
+        "//Sources/meerkat:module",
+        "//buck2/third_party/swift:ArgumentParser",
+    ],
+)

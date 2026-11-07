@@ -1,0 +1,6 @@
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_binary")
+
+meerkat_swift_binary(
+    name = "meerkatd",
+    deps = ["//Sources/MeerkatDaemon:MeerkatDaemon"],
+)

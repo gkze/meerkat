@@ -1,0 +1,15 @@
+# Only the workflow's actions. Crates, Swift packages and the JavaScript tools
+# are pinned together with checksums and generated files that conformance
+# tests hold in step (docs/development.md, "Checks"), which an update bot cannot regenerate.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly
+    # A week before taking a release: most compromised releases are found
+    # and pulled within days.
+    cooldown:
+      default-days: 7

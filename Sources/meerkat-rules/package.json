@@ -1,0 +1,20 @@
+{
+  "name": "meerkat-rules",
+  "private": true,
+  "description": "The TypeScript toolchain for editors (tsrs, with its language server `tsrs --lsp --stdio`; Oxlint with tsrslint; Oxfmt), at the versions Buck builds and bundles into Meerkat.app (//buck2/third_party/js). The checks themselves are Buck targets; these scripts run them.",
+  "license": "MIT",
+  "scripts": {
+    "check": "cd ../.. && buck2 test //Sources/meerkat-rules/...",
+    "typecheck": "cd ../.. && buck2 test //Sources/meerkat-rules:tsrs",
+    "lint": "cd ../.. && buck2 test //Sources/meerkat-rules:oxlint //Sources/meerkat-rules:meerkat-lint",
+    "lint:fix": "cd ../.. && buck2 run //Sources/meerkat-rules:fix",
+    "fmt": "cd ../.. && buck2 run //Sources/meerkat-rules:fmt",
+    "fmt:check": "cd ../.. && buck2 test //Sources/meerkat-rules:oxfmt"
+  },
+  "devDependencies": {
+    "@maschwenk/tsrslint-darwin-arm64": "0.1.6",
+    "oxfmt": "0.75.0",
+    "oxlint": "1.90.0",
+    "tsrs": "0.20.1-ts7.1.0-beta"
+  }
+}

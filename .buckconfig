@@ -1,0 +1,76 @@
+# Buck2 builds every first-party module, crate, test and check in this
+# repository, and fetches every third-party dependency at a pinned version
+# and checksum (see README, "Build"): crates and Swift packages from source;
+# V8 and the TypeScript, Oxlint and Oxfmt tools as release binaries. The
+# prelude is the copy bundled with the buck2 binary.
+
+[cells]
+  root = .
+  prelude = prelude
+  toolchains = buck2/toolchains
+  none = none
+
+[cell_aliases]
+  config = prelude
+  ovr_config = prelude
+  fbcode = none
+  fbsource = none
+  fbcode_macros = none
+  buck = none
+
+[external_cells]
+  prelude = bundled
+
+# Debug unless a mode file says otherwise: `buck2 build @buck2/mode/release …`.
+[parser]
+  target_platform_detector_spec = target:root//...->root//buck2/platforms:debug \
+    target:prelude//...->root//buck2/platforms:debug \
+    target:toolchains//...->root//buck2/platforms:debug
+
+[build]
+  execution_platforms = root//buck2/platforms:exec
+
+[project]
+  ignore = .git, .build, .swiftpm, build, Sources/meerkat-rules/node_modules
+
+# The Xcode the Swift toolchain uses (buck2/toolchains/BUCK). `xcode_build` is
+# `xcodebuild -version`'s build number; change it with Xcode, so cached Swift
+# actions are rebuilt (//buck2/rules/swift:xcode_test checks the two agree).
+[swift]
+  developer_dir = /Applications/Xcode.app/Contents/Developer
+  xcode_build = 27B52
+
+# The Rust release every rustc, rustdoc, clippy-driver, rustfmt and cargo
+# run through Buck is, by rustup's RUSTUP_TOOLCHAIN (buck2/rules/toolchains.bzl).
+# It is part of every Rust action's command line, so changing it rebuilds the
+# Rust; //buck2/rules:rust_test fails until rustup has it.
+[rust]
+  release = 1.99.1
+
+# The buck2 every build runs. `tag` is facebook/buck2's release and `sha256`
+# the digest of its buck2-aarch64-apple-darwin.zst, which CI installs
+# (.github/actions/toolchain); `version` is what that binary's `buck2
+# --version` reports, which //buck2/rules:buck2_test checks. Another buck2
+# brings its own bundled prelude, so may build something else without failing.
+[buck2_release]
+  tag = 2026-10-15
+  sha256 = 62e20927aae73b5350f767d10c96d344ac96d361b8d05925f59a0fcd3c7b5cdf
+  version = 2026-10-14-9a1876786f32806f6b65fc51f4c1c3077efc38a5
+
+# The facebookincubator/reindeer commit CI installs to generate
+# buck2/third_party/rust/BUCK. Reindeer reports no version to check; what it
+# generates is checked (//buck2/third_party/rust/check:buckify_test).
+[reindeer]
+  rev = b15f92a7c0408f689997f1aae23a854fb4693e81
+
+# The release version (SemVer 2.0.0, no build metadata): Meerkat.app's
+# CFBundleShortVersionString is its major.minor.patch, and a push to main that
+# declares a version with no v<version> tag yet publishes it
+# (.github/workflows/ci.yml, //Tools/Release:plan). Changing it is what releases.
+[meerkat]
+  version = 0.2.0-alpha.1
+  minimum_macos = 27.0
+
+# Machine-specific settings, such as `[remote_build]` for
+# `buck2 run //Tools/RemoteBuild:remote` (README, "Building on another Mac"),
+# go in .buckconfig.local, which Buck reads after this file and Git ignores.

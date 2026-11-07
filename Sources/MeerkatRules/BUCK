@@ -1,0 +1,11 @@
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_library")
+
+# Type-checks, compiles and lints a rules directory with the bundled tools.
+# The CLI runs it without the daemon, so it does not link the runtime.
+meerkat_swift_library(
+    name = "MeerkatRules",
+    deps = [
+        "//Sources/MeerkatIPC:MeerkatIPC",
+        "//Sources/MeerkatKit:MeerkatKit",
+    ],
+)

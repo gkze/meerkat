@@ -1,0 +1,65 @@
+# Every crates.io dependency of the repository's Rust crates, resolved once:
+# the authority for third-party versions and features. `reindeer buckify`
+# turns the resolution (Cargo.lock) into BUCK; the crates themselves are
+# downloaded from crates.io at build time (http_archive, checksummed), not
+# vendored. //buck2/third_party/rust/check:buckify_test fails when BUCK is stale.
+#
+# First-party crates (Sources/meerkat-runtime, Sources/meerkat-lint) name these in their BUCK files as
+# //buck2/third_party/rust:<crate>.
+
+[package]
+# Pseudo-package whose dependencies are imported and buckified.
+name = "rust-third-party"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "top"
+path = "top/main.rs"
+
+[dependencies]
+camino = "1.2.6"
+# Sources/meerkat-runtime (//Sources/meerkat-runtime:meerkat_runtime). Exact pins: deno_runtime 0.268.0 is
+# Deno 2.9.8, the release whose declarations Sources/meerkat-runtime/types/deno/ holds, so
+# the types rules are checked against describe the runtime that runs them.
+# Changing deno_runtime fails a test until types/deno/ is copied again
+# (DENO_RUNTIME_VERSION in Sources/meerkat-runtime/build.rs).
+deno_core = "=0.413.0"
+deno_error = "=0.7.1"
+deno_resolver = { version = "=0.91.0", features = ["sync"] }
+deno_runtime = "=0.268.0"
+deno_snapshots = "=0.75.0"
+percent-encoding = "2.3.2"
+# The kernel's name for a directory (`F_GETPATH`) and a volume's mount point
+# (`statfs`) without unsafe code, for protected.rs's canonical paths. Already
+# in the graph through Deno; the version it resolves to.
+rustix = { version = "1.1.6", features = ["fs"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["raw_value"] }
+sys_traits = "=0.1.29"
+tokio = { version = "1.54.1", features = ["macros", "rt", "sync", "time"] }
+# The host protocol's types and the host object, exported to Swift. Exact
+# pin: the generated bindings are checked against this release. No default
+# features: their cargo-metadata makes the generator shell out to `cargo
+# metadata`; it reads Sources/meerkat-runtime/bindgen/uniffi.toml through CARGO_MANIFEST_DIR.
+uniffi = { version = "=0.32.2", default-features = false }
+# The bindings generator (Sources/meerkat-runtime/bindgen) takes this directly,
+# not through `uniffi`'s `bindgen` feature: Reindeer unifies features, so the
+# feature would link the generator into everything that links `uniffi`.
+uniffi_bindgen = { version = "=0.32.2", default-features = false }
+
+# //Tools/Notices reads each crate's Cargo.toml.
+toml = "1.1.8"
+
+# Sources/meerkat-runtime/build.rs. deno_ast parses the declarations build.rs composes; it is
+# the version deno_runtime already uses. (Reindeer unifies features across
+# normal and build dependencies, so deno_core's V8 selection for
+# deno_snapshots' build-time snapshot needs no second entry.)
+deno_ast = { version = "=0.53.3", features = ["visit"] }
+
+# Sources/meerkat-lint (//Sources/meerkat-lint:meerkat-lint). Exact pin: rule behaviour depends on the AST
+# and scope shapes of this release.
+oxc = { version = "=0.156.0", features = ["semantic"] }

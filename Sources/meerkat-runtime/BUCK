@@ -1,0 +1,179 @@
+load("//buck2/rules/swift:defs.bzl", "clang_module")
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_library")
+load("@prelude//rust:cargo_buildscript.bzl", "buildscript_run")
+load("@prelude//rust:clippy_configuration.bzl", "clippy_configuration")
+load("//buck2/rules:check.bzl", "command", "command_test")
+load("//buck2/rules:rust.bzl", "cargo_env", "meerkat_rust_crate")
+load(":deno.bzl", "DENO_LIBRARIES", "DENO_VERSION")
+
+# The rule-handler runtime: Deno, embedded in meerkatd and exported to Swift
+# through UniFFI. Swift links `:meerkat_runtime[staticlib]`, the one static
+# library meerkatd links: the crate, its dependencies (V8 among them) and std,
+# once. Any Rust meerkatd links later joins this archive as a dependency rather
+# than a second archive, which would carry its own std.
+
+ENV, MANIFEST_DIR = cargo_env("meerkat-runtime", "0.1.0", "Sources/meerkat-runtime")
+
+[
+    http_file(
+        name = library,
+        urls = ["https://raw.githubusercontent.com/denoland/deno/v{}/cli/tsc/dts/{}".format(DENO_VERSION, library)],
+        sha256 = sha256,
+    )
+    for library, sha256 in DENO_LIBRARIES.items()
+]
+
+# Clippy's pedantic group warns, and :clippy fails on
+# any warning (Tools/check's `-D warnings`). The crate has no unsafe code
+# (UniFFI generates the FFI); any added must state why it is sound.
+LINTS = [
+    "-Wclippy::pedantic",
+    "-Wclippy::undocumented_unsafe_blocks",
+    # Owned arguments are the API where a value is handed over (`send`,
+    # `load`) and in deno_core `#[op2]` signatures.
+    "-Aclippy::needless_pass_by_value",
+    # `field: Default::default()` in deno_runtime's option structs reads
+    # better than naming each field's type.
+    "-Aclippy::default_trait_access",
+]
+
+# build.rs composes Deno's libraries and types/ into OUT_DIR/deno.d.ts and sets
+# DENO_VERSION and DENO_RUNTIME_VERSION.
+rust_binary(
+    name = "build-script-build",
+    srcs = ["build.rs"],
+    crate = "build_script_build",
+    crate_root = "build.rs",
+    edition = "2024",
+    env = ENV | {"DENO_VERSION": DENO_VERSION},
+    rustc_flags = MANIFEST_DIR,
+    deps = [
+        "//buck2/third_party/rust:deno_ast",
+    ],
+)
+
+filegroup(
+    name = "manifest_dir",
+    srcs = {path: path for path in glob(["types/**"])} | {
+        "types/deno/" + library: ":" + library
+        for library in DENO_LIBRARIES
+    },
+)
+
+buildscript_run(
+    name = "build-script-run",
+    buildscript_rule = ":build-script-build",
+    manifest_dir = ":manifest_dir",
+    package_name = "meerkat-runtime",
+    version = "0.1.0",
+)
+
+meerkat_rust_crate(
+    name = "meerkat_runtime",
+    crate = "meerkat_runtime",
+    library = True,
+    cargo_name = "meerkat-runtime",
+    lints = LINTS,
+    env = {"OUT_DIR": "$(location :build-script-run[out_dir])"},
+    rustc_flags = ["@$(location :build-script-run[rustc_flags])"],
+    # protected_cases.json: the cases protected.rs and the daemon's
+    # CapabilityGrants both run (MeerkatDaemonTests reads it by path).
+    extra_srcs = ["js/runtime.js", "Cargo.toml", "src/protected_cases.json"],
+    format_srcs = ["build.rs"],
+    clippy_configuration = ":clippy.toml",
+    deps = [
+        "//buck2/third_party/rust:deno_core",
+        "//buck2/third_party/rust:deno_error",
+        "//buck2/third_party/rust:deno_resolver",
+        "//buck2/third_party/rust:deno_runtime",
+        "//buck2/third_party/rust:deno_snapshots",
+        "//buck2/third_party/rust:percent-encoding",
+        "//buck2/third_party/rust:rustix",
+        "//buck2/third_party/rust:serde",
+        "//buck2/third_party/rust:serde_json",
+        "//buck2/third_party/rust:sys_traits",
+        "//buck2/third_party/rust:tokio",
+        "//buck2/third_party/rust:uniffi",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+clippy_configuration(
+    name = "clippy.toml",
+    clippy_toml_src = "clippy.toml",
+    visibility = ["//Sources/meerkat-runtime/...", "//Tools/Notices/..."],
+)
+
+# Sources/meerkat-rules/deno.d.ts is the copy of the composed declarations that
+# editors and `meerkat rules check` read: :declarations_test fails while it is
+# stale, and `buck2 run` :regenerate rewrites it.
+DECLARATIONS = "$(location :build-script-run[out_dir])/deno.d.ts"
+
+command(
+    name = "regenerate",
+    command = ["/bin/cp", "-f", DECLARATIONS, "Sources/meerkat-rules/deno.d.ts"],
+    visibility = ["PUBLIC"],
+)
+
+command_test(
+    name = "declarations_test",
+    command = [
+        "/bin/sh",
+        "-c",
+        'cmp -s "$1" "$2" || { echo "Sources/meerkat-rules/deno.d.ts is stale; regenerate with: buck2 run //Sources/meerkat-runtime:regenerate" >&2; exit 1; }',
+        "declarations_test",
+        DECLARATIONS,
+        "$(location //Sources/meerkat-rules:deno.d.ts)",
+    ],
+)
+
+# The archive, with what it links against, for the bindings' C module: one link
+# node, so it is linked once.
+prebuilt_cxx_library(
+    name = "linkable",
+    static_lib = ":meerkat_runtime[staticlib]",
+    exported_linker_flags = [
+        "-lz",
+        "-liconv",
+        "-framework",
+        "CoreServices",
+        "-framework",
+        "QuartzCore",
+        "-framework",
+        "Metal",
+        "-framework",
+        "Foundation",
+        "-framework",
+        "CoreFoundation",
+    ],
+)
+
+# The rule runtime's C ABI and Swift API, generated from that archive by
+# bindgen/ and checked in.
+
+clang_module(
+    name = "CMeerkatRuntime",
+    headers = ["CMeerkatRuntime/include/meerkat_runtime.h"],
+    deps = [":linkable"],
+    visibility = ["PUBLIC"],
+)
+
+# Built without ExistentialAny, which the generator does not write; not
+# formatted or linted, being generated.
+meerkat_swift_library(
+    name = "MeerkatRuntimeBindings",
+    generated = True,
+    srcs = glob(["MeerkatRuntimeBindings/*.swift"]),
+    upcoming_features = ["MemberImportVisibility", "ImmutableWeakCaptures"],
+    deps = [":CMeerkatRuntime"],
+)
+
+# The checked-in generated files, for bindgen's staleness check.
+filegroup(
+    name = "checked_in",
+    srcs = [
+        "CMeerkatRuntime/include/meerkat_runtime.h",
+        "MeerkatRuntimeBindings/MeerkatRuntimeBindings.swift",
+    ],
+    visibility = ["//Sources/meerkat-runtime/bindgen/..."],
+)

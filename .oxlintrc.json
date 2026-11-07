@@ -1,0 +1,43 @@
+{
+  "$schema": "./Sources/meerkat-rules/node_modules/oxlint/configuration_schema.json",
+  // The rule-code policy, shared with every rules folder the daemon serves.
+  // Only what is particular to this repository is here.
+  "extends": ["./Sources/meerkat-lint/policy/oxlintrc.json"],
+  // Generated: meerkat.d.ts by `meerkat types` (its source is
+  // TypeScriptDeclarations.swift), deno.d.ts by Sources/meerkat-runtime/build.rs, from
+  // Deno's own libraries, fetched by Sources/meerkat-runtime/BUCK.
+  "ignorePatterns": ["Sources/meerkat-rules/meerkat.d.ts", "Sources/meerkat-rules/deno.d.ts"],
+  "overrides": [
+    {
+      // Ambient declarations of the runtime's globals (build.rs appends
+      // them to Deno's): a global script by design, not a module.
+      "files": ["Sources/meerkat-runtime/types/*.d.ts"],
+      "rules": { "import/unambiguous": "off", "eslint/no-implicit-globals": "off" }
+    },
+    {
+      // A Deno extension module: its `ext:` imports have no declarations,
+      // so every value is untyped and the type-aware rules only see errors.
+      // It uses primordials, so rule code that patches Promise.prototype
+      // cannot change it; that rules out `await` and `.then` on rule results
+      // and makes capitalised calls (ArrayPrototypePush) the convention.
+      "files": ["Sources/meerkat-runtime/js/**"],
+      "rules": {
+        "typescript/no-unsafe-argument": "off",
+        "typescript/no-unsafe-assignment": "off",
+        "typescript/no-unsafe-call": "off",
+        "typescript/no-unsafe-member-access": "off",
+        "typescript/no-unsafe-return": "off",
+        "typescript/strict-boolean-expressions": "off",
+        "promise/prefer-await-to-callbacks": "off",
+        "eslint/new-cap": "off",
+        // The dispatcher reads one host message at a time, in order.
+        "eslint/no-await-in-loop": "off",
+        // `invoke` is one ordered sequence: begin, run, end the segment.
+        "eslint/max-statements": "off",
+        // The extension's single ESM entry (worker.rs registers
+        // runtime.js); splitting it is a change to the Rust side.
+        "eslint/max-lines": "off"
+      }
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_executable")
+
+# The CLI, whose module CLITests imports.
+meerkat_swift_executable(
+    name = "meerkat",
+    deps = [
+        "//Sources/MeerkatAgent:MeerkatAgent",
+        "//Sources/MeerkatIPC:MeerkatIPC",
+        "//Sources/MeerkatKit:MeerkatKit",
+        "//Sources/MeerkatRules:MeerkatRules",
+        "//Sources/MeerkatStore:MeerkatStore",
+        "//buck2/third_party/swift:ArgumentParser",
+    ],
+)

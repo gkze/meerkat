@@ -1,0 +1,347 @@
+{
+  "$defs" : {
+    "FilesConfiguration" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "exclude" : {
+          "description" : "Paths under root whose changes are not counted, absolute or starting with ~. Replaces the default list: /private/var/folders, /private/var/db, /.Spotlight-V100, /.fseventsd.",
+          "items" : {
+            "type" : "string"
+          },
+          "type" : "array"
+        },
+        "root" : {
+          "description" : "Directory file churn watches, absolute or starting with ~. Default /, the whole startup volume.",
+          "type" : "string"
+        }
+      },
+      "type" : "object"
+    },
+    "MCPConfiguration" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "events" : {
+          "$ref" : "#/$defs/MCPEvents"
+        },
+        "limits" : {
+          "$ref" : "#/$defs/MCPLimits"
+        }
+      },
+      "type" : "object"
+    },
+    "MCPEvents" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "allow" : {
+          "description" : "Kinds or family.* patterns MCP clients may sample although the default denies them: kinds that need a privacy permission, and log.entry, darwin.notification, distributed.notification and iokit.*. A permission kind still needs its grant, and is never prompted for.",
+          "items" : {
+            "enum" : [
+              "memory.pressure",
+              "memory.sample",
+              "cpu.sample",
+              "disk.sample",
+              "network.sample",
+              "process.spawned",
+              "process.exited",
+              "process.exec",
+              "process.hot",
+              "process.top",
+              "process.list",
+              "process.sample",
+              "fs.change",
+              "fs.churn",
+              "volume.mounted",
+              "volume.willUnmount",
+              "volume.unmounted",
+              "volume.renamed",
+              "volume.space",
+              "disk.appeared",
+              "disk.disappeared",
+              "power.source",
+              "power.lowPowerMode",
+              "power.sleep",
+              "power.willPowerOff",
+              "thermal.state",
+              "thermal.pressure",
+              "power.assertions",
+              "power.lid",
+              "battery.sample",
+              "display.sleep",
+              "display.reconfigured",
+              "session.active",
+              "session.lock",
+              "session.screensaver",
+              "session.logins",
+              "app.launched",
+              "app.terminated",
+              "app.activated",
+              "app.deactivated",
+              "app.hidden",
+              "app.unhidden",
+              "space.changed",
+              "window.focused",
+              "network.path",
+              "network.configuration",
+              "network.hostname",
+              "network.link",
+              "network.wifi",
+              "audio.defaultDevice",
+              "audio.devices",
+              "audio.inUse",
+              "audio.volume",
+              "camera.inUse",
+              "usb.attached",
+              "usb.detached",
+              "hid.attached",
+              "hid.detached",
+              "bluetooth.devices",
+              "time.clockSet",
+              "time.zone",
+              "time.dayChanged",
+              "timer",
+              "input.source",
+              "appearance.theme",
+              "accessibility.display",
+              "locale.changed",
+              "pasteboard.changed",
+              "input.idle",
+              "input.activity",
+              "darwin.notification",
+              "distributed.notification",
+              "iokit.attached",
+              "iokit.detached",
+              "log.entry",
+              "meerkat.rule",
+              "meerkat.dropped",
+              "meerkat.notification",
+              "memory.*",
+              "cpu.*",
+              "disk.*",
+              "network.*",
+              "process.*",
+              "fs.*",
+              "volume.*",
+              "power.*",
+              "thermal.*",
+              "battery.*",
+              "display.*",
+              "session.*",
+              "app.*",
+              "space.*",
+              "window.*",
+              "audio.*",
+              "camera.*",
+              "usb.*",
+              "hid.*",
+              "bluetooth.*",
+              "time.*",
+              "timer.*",
+              "input.*",
+              "appearance.*",
+              "accessibility.*",
+              "locale.*",
+              "pasteboard.*",
+              "darwin.*",
+              "distributed.*",
+              "iokit.*",
+              "log.*",
+              "meerkat.*"
+            ],
+            "type" : "string"
+          },
+          "type" : "array"
+        },
+        "deny" : {
+          "description" : "Kinds or family.* patterns MCP clients may not sample. Deny wins over allow.",
+          "items" : {
+            "enum" : [
+              "memory.pressure",
+              "memory.sample",
+              "cpu.sample",
+              "disk.sample",
+              "network.sample",
+              "process.spawned",
+              "process.exited",
+              "process.exec",
+              "process.hot",
+              "process.top",
+              "process.list",
+              "process.sample",
+              "fs.change",
+              "fs.churn",
+              "volume.mounted",
+              "volume.willUnmount",
+              "volume.unmounted",
+              "volume.renamed",
+              "volume.space",
+              "disk.appeared",
+              "disk.disappeared",
+              "power.source",
+              "power.lowPowerMode",
+              "power.sleep",
+              "power.willPowerOff",
+              "thermal.state",
+              "thermal.pressure",
+              "power.assertions",
+              "power.lid",
+              "battery.sample",
+              "display.sleep",
+              "display.reconfigured",
+              "session.active",
+              "session.lock",
+              "session.screensaver",
+              "session.logins",
+              "app.launched",
+              "app.terminated",
+              "app.activated",
+              "app.deactivated",
+              "app.hidden",
+              "app.unhidden",
+              "space.changed",
+              "window.focused",
+              "network.path",
+              "network.configuration",
+              "network.hostname",
+              "network.link",
+              "network.wifi",
+              "audio.defaultDevice",
+              "audio.devices",
+              "audio.inUse",
+              "audio.volume",
+              "camera.inUse",
+              "usb.attached",
+              "usb.detached",
+              "hid.attached",
+              "hid.detached",
+              "bluetooth.devices",
+              "time.clockSet",
+              "time.zone",
+              "time.dayChanged",
+              "timer",
+              "input.source",
+              "appearance.theme",
+              "accessibility.display",
+              "locale.changed",
+              "pasteboard.changed",
+              "input.idle",
+              "input.activity",
+              "darwin.notification",
+              "distributed.notification",
+              "iokit.attached",
+              "iokit.detached",
+              "log.entry",
+              "meerkat.rule",
+              "meerkat.dropped",
+              "meerkat.notification",
+              "memory.*",
+              "cpu.*",
+              "disk.*",
+              "network.*",
+              "process.*",
+              "fs.*",
+              "volume.*",
+              "power.*",
+              "thermal.*",
+              "battery.*",
+              "display.*",
+              "session.*",
+              "app.*",
+              "space.*",
+              "window.*",
+              "audio.*",
+              "camera.*",
+              "usb.*",
+              "hid.*",
+              "bluetooth.*",
+              "time.*",
+              "timer.*",
+              "input.*",
+              "appearance.*",
+              "accessibility.*",
+              "locale.*",
+              "pasteboard.*",
+              "darwin.*",
+              "distributed.*",
+              "iokit.*",
+              "log.*",
+              "meerkat.*"
+            ],
+            "type" : "string"
+          },
+          "type" : "array"
+        }
+      },
+      "type" : "object"
+    },
+    "MCPLimits" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "concurrentSamples" : {
+          "description" : "events_sample and system_sample calls one MCP session runs at once: 1 to 32, default 4.",
+          "maximum" : 32,
+          "minimum" : 1,
+          "type" : "integer"
+        },
+        "outputKiB" : {
+          "description" : "Most text one MCP resource read or tool reply returns, in KiB: 16 to 16384, default 1024. A longer reply is cut; events_sample instead stops adding events at it.",
+          "maximum" : 16384,
+          "minimum" : 16,
+          "type" : "integer"
+        },
+        "sampleEvents" : {
+          "description" : "Most events one events_sample returns: 1 to 10000, default 500.",
+          "maximum" : 10000,
+          "minimum" : 1,
+          "type" : "integer"
+        },
+        "sampleSeconds" : {
+          "description" : "Longest events_sample, and longest system_sample window, in seconds: 1 to 300, default 30.",
+          "maximum" : 300,
+          "minimum" : 1,
+          "type" : "number"
+        }
+      },
+      "type" : "object"
+    },
+    "SampleStoreConfiguration" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "maxAgeDays" : {
+          "description" : "Samples older than this many days are deleted: 1 to 3650, default 30.",
+          "maximum" : 3650,
+          "minimum" : 1,
+          "type" : "integer"
+        },
+        "maxMegabytes" : {
+          "description" : "The store is trimmed, oldest first, past this size in MB: 10 to 100000, default 500.",
+          "maximum" : 100000,
+          "minimum" : 10,
+          "type" : "integer"
+        }
+      },
+      "type" : "object"
+    }
+  },
+  "$schema" : "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties" : false,
+  "properties" : {
+    "$schema" : {
+      "description" : "The JSON Schema editors check this file against.",
+      "type" : "string"
+    },
+    "files" : {
+      "$ref" : "#/$defs/FilesConfiguration",
+      "description" : "What file churn watches: the Files card and page, and fs.churn subscriptions without a root."
+    },
+    "mcp" : {
+      "$ref" : "#/$defs/MCPConfiguration",
+      "description" : "What MCP clients (`meerkat mcp`) may sample, and how much."
+    },
+    "samples" : {
+      "$ref" : "#/$defs/SampleStoreConfiguration",
+      "description" : "The sample store's budget (samples.db)."
+    }
+  },
+  "title" : "meerkat.json",
+  "type" : "object"
+}

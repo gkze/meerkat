@@ -1,0 +1,7 @@
+# zizmor (//:zizmor).
+rules:
+  # GitHub's `uses: $/…` self-repository form (2026-07) is not yet known to
+  # actionlint (//:actionlint), which rejects it, so the workflow keeps
+  # `./.github/actions/toolchain`. Turn this back on when actionlint accepts it.
+  self-repository:
+    disable: true

@@ -1,0 +1,4 @@
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_library")
+
+# Samplers, the event catalog, sources and the hub. System frameworks only.
+meerkat_swift_library(name = "MeerkatKit")

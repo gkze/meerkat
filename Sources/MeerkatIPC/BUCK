@@ -1,0 +1,8 @@
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_library")
+
+# Message types for XPC (clients <-> daemon), and where the daemon keeps
+# things.
+meerkat_swift_library(
+    name = "MeerkatIPC",
+    deps = ["//Sources/MeerkatKit:MeerkatKit"],
+)

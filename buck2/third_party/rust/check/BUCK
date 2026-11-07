@@ -1,0 +1,73 @@
+load("//buck2/rules:check.bzl", "command", "command_test")
+load("//buck2/third_party/tools:defs.bzl", "tool")
+
+# reindeer (`[reindeer] rev` in .buckconfig) on PATH, generating
+# buck2/third_party/rust/BUCK from Cargo.toml, Cargo.lock and fixups/. It runs
+# cargo from PATH; rustup's, as the builds' (`[rust] release`).
+_REINDEER = [
+    "/bin/sh",
+    "-c",
+    "command -v reindeer >/dev/null || { echo 'reindeer is not on PATH' >&2; exit 1; }; " +
+    "RUSTUP_AUTO_INSTALL=0 RUSTUP_TOOLCHAIN=$0 exec reindeer --third-party-dir buck2/third_party/rust \"$@\"",
+    read_root_config("rust", "release"),
+]
+
+# Fails when buck2/third_party/rust/BUCK is not what reindeer generates, or
+# when Cargo.lock does not satisfy Cargo.toml (--locked). Needs `reindeer`
+# and `cargo` on PATH, like the rustfmt checks need rustfmt.
+command_test(
+    name = "buckify_test",
+    command = [
+        "/bin/sh",
+        "-c",
+        '"$@" --cargo-options=--locked buckify --stdout | diff -u buck2/third_party/rust/BUCK - && echo current',
+        "buckify_test",
+    ] + _REINDEER,
+)
+
+# `buck2 run` it (or //:fix) to rewrite buck2/third_party/rust/BUCK, and
+# Cargo.lock when Cargo.toml has changed.
+command(
+    name = "regenerate",
+    command = _REINDEER + ["buckify"],
+    visibility = ["PUBLIC"],
+)
+
+# cargo-deny (deny.toml here) over the same resolution,
+# through rustup's cargo at `[rust] release`, which reads every crate's
+# manifest (from the network, as buckify_test does). deny_test checks what the
+# repository decides, licenses, bans and sources, so it changes only with
+# Cargo.lock. advisories_test reads the RustSec database as it is now, so it
+# can fail on an unchanged tree: a new advisory is news either way.
+_CARGO_DENY = [
+    tool("cargo-deny"),
+    "--manifest-path",
+    "buck2/third_party/rust/Cargo.toml",
+    "--config",
+    "buck2/third_party/rust/check/deny.toml",
+    "--locked",
+    "check",
+]
+
+_RUSTUP_ENV = {
+    "RUSTUP_AUTO_INSTALL": "0",
+    "RUSTUP_TOOLCHAIN": read_root_config("rust", "release"),
+}
+
+command_test(
+    name = "deny_test",
+    command = _CARGO_DENY + ["licenses", "bans", "sources"],
+    env = _RUSTUP_ENV,
+    labels = ["lint"],
+)
+
+command_test(
+    name = "advisories_test",
+    command = _CARGO_DENY + ["advisories"],
+    env = _RUSTUP_ENV,
+    labels = ["lint", "network"],
+)
+
+# Read by //Tools/Notices, which holds every shipped component to the same
+# `[licenses] allow`.
+export_file(name = "deny.toml", src = "deny.toml", visibility = ["//Tools/Notices/..."])

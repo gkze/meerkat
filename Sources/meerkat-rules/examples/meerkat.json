@@ -1,0 +1,23 @@
+{
+  "$schema": "../meerkat.schema.json",
+  "mcp": {
+    "events": {
+      "allow": ["log.entry"],
+      "deny": ["fs.change", "pasteboard.*"]
+    },
+    "limits": {
+      "sampleSeconds": 60,
+      "sampleEvents": 1000,
+      "outputKiB": 2048,
+      "concurrentSamples": 2
+    }
+  },
+  "samples": {
+    "maxAgeDays": 90,
+    "maxMegabytes": 2000
+  },
+  "files": {
+    "root": "~",
+    "exclude": ["~/Library/Caches", "~/Library/Biome"]
+  }
+}

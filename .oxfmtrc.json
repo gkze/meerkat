@@ -1,0 +1,9 @@
+{
+  "$schema": "./Sources/meerkat-rules/node_modules/oxfmt/configuration_schema.json",
+  "sortImports": {},
+  "ignorePatterns": [
+    "Sources/meerkat-rules/meerkat.d.ts",
+    "Sources/meerkat-rules/deno.d.ts",
+    "Sources/meerkat-rules/meerkat.schema.json"
+  ]
+}

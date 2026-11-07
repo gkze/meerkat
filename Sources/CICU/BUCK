@@ -1,0 +1,9 @@
+load("//buck2/rules/swift:defs.bzl", "clang_module")
+
+# ICU's C regex API (libicucore), for time-bounded `match` regexes.
+clang_module(
+    name = "CICU",
+    headers = ["include/CICU.h"],
+    link = ["icucore"],
+    visibility = ["PUBLIC"],
+)

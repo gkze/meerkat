@@ -1,0 +1,9 @@
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_binary")
+
+# The checker the conformance tests run (buck2/rules/conformance.bzl). Buck-only:
+# Package.swift does not build it.
+meerkat_swift_binary(
+    name = "conformance",
+    srcs = ["Manifests.swift", "main.swift"],
+    deps = ["//Tools/ToolProcess:ToolProcess"],
+)

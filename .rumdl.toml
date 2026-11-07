@@ -1,0 +1,10 @@
+# rumdl (//:markdown-lint): markdownlint's rules, with its defaults except
+# these.
+
+# Prose wraps near 80 columns; a line with a long link or path runs over.
+# 120 still catches a paragraph left unwrapped. Code and tables are as wide
+# as their content.
+[MD013]
+line-length = 120
+code-blocks = false
+tables = false

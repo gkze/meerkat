@@ -1,0 +1,10 @@
+# The one build-mode axis. Toolchains select on it: debug compiles quickly
+# with assertions and `-enable-testing` (what `swift build` and `cargo build`
+# default to); release optimizes, as `swift build -c release` and
+# `cargo build --release` do.
+constraint(
+    name = "mode",
+    default = "debug",
+    values = ["debug", "release"],
+    visibility = ["PUBLIC"],
+)

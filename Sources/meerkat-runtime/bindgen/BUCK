@@ -1,0 +1,40 @@
+load("//buck2/rules:check.bzl", "command")
+load("//buck2/rules:rust.bzl", "meerkat_rust_crate")
+
+# meerkat-runtime-bindgen: writes Sources/meerkat-runtime (the Swift side of the
+# host protocol) from the UniFFI metadata in the static library meerkatd links.
+#
+#   :regenerate        `buck2 run` it to rewrite Sources/meerkat-runtime
+#   :bindings_current  build-time check, a stamp; fails while they are stale
+
+meerkat_rust_crate(
+    name = "bindgen",
+    crate = "meerkat_runtime_bindgen",
+    cargo_name = "meerkat-runtime-bindgen",
+    # Sources/meerkat-runtime/clippy.toml: doc-valid-idents names UniFFI.
+    clippy_configuration = "//Sources/meerkat-runtime:clippy.toml",
+    deps = [
+        "//buck2/third_party/rust:camino",
+        "//buck2/third_party/rust:uniffi",
+        "//buck2/third_party/rust:uniffi_bindgen",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+STATICLIB = "$(location //Sources/meerkat-runtime:meerkat_runtime[staticlib])"
+
+command(
+    name = "regenerate",
+    command = ["$(exe :bindgen)", STATICLIB],
+    visibility = ["PUBLIC"],
+)
+
+# The generator compares against the checked-in files through
+# CARGO_MANIFEST_DIR; naming them as srcs reruns the check when they change.
+genrule(
+    name = "bindings_current",
+    srcs = ["//Sources/meerkat-runtime:checked_in"],
+    out = "bindings_current.stamp",
+    cmd = "$(exe :bindgen) --check {} && touch $OUT".format(STATICLIB),
+    visibility = ["PUBLIC"],
+)

@@ -1,0 +1,13 @@
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_test")
+
+meerkat_swift_test(
+    name = "MeerkatKitTests",
+    deps = [
+        "//Sources/MeerkatKit:MeerkatKit",
+        "//Sources/MeerkatStore:MeerkatStore",
+        # The schema conformance test compares the migrated schema (GRDB)
+        # with the `@Table` column metadata (SQLiteData).
+        "//buck2/third_party/swift:GRDB",
+        "//buck2/third_party/swift:SQLiteData",
+    ],
+)

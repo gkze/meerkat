@@ -1,0 +1,7 @@
+# Swift names for the runtime's bindings. The C module and header are the
+# SwiftPM target in Sources/meerkat-runtime/CMeerkatRuntime; the Swift module is the
+# target in Sources/meerkat-runtime/MeerkatRuntimeBindings (see Package.swift).
+[crates.meerkat_runtime.bindings.swift]
+module_name = "MeerkatRuntimeBindings"
+ffi_module_name = "CMeerkatRuntime"
+ffi_module_filename = "meerkat_runtime"

@@ -1,0 +1,9 @@
+# Run the build script as Cargo would, keeping the native libraries and
+# search paths it reports.
+[buildscript.run]
+rustc_link_lib = true
+rustc_link_search = true
+
+# Cargo sets PROFILE; the script requires it but only acts on it for MSVC.
+[buildscript.run.env]
+PROFILE = "debug"

@@ -1,0 +1,11 @@
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_library")
+
+# Time-series store and the daemon's rule store.
+meerkat_swift_library(
+    name = "MeerkatStore",
+    deps = [
+        "//Sources/MeerkatKit:MeerkatKit",
+        "//buck2/third_party/swift:GRDB",
+        "//buck2/third_party/swift:SQLiteData",
+    ],
+)

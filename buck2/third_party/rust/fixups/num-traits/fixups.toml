@@ -1,0 +1,5 @@
+# Run the build script as Cargo would, keeping the native libraries and
+# search paths it reports.
+[buildscript.run]
+rustc_link_lib = true
+rustc_link_search = true

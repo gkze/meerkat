@@ -1,0 +1,20 @@
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_library")
+
+# Rule engine, handler host and its runtime, effects, the XPC server and its
+# MCP server. Only what runs rules links it (and V8): meerkatd and the daemon
+# tests.
+meerkat_swift_library(
+    name = "MeerkatDaemon",
+    deps = [
+        "//Sources/CICU:CICU",
+        "//Sources/MeerkatIPC:MeerkatIPC",
+        "//Sources/MeerkatKit:MeerkatKit",
+        "//Sources/MeerkatRules:MeerkatRules",
+        "//Sources/MeerkatStore:MeerkatStore",
+        "//Sources/meerkat-runtime:MeerkatRuntimeBindings",
+        # docs/design/mcp.md, D1: the MCP Swift SDK with #314; the transport
+        # names swift-log's `Logger`, which the SDK's `Transport` requires.
+        "//buck2/third_party/swift:Logging",
+        "//buck2/third_party/swift:MCP",
+    ],
+)

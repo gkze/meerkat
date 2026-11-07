@@ -1,0 +1,52 @@
+# SwiftLint, for what swift-format (.swift-format) does not check: code that
+# traps, and other likely bugs. Layout and naming are swift-format's, so only
+# the rules below run (`only_rules`), and none of them is about style. Traps
+# are SwiftLint's alone: swift-format's rules for them are off, so one
+# exemption (Tests/.swiftlint.yml) and one disable comment cover each.
+#
+# A trap kills meerkatd and every rule with it (AGENTS.md, "Trust
+# boundaries"), hence the force rules. Where a force is provably safe, say why
+# beside `// swiftlint:disable:next <rule>`.
+#
+# Left out as style: return_value_from_void_function (`return f()` in a Void
+# function is how this code ends a branch) and reduce_into (it also fires on
+# a reduce that wraps its accumulator, where `into:` saves nothing).
+#
+# Tests lint with Tests/.swiftlint.yml. The generated UniFFI bindings are not
+# linted (buck2/rules/meerkat.bzl, `generated`).
+
+only_rules:
+  # Traps.
+  - force_cast
+  - force_try
+  - force_unwrapping
+  - implicitly_unwrapped_optional
+  - unowned_variable_capture
+  # Likely bugs.
+  - discarded_notification_center_observer
+  - duplicate_conditions
+  - duplicate_enum_cases
+  - duplicate_imports
+  - duplicated_key_in_dictionary_literal
+  - identical_operands
+  - notification_center_detachment
+  - unhandled_throwing_task
+  - unused_setter_value
+  - weak_delegate
+  # SwiftUI.
+  - accessibility_label_for_image
+  - accessibility_trait_for_button
+  - private_swiftui_state
+  # Clearer and cheaper equivalents.
+  - contains_over_filter_count
+  - contains_over_filter_is_empty
+  - contains_over_first_not_nil
+  - contains_over_range_nil_comparison
+  - empty_count
+  - first_where
+  - last_where
+  - sorted_first_last
+  # The lint itself.
+  - blanket_disable_command
+  - invalid_swiftlint_command
+  - superfluous_disable_command

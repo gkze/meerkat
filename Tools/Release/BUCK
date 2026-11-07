@@ -1,0 +1,24 @@
+load("//buck2/rules:check.bzl", "command")
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_binary")
+
+# Decides whether this commit publishes a release (.github/workflows/ci.yml).
+meerkat_swift_binary(
+    name = "release",
+    srcs = ["Release.swift"],
+    deps = [
+        "//Tools/ReleaseVersion:ReleaseVersion",
+        "//Tools/ToolProcess:ToolProcess",
+        "//buck2/third_party/swift:ArgumentParser",
+    ],
+)
+
+# `buck2 run //Tools/Release:plan`, for the version .buckconfig declares.
+command(
+    name = "plan",
+    command = [
+        "$(exe :release)",
+        "plan",
+        "--version",
+        read_root_config("meerkat", "version"),
+    ],
+)

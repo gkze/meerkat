@@ -1,0 +1,42 @@
+{
+  "$comment": "What a protected path covers, for the runtime (protected.rs, `forms`) and the daemon (`CapabilityGrants.protectedPath`) to agree on: each harness builds `layout` in a scratch folder, protects `protected`, and checks whether changing the entry each case names is at, inside or above a protected path. Paths are relative to the scratch folder; `@data/` starts its name on the data volume; an absolute path is taken as it is. Each link leads to the absolute path of its target.",
+  "layout": {
+    "folders": [
+      "home/cfg",
+      "home/stow/cfg/meerkat/other",
+      "home/code/rules",
+      "home/dotfiles",
+      "home/granted",
+      "home/prefs"
+    ],
+    "files": ["home/dotfiles/meerkat.json", "home/dotfiles/other.json"],
+    "links": [
+      { "at": "home/cfg/meerkat", "to": "home/stow/cfg/meerkat" },
+      { "at": "home/stow/cfg/meerkat/rules", "to": "home/code/rules" },
+      { "at": "home/code/rules/meerkat.json", "to": "home/dotfiles/meerkat.json" },
+      { "at": "home/granted/to-rules", "to": "home/code/rules" }
+    ]
+  },
+  "protected": ["home/cfg/meerkat/rules", "home/cfg/meerkat/rules/meerkat.json", "home/prefs/x.plist"],
+  "cases": [
+    { "path": "home/cfg/meerkat/rules/evil.ts", "touches": true, "why": "inside, as named" },
+    { "path": "home/code/rules/evil.ts", "touches": true, "why": "inside, where it leads" },
+    { "path": "home/code", "touches": true, "why": "above where it leads" },
+    { "path": "home/cfg/meerkat", "touches": true, "why": "the first link on its way" },
+    { "path": "home/cfg", "touches": true, "why": "above, as named" },
+    { "path": "home/stow/cfg/meerkat/rules", "touches": true, "why": "the second link on its way" },
+    { "path": "home/stow/cfg/meerkat", "touches": true, "why": "the folder holding the second link" },
+    { "path": "home/stow", "touches": true, "why": "above the second link" },
+    { "path": "home/stow/cfg/meerkat/other/x", "touches": false, "why": "beside the second link" },
+    { "path": "home/dotfiles/meerkat.json", "touches": true, "why": "where the settings link leads" },
+    { "path": "home/dotfiles", "touches": true, "why": "above where the settings link leads" },
+    { "path": "home/dotfiles/other.json", "touches": false, "why": "beside it" },
+    { "path": "home/granted/to-rules", "touches": false, "why": "a link into it is an entry of its own" },
+    { "path": "home/granted/new", "touches": false, "why": "elsewhere" },
+    { "path": "home/CODE/rules", "touches": true, "why": "another case of an existing folder" },
+    { "path": "home/prefs/X.PLIST", "touches": true, "why": "another case of a file that does not exist yet" },
+    { "path": "home/prefs/x.plist.old", "touches": false, "why": "beside a file that does not exist yet" },
+    { "path": "@data/home/code/rules/evil.ts", "touches": true, "why": "inside, by the data volume's name" },
+    { "path": "/System/Volumes/Data", "touches": true, "why": "the data volume, above everything on it" }
+  ]
+}

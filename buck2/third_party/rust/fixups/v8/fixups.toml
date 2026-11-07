@@ -1,0 +1,18 @@
+# v8's build script downloads a prebuilt V8 into a directory above OUT_DIR,
+# which a Buck action cannot write, so it does not run. What it would do
+# instead:
+#
+# - link librusty_v8.a (`rustc-link-lib=static`, so rustc bundles it into
+#   the rlib and every staticlib above it, as under Cargo): the release
+#   archive it downloads for this crate's features (simdutf,
+#   use_custom_libcxx), pinned by checksum in ./BUCK. The script uses the
+#   release build whatever Cargo's profile (debug only with V8_FORCE_DEBUG),
+#   so both Buck modes link it too.
+# - point RUSTY_V8_SRC_BINDING_PATH at the matching prebuilt bindings, which
+#   the crate ships in gen/.
+# - use_custom_libcxx: the archive carries its own libc++, so no `-lc++`.
+buildscript.run = false
+rustc_flags = ["-Lnative=$(location //buck2/third_party/rust/fixups/v8:obj)", "-lstatic=rusty_v8"]
+
+[env]
+RUSTY_V8_SRC_BINDING_PATH = "$(location :v8-150.4.0.crate)/gen/src_binding_simdutf_release_aarch64-apple-darwin.rs"

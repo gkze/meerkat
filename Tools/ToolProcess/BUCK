@@ -1,0 +1,4 @@
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_library")
+
+# Running another program from a tool, for //Tools and //buck2/conformance.
+meerkat_swift_library(name = "ToolProcess")

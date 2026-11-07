@@ -1,0 +1,71 @@
+# The TypeScript toolchain as native darwin-arm64 executables: what
+# Meerkat.app bundles and what the repository's checks run (//Sources/meerkat-rules). No
+# JavaScript runtime is involved: tsrs and tsrslint publish
+# their binaries as npm platform packages, Oxlint and Oxfmt as GitHub
+# releases (their npm packages are Node bindings).
+#
+# The npm pins are Sources/meerkat-rules/bun.lock's (the editor's install): same versions, and
+# each tarball's SHA-512 is the lockfile's `integrity`. Buck checks SHA-256,
+# recorded here; //buck2/third_party/js:pins_test fails when bun.lock or
+# Sources/meerkat-rules/package.json moves.
+
+load("//buck2/rules:conformance.bzl", "npm_pins_test")
+load(":defs.bzl", "npm_package")
+
+NPM_PACKAGES = {
+    # The compiler: tsrs, the Rust port of TypeScript 7, and the lib.*.d.ts
+    # it resolves next to itself.
+    "tsrs": ("@tsrs/darwin-arm64", "0.20.1-ts7.1.0-beta", "c092614c2900b109c66d80fa2aada3d38dad2da2f92400b058e3928caf5007ed"),
+    # The type-aware backend Oxlint runs (OXLINT_TSGOLINT_PATH).
+    "tsrslint": ("@maschwenk/tsrslint-darwin-arm64", "0.1.6", "b72101bbbc6700c164a5adff20ea74b0d12444c0c49863ed98545a0acc645ae8"),
+}
+
+_PATHS = {
+    "tsrslint": ["tsrslint"],
+}
+
+[
+    npm_package(name = name, package = package, version = version, sha256 = sha256, paths = _PATHS.get(name, []))
+    for name, (package, version, sha256) in NPM_PACKAGES.items()
+]
+
+
+# Oxc's standalone executables, which have no JavaScript plugin host
+# (//Sources/meerkat-lint runs the meerkat/* rules instead). Each is the version Sources/meerkat-rules/package.json
+# installs from npm for the editor (pins_test checks).
+RELEASES = {
+    "oxfmt": ("0.75.0", "e7973efba410ee690afdf306c3a561ebd9e6072005d28fe50ef4a4d7d4649bb3"),
+    "oxlint": ("1.90.0", "4654e2b8b450f25d3b3186b8e88ffbaf5c20b991a61243758a0944bc46726791"),
+}
+
+[
+    http_archive(
+        name = tool,
+        urls = ["https://github.com/oxc-project/oxc/releases/download/{0}_v{1}/{0}-aarch64-apple-darwin.tar.gz".format(tool, version)],
+        sha256 = sha256,
+        sub_targets = [tool + "-aarch64-apple-darwin"],
+        visibility = ["PUBLIC"],
+    )
+    for tool, (version, sha256) in RELEASES.items()
+]
+
+# The release archives hold only the executables; the npm packages of the
+# same versions carry the license (//Tools/Notices).
+RELEASE_LICENSES = {
+    "oxfmt-npm": ("oxfmt", RELEASES["oxfmt"][0], "f95a90171c00ec55feccb008d768c5217a70ceae68495bd781dfd59756d5cec8"),
+    "oxlint-npm": ("oxlint", RELEASES["oxlint"][0], "f67b15833243fc97b18777339e179fb3bb78c57a875886a3f07be16d60ba9445"),
+}
+
+[
+    npm_package(name = name, package = package, version = version, sha256 = sha256)
+    for name, (package, version, sha256) in RELEASE_LICENSES.items()
+]
+
+npm_pins_test(
+    name = "pins_test",
+    tarballs = {
+        "{}@{}".format(package, version): ":{}.tgz".format(name)
+        for name, (package, version, _) in dict(NPM_PACKAGES, **RELEASE_LICENSES).items()
+    },
+    versions = {tool: version for tool, (version, _) in RELEASES.items()},
+)

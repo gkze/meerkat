@@ -1,0 +1,43 @@
+load("//buck2/rules:check.bzl", "command")
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_executable", "meerkat_swift_test")
+
+# Builds a //Tools/Bundler bundle on another Mac, then assembles, signs and
+# installs it here.
+meerkat_swift_executable(
+    name = "remote_build",
+    srcs = ["RemoteBuild.swift"],
+    deps = [
+        "//Tools/ToolProcess:ToolProcess",
+        "//buck2/third_party/swift:ArgumentParser",
+    ],
+)
+
+# Which paths on the host every step reads as the one the guard checked.
+meerkat_swift_test(
+    name = "RemoteBuildTests",
+    srcs = ["RemoteBuildTests.swift"],
+    deps = [":module"],
+)
+
+# `buck2 run //Tools/RemoteBuild:remote -- app-debug [--install]`, on the
+# host `[remote_build] host` names (in .buckconfig.local, or
+# `-c remote_build.host=…`).
+command(
+    name = "remote",
+    command = [
+        "$(exe :remote_build)",
+        "--host",
+        read_root_config("remote_build", "host", ""),
+        "--path",
+        read_root_config("remote_build", "path", ""),
+        "--directory",
+        read_root_config("remote_build", "directory", ""),
+        "--developer-dir",
+        read_root_config("swift", "developer_dir"),
+    ] + [
+        # What the toolchain tests check, as this Mac reads them.
+        arg
+        for section, key in [("swift", "xcode_build"), ("rust", "release"), ("buck2_release", "version")]
+        for arg in ["--pin", "{}.{}={}".format(section, key, read_root_config(section, key))]
+    ],
+)

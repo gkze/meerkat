@@ -1,0 +1,60 @@
+name: Toolchain
+description: >
+  The Buck2 release, Xcode and Rust release (with clippy and rustfmt)
+  .buckconfig pins, and Python. The runner provides Xcode and rustup
+  (docs/development.md, "CI runner").
+
+runs:
+  using: composite
+  steps:
+    # Buck's prelude and the Rust build scripts run on python3. The image's
+    # moves between image releases, so the checks pin one they run on.
+    - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+      with:
+        python-version: "3.13"
+    # `[buck2_release]` in .buckconfig: facebook/buck2's release tag and the
+    # sha256 of its buck2-aarch64-apple-darwin.zst (GitHub's asset digest),
+    # read without Buck, which is not here yet.
+    - name: Install the Buck2 release .buckconfig pins
+      shell: bash
+      # GITHUB_PATH gets a fixed directory, not one derived from any input.
+      run: | # zizmor: ignore[github-env]
+        pin() {
+          awk -v key="$1" '/^\[/ { section = $0 } section == "[buck2_release]" && $1 == key && $2 == "=" { print $3 }' .buckconfig
+        }
+        release=$(pin tag)
+        sha256=$(pin sha256)
+        if [ -z "$release" ] || [ -z "$sha256" ]; then
+          echo "no [buck2_release] tag and sha256 in .buckconfig" >&2
+          exit 1
+        fi
+        mkdir -p "$RUNNER_TEMP/bin"
+        curl --fail --location --silent --show-error --output "$RUNNER_TEMP/buck2.zst" \
+          "https://github.com/facebook/buck2/releases/download/$release/buck2-aarch64-apple-darwin.zst"
+        echo "$sha256  $RUNNER_TEMP/buck2.zst" | shasum -a 256 --check
+        zstd --quiet --decompress "$RUNNER_TEMP/buck2.zst" -o "$RUNNER_TEMP/bin/buck2"
+        chmod +x "$RUNNER_TEMP/bin/buck2"
+        echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+    # The image's default Xcode moves between image releases, and
+    # //buck2/rules/swift:xcode_test fails on any build but the pinned one, so
+    # find that build among the Xcodes the image keeps.
+    - name: Select the Xcode .buckconfig pins
+      shell: bash
+      # GITHUB_ENV gets a path from the image's /Applications, not from an input.
+      run: | # zizmor: ignore[github-env]
+        build=$("$RUNNER_TEMP/bin/buck2" audit config --json swift.xcode_build | jq --raw-output '."swift.xcode_build"')
+        for app in /Applications/Xcode*.app; do
+          developer_dir="$app/Contents/Developer"
+          if [ "$(DEVELOPER_DIR="$developer_dir" xcodebuild -version | sed -n 's/^Build version //p')" = "$build" ]; then
+            printf '[swift]\n  developer_dir = %s\n' "$developer_dir" > .buckconfig.local
+            echo "DEVELOPER_DIR=$developer_dir" >> "$GITHUB_ENV"
+            exit 0
+          fi
+        done
+        echo "no Xcode with build $build on this image" >&2
+        exit 1
+    - name: Install the Rust release .buckconfig pins
+      shell: bash
+      run: |
+        release=$("$RUNNER_TEMP/bin/buck2" audit config --json rust.release | jq --raw-output '."rust.release"')
+        rustup toolchain install "$release" --profile minimal --component clippy,rustfmt

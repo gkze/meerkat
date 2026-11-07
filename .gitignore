@@ -1,0 +1,49 @@
+# Buck2
+/buck-out
+.buckd/
+# Machine-specific Buck settings (README, "Building on another Mac")
+/.buckconfig.local
+
+# Swift Package Manager
+.build/
+.swiftpm/
+.index-build/
+*.xcworkspace/xcuserdata/
+
+# Bundles from //Tools/Bundler and //Tools/RemoteBuild
+build/
+
+# Build products and debug symbols
+DerivedData/
+*.dSYM/
+*.xcarchive/
+
+# Test and coverage output
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+*.lcov
+coverage/
+TestResults/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.fseventsd/
+.Spotlight-V100/
+.Trashes/
+.TemporaryItems/
+.DocumentRevisions-V100/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# JavaScript toolchain (installed from Sources/meerkat-rules/bun.lock)
+Sources/meerkat-rules/node_modules/

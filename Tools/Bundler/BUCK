@@ -1,0 +1,76 @@
+load("//buck2/rules:bundle.bzl", "bundle_command", "directory")
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_binary")
+load(":parts.bzl", "PARTS")
+
+# Assembles, signs and installs Meerkat.app from the parts below.
+meerkat_swift_binary(
+    name = "bundle",
+    srcs = ["Bundler.swift"],
+    deps = [
+        "//Sources/MeerkatIPC:MeerkatIPC",
+        "//Sources/MeerkatRules:MeerkatRules",
+        "//Tools/ReleaseVersion:ReleaseVersion",
+        "//Tools/ToolProcess:ToolProcess",
+        "//buck2/third_party/swift:ArgumentParser",
+    ],
+)
+
+# Every bundle carries the release version and macOS .buckconfig declares,
+# and its icon is compiled by the Xcode Buck builds with.
+_COMMON = {
+    "bundler": ":bundle",
+    "developer_dir": read_root_config("swift", "developer_dir"),
+    "minimum_macos": read_root_config("meerkat", "minimum_macos"),
+    "version": read_root_config("meerkat", "version"),
+}
+
+# Contents/Resources/lint/, in the layout LintToolchain reads: the linters
+# and formatter, the meerkat/* rules and the policy every rules folder
+# extends. The daemon tests run against it too.
+directory(
+    name = "lint-toolchain",
+    entries = {
+        "bin/meerkat-lint": "//Sources/meerkat-lint:meerkat-lint",
+        "bin/oxfmt": "//buck2/third_party/js:oxfmt[oxfmt-aarch64-apple-darwin]",
+        "bin/oxlint": "//buck2/third_party/js:oxlint[oxlint-aarch64-apple-darwin]",
+        "bin/tsrslint": "//buck2/third_party/js:tsrslint[tsrslint]",
+        "policy/oxfmtrc.json": "//Sources/meerkat-lint:oxfmtrc",
+        "policy/oxlintrc.json": "//Sources/meerkat-lint:oxlintrc",
+    },
+    visibility = ["PUBLIC"],
+)
+
+_FULL = PARTS | _COMMON | {
+    # meerkatd compiles the checked-in bindings; ones that do not match the
+    # library it links fail UniFFI's checksum check at its first runtime
+    # call, and an installed daemon would crash-loop under launchd.
+    "checks": ["//Sources/meerkat-runtime/bindgen:bindings_current"],
+    # Generated from the parts, so not itself a part: the file in the bundle
+    # always matches what the bundle holds.
+    "notices": "//Tools/Notices:notices",
+}
+
+# build/Meerkat.app, always optimized (a debug V8 embedding is many times
+# slower): `buck2 run //Tools/Bundler:app [-- --install]`.
+bundle_command(
+    name = "app",
+    mode = "release",
+    **_FULL
+)
+
+# The same bundle from a debug build, which honours MEERKAT_SAMPLE_DATA.
+bundle_command(
+    name = "app-debug",
+    mode = "debug",
+    **_FULL
+)
+
+# build/Meerkat Preview.app: the app alone under its own identifier, to run
+# beside the installed one (no daemon, CLI or agent).
+bundle_command(
+    name = "preview",
+    app = "//Sources/MeerkatApp:MeerkatApp",
+    mode = "debug",
+    preview = True,
+    **_COMMON
+)

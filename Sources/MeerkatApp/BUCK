@@ -1,0 +1,20 @@
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_executable")
+
+# The SwiftUI dashboard, whose module MeerkatAppTests imports. It shows a window
+# only from inside Meerkat.app (//Tools/Bundler).
+meerkat_swift_executable(
+    name = "MeerkatApp",
+    deps = [
+        "//Sources/MeerkatAgent:MeerkatAgent",
+        "//Sources/MeerkatIPC:MeerkatIPC",
+        "//Sources/MeerkatKit:MeerkatKit",
+        # Locates tsrs for the rule editor's language server.
+        "//Sources/MeerkatRules:MeerkatRules",
+        # The rule editor (docs/design/rule-editor.md).
+        "//buck2/third_party/swift:CodeEditLanguages",
+        "//buck2/third_party/swift:CodeEditSourceEditor",
+        "//buck2/third_party/swift:CodeEditTextView",
+        "//buck2/third_party/swift:JSONRPC",
+        "//buck2/third_party/swift:LanguageServerProtocol",
+    ],
+)

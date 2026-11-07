@@ -1,0 +1,204 @@
+name: CI
+
+# Every push and pull request runs Tools/check (the check job) and builds
+# Meerkat.app in release mode, signed ad hoc, and runs its CLI against the
+# tools it bundles (the bundle job). The two build in different modes, so each
+# has a runner, and its disk, of its own.
+#
+# Every job runs on the runner label the repository's MEERKAT_RUNNER variable
+# names (Settings, Secrets and variables, Actions, Variables): a macOS 27
+# Apple silicon runner, hosted or self-hosted, holding what
+# docs/development.md, "CI runner", lists. A repository without the variable, such as a fork, runs no
+# job, rather than queueing for a label nothing serves. Nor does a pull
+# request from a fork: the runner may be self-hosted, the machine the release
+# job signs on, and a fork's code does not run there. A maintainer checks one
+# by pushing its commits to a branch of this repository.
+#
+# A push to main whose `[meerkat] version` (.buckconfig) has no v<version> tag
+# yet also publishes it, in a repository whose MEERKAT_RELEASE variable is
+# `true`: a repository without it, or without the secrets below, checks
+# without publishing. //Tools/Release:plan decides, and the release job builds
+# Meerkat.app, signs it with the Developer ID identity, notarizes and staples
+# it, and attaches it to a GitHub release at the pushed commit. A version
+# already tagged publishes nothing; one below the latest release fails the
+# plan.
+#
+# Secrets (in the `release` environment; set its deployment branches to
+# `main` alone, so no other branch can reach them):
+#   DEVELOPER_ID_P12           base64 of the Developer ID Application
+#                              certificate and key, exported as .p12
+#   DEVELOPER_ID_P12_PASSWORD  its export password
+#   NOTARY_KEY                 the App Store Connect API key (.p8 contents)
+#   NOTARY_KEY_ID              its key ID
+#   NOTARY_ISSUER              its issuer ID
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Runs on main never overlap: a push waits for the run before it to finish
+# (and a newer push replaces one still waiting), which is also what keeps two
+# release jobs from publishing at once. A pull request's newer push cancels
+# its older run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    if: >-
+      vars.MEERKAT_RUNNER != ''
+      && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ vars.MEERKAT_RUNNER }}
+    timeout-minutes: 180
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Tags for the release plan.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+      # facebookincubator/reindeer, for //buck2/third_party/rust/check:buckify_test.
+      - name: Read the reindeer .buckconfig pins
+        id: reindeer-pin
+        run: echo "rev=$(buck2 audit config --json reindeer.rev | jq --raw-output '."reindeer.rev"')" >> "$GITHUB_OUTPUT"
+      - name: Cache reindeer
+        id: reindeer
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/reindeer
+          key: reindeer-${{ steps.reindeer-pin.outputs.rev }}-${{ runner.os }}-${{ runner.arch }}
+      - name: Install reindeer
+        if: steps.reindeer.outputs.cache-hit != 'true'
+        env:
+          REINDEER_REV: ${{ steps.reindeer-pin.outputs.rev }}
+        run: |
+          cargo install --locked --git https://github.com/facebookincubator/reindeer \
+            --rev "$REINDEER_REV" --features cargo/vendored-openssl reindeer
+      - name: Plan the release
+        id: plan
+        run: buck2 run //Tools/Release:plan >> "$GITHUB_OUTPUT"
+      - name: Check
+        run: Tools/check
+
+  bundle:
+    # Tools/check is debug only. This builds every part of a release bundle,
+    # assembles it as the release job would, signed ad hoc as no identity is
+    # here, and runs the bundled CLI, so a release-only failure, or a bundle
+    # whose layout the CLI cannot find its tools in, shows before a release.
+    if: >-
+      vars.MEERKAT_RUNNER != ''
+      && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ vars.MEERKAT_RUNNER }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+      # Outside the checkout, where the CLI's development fallbacks (the
+      # repository's own toolchains) cannot stand in for the bundled ones.
+      - name: Build Meerkat.app
+        run: buck2 run //Tools/Bundler:app -- --identity - --output "$RUNNER_TEMP/Meerkat.app"
+      - name: Type-check and lint the example rules with the bundled tools
+        run: |
+          rules="$RUNNER_TEMP/rules"
+          cp -R Sources/meerkat-rules/examples "$rules"
+          "$RUNNER_TEMP/Meerkat.app/Contents/MacOS/meerkat" rules check "$rules"
+          "$RUNNER_TEMP/Meerkat.app/Contents/MacOS/meerkat" rules lint "$rules"
+
+  release:
+    needs: [check, bundle]
+    if: >-
+      vars.MEERKAT_RELEASE == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+      && needs.check.outputs.publish == 'true'
+    runs-on: ${{ vars.MEERKAT_RUNNER }}
+    timeout-minutes: 180
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Tags for the plan, and the history CFBundleVersion counts.
+          fetch-depth: 0
+          # gh publishes with GH_TOKEN; git itself never pushes.
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+      # Made again: a run that waited behind another (see `concurrency`) sees
+      # the tags that one created.
+      - name: Plan the release
+        id: plan
+        run: buck2 run //Tools/Release:plan >> "$GITHUB_OUTPUT"
+      # Everything Buck runs (build scripts, macros, build tools) runs here,
+      # before any secret is on the runner, and Buck's daemon stops after.
+      # Only the bundler, codesign and Apple's notary tools run with them. A
+      # process a build left behind would still share the runner: this keeps
+      # secrets out of every build action, not out of the machine.
+      - name: Build the release parts
+        if: steps.plan.outputs.publish == 'true'
+        run: |
+          buck2 run //Tools/Bundler:app --command-args-file "$RUNNER_TEMP/bundler.json"
+          buck2 kill
+      - name: Import the Developer ID identity
+        if: steps.plan.outputs.publish == 'true'
+        env:
+          P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          umask 077
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(uuidgen)
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/identity.p12"
+          security import "$RUNNER_TEMP/identity.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/identity.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" > /dev/null
+          # Searched first, beside the runner's login keychain.
+          security list-keychains -d user -s "$keychain" login.keychain-db
+      - name: Write the notary key
+        if: steps.plan.outputs.publish == 'true'
+        env:
+          NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
+        run: |
+          umask 077
+          printf '%s' "$NOTARY_KEY" > "$RUNNER_TEMP/notary.p8"
+      - name: Sign, notarize and archive Meerkat.app
+        if: steps.plan.outputs.publish == 'true'
+        env:
+          MEERKAT_NOTARY_KEY: ${{ runner.temp }}/notary.p8
+          MEERKAT_NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          MEERKAT_NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
+          ARCHIVE: build/Meerkat-${{ steps.plan.outputs.version }}.zip
+        # The bundler command Buck reported, run without Buck.
+        run: |
+          bundler=()
+          while IFS= read -r argument; do bundler+=("$argument"); done \
+            < <(jq --raw-output '.argv[]' "$RUNNER_TEMP/bundler.json")
+          "${bundler[@]}" --notarize --archive "$ARCHIVE"
+      # The notices are the bundle's own copy, so publishing runs no Buck
+      # with the token.
+      - name: Publish the release
+        if: steps.plan.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          PRERELEASE: ${{ steps.plan.outputs.prerelease }}
+        run: |
+          gh release create "$TAG" "build/Meerkat-$VERSION.zip" \
+            "build/Meerkat.app/Contents/Resources/THIRD_PARTY_NOTICES#THIRD_PARTY_NOTICES" \
+            --target "$GITHUB_SHA" --title "Meerkat $VERSION" --generate-notes --prerelease="$PRERELEASE"
+      - name: Remove the signing keychain, identity and notary key
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2> /dev/null || true
+          rm -f "$RUNNER_TEMP/identity.p12" "$RUNNER_TEMP/notary.p8"

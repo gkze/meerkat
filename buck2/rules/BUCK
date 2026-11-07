@@ -1,0 +1,66 @@
+load("//buck2/rules:check.bzl", "command_test")
+
+# The prelude's Python toolchain (buck2/toolchains) runs `python3` from PATH,
+# and its helpers need 3.12: rust/tools/from_any_dir.py, the C compiler shim
+# of every Rust build script, uses `Path.relative_to(walk_up=)`. An older
+# python3 (macOS's own is 3.9) fails those build scripts with errors that
+# look like the C compiler's (cc-rs, in lcms2-sys first); this says why.
+command_test(
+    name = "python_test",
+    command = [
+        "/bin/sh",
+        "-c",
+        """
+        if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then
+            echo "Buck's prelude needs Python 3.12 or later as python3 on PATH; found `command -v python3`: `python3 --version 2>&1`"
+            exit 1
+        fi
+        """,
+    ],
+)
+
+# `[buck2_release] version` in .buckconfig is the buck2 these files are
+# written for. The check is of the buck2 on PATH, which is the one that runs
+# them unless a build names another.
+command_test(
+    name = "buck2_test",
+    command = [
+        "/bin/sh",
+        "-c",
+        """
+        actual=`buck2 --version 2>&1`
+        if [ "$actual" != "buck2 $1" ]; then
+            echo "[buck2_release] version in .buckconfig is $1, but buck2 on PATH (`command -v buck2`) is: $actual"
+            echo "install facebook/buck2's release $2, or change [buck2_release]"
+            exit 1
+        fi
+        """,
+        "buck2_test",
+        read_root_config("buck2_release", "version"),
+        read_root_config("buck2_release", "tag"),
+    ],
+)
+
+# `[rust] release` in .buckconfig is the Rust every Rust action runs, through
+# rustup (buck2/rules/toolchains.bzl). A rustc on PATH that is not rustup's
+# ignores RUSTUP_TOOLCHAIN and would build with whatever release it is.
+command_test(
+    name = "rust_test",
+    command = [
+        "/bin/sh",
+        "-c",
+        """
+        actual=`RUSTUP_TOOLCHAIN=$1 RUSTUP_AUTO_INSTALL=0 rustc --version 2>&1`
+        case "$actual" in
+        "rustc $1 "*) ;;
+        *)
+            echo "[rust] release in .buckconfig is $1, but RUSTUP_TOOLCHAIN=$1 rustc (`command -v rustc`) is: $actual"
+            echo "install it with \\`rustup toolchain install $1 --component clippy rustfmt\\`, or change [rust] release"
+            exit 1
+            ;;
+        esac
+        """,
+        "rust_test",
+        read_root_config("rust", "release"),
+    ],
+)

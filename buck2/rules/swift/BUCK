@@ -1,0 +1,22 @@
+load("//buck2/rules:check.bzl", "command_test")
+
+# `[swift] xcode_build` in .buckconfig is the build of the Xcode at
+# `[swift] developer_dir`. Buck cannot hash Xcode, so that setting is what
+# invalidates cached Swift actions when Xcode changes (toolchain.bzl).
+command_test(
+    name = "xcode_test",
+    command = [
+        "/bin/sh",
+        "-c",
+        """
+        actual=`DEVELOPER_DIR=$1 /usr/bin/xcodebuild -version | sed -n 's/^Build version //p'`
+        if [ "$actual" != "$2" ]; then
+            echo "$1 is Xcode build $actual, but [swift] xcode_build in .buckconfig is $2: set it to $actual"
+            exit 1
+        fi
+        """,
+        "xcode_test",
+        read_root_config("swift", "developer_dir"),
+        read_root_config("swift", "xcode_build"),
+    ],
+)

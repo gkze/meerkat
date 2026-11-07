@@ -1,0 +1,4 @@
+# Matches the Swift side's 120 columns; "Max" keeps short struct patterns and
+# call chains on one line, as the code is written.
+max_width = 120
+use_small_heuristics = "Max"

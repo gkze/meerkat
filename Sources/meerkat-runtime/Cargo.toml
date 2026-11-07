@@ -1,0 +1,4 @@
+# Buck builds this crate (BUCK); nothing here reaches the build except this
+# name. UniFFI's macros read it at compile time, from CARGO_MANIFEST_DIR.
+[package]
+name = "meerkat-runtime"

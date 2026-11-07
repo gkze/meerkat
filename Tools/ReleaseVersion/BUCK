@@ -1,0 +1,5 @@
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_library")
+
+# The release version `[meerkat] version` in .buckconfig declares, and the
+# decision whether a push publishes it, for //Tools/Bundler and //Tools/Release.
+meerkat_swift_library(name = "ReleaseVersion")

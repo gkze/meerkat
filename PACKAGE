@@ -1,0 +1,10 @@
+load("@prelude//rust:cargo_package.bzl", "set_reindeer_platforms")
+
+# No per-platform build scripts. By default each `buildscript_run` adds an
+# alias for each of Reindeer's nine platforms, which `//...` then builds, every
+# one with its dependencies in a configuration of its own: nine copies of
+# nearly every crate, Deno's included, for platforms this repository doesn't
+# target. With none, a build script is an ordinary exec dependency. Nothing
+# varies by platform (buck2/third_party/rust/reindeer.toml names the one there
+# is).
+set_reindeer_platforms(select({"DEFAULT": None}))

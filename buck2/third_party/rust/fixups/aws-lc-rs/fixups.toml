@@ -1,0 +1,4 @@
+# The build script only re-exports aws-lc-sys's `links` metadata (DEP_AWS_LC_*,
+# which Buck does not propagate) for dependents' build scripts, none of which
+# read it here, and sets test-only cfgs.
+buildscript.run = false

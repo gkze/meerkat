@@ -1,0 +1,213 @@
+# The Swift packages Package.swift depends on, and theirs, built from source
+# as SwiftPM builds them (see defs.bzl): only the targets this repository
+# uses and their dependencies. PACKAGES here pins them; modules.bzl is
+# generated from each package's manifest at its pin (`swift package
+# dump-package`). After changing a pin, `buck2 run :regenerate` rewrites it, and
+# :manifest_test fails while it is stale.
+#
+# Not built: the packages' resources. GRDB and swift-sharing ship only a
+# PrivacyInfo.xcprivacy, which no code reads (no `Bundle.module`) and which
+# matters only to App Store submission.
+
+load("//buck2/rules:conformance.bzl", "spm_manifest_test", "spm_pins_test", "spm_tables")
+load(":defs.bzl", "spm_modules", "spm_packages")
+load(":modules.bzl", "MINIMUM_MACOS", "MODULES", "TRAITS")
+
+# Each package's source at its pinned revision.
+PACKAGES = {
+    "codeeditlanguages": {
+        "github": "CodeEditApp/CodeEditLanguages",
+        "revision": "331d5dbc5fc8513be5848fce8a2a312908f36a11",
+        "sha256": "57c3739c2485db01a70fc09ff77e09c1cfdb1ada02ef61c8677138c8d555b34c",
+    },
+    "codeeditsourceeditor": {
+        "github": "CodeEditApp/CodeEditSourceEditor",
+        "revision": "424453d2232c9912933a3b5a1f3d3df669404ed0",
+        "sha256": "c0f0a6aaaeb2e2032e297f8d484356e33cf4b6f7bb1a5b317a693eb99631b473",
+    },
+    "codeeditsymbols": {
+        "github": "CodeEditApp/CodeEditSymbols",
+        "revision": "ae69712b08571c4469c2ed5cd38ad9f19439793e",
+        "sha256": "c973ade8783a5518b2f42e2609c5941ceafe9f3c4c3fa5593b43263cee2ad05e",
+    },
+    "codeedittextview": {
+        "github": "CodeEditApp/CodeEditTextView",
+        "revision": "d7ac3f11f22ec2e820187acce8f3a3fb7aa8ddec",
+        "sha256": "2dfd4df8cc41630219e9451b7d9486402a209b7713d5e4213b13deb54cd9996d",
+    },
+    "combine-schedulers": {
+        "github": "pointfreeco/combine-schedulers",
+        "revision": "114354e8c1667a2edc4993700fb9fa4f90157b56",
+        "sha256": "cb7293261bd0c270c64ae199e60e07e4855a4c1eb4364a04c38e60a370ed71dc",
+    },
+    "eventsource": {
+        "github": "mattt/EventSource",
+        "revision": "86b5096ac59ab46e66bd1f6377c604bc1dab0bc2",
+        "sha256": "49b1943510703a37d379987c15e450a96fad67de5e5fb9dfff3e62bcb59b0829",
+    },
+    "grdb.swift": {
+        "github": "groue/GRDB.swift",
+        "revision": "b83108d10f42680d78f23fe4d4d80fc88dab3212",
+        "sha256": "2beeb6962c1d5721707c0fae4bf803ee4d03b84202e16390eda10126fd213cb7",
+    },
+    "jsonrpc": {
+        "github": "ChimeHQ/JSONRPC",
+        "revision": "29987f721374f30e686af40ccffd0b13b14dde1f",
+        "sha256": "54cf57c6a4751aa8ab3b48f9d94bd6d7b24f3c487fbdabcc70c241c718341f77",
+    },
+    "languageserverprotocol": {
+        "github": "ChimeHQ/LanguageServerProtocol",
+        "revision": "48ab36295c56c6cc5ba783a37a0c1324fef54ff6",
+        "sha256": "c72e3ceb2f7dbc333a3fa768a9390201b1a5810aa3bcd2ffa9b3afea21504398",
+    },
+    "rearrange": {
+        "github": "ChimeHQ/Rearrange",
+        "revision": "4de8be41dba304192e87dc0a11e0aa39e72aa2e8",
+        "sha256": "994da6772c8b848c76600aac7656b2e0bbb07696e18d6bed061be921d0610236",
+    },
+    "sqlite-data": {
+        "github": "pointfreeco/sqlite-data",
+        "revision": "aa613accbe882b561f26e37a348a8f42e92cd398",
+        "sha256": "407317912b124945e5fe79f0d8404da42b0580b405df85691e6d8f2f8f728481",
+    },
+    "swift-argument-parser": {
+        "github": "apple/swift-argument-parser",
+        "revision": "6a52f3251125d74daf04fcbd5e6f08a75d074382",
+        "sha256": "23ab82e8be3b82b199a008e0044229ae327a8824734d917b78bcdde64ce81ec1",
+    },
+    "swift-clocks": {
+        "github": "pointfreeco/swift-clocks",
+        "revision": "82440fa0a8b1c381a6d1e8e0fc7bbba53ec63204",
+        "sha256": "8f83bd9d12b6513be436863ff5d2fad24329f2e9fe0bf5c198cec135e7a2cc11",
+    },
+    "swift-collections": {
+        "github": "apple/swift-collections",
+        "revision": "f96b909e1a9e469620bc5037c1e24e00153f376f",
+        "sha256": "80e91c695f6cc7b4a1144c07e41933c62e442e134290e3bff5b8855275559ed5",
+    },
+    "swift-concurrency-extras": {
+        "github": "pointfreeco/swift-concurrency-extras",
+        "revision": "8a4260f7373493435bd21194585c95b72bfdd401",
+        "sha256": "221d25891a2f8f60cb2118c64500635be350fb379288e05006cc0fa95ec992bb",
+    },
+    "swift-custom-dump": {
+        "github": "pointfreeco/swift-custom-dump",
+        "revision": "4fb9e7cbb4b8f5a7354005db39447f570d6b3e19",
+        "sha256": "4f76a9d28defa6d782b0d8c7def283dde03834a3983cc9c494e6588141a9f5a1",
+    },
+    "swift-dependencies": {
+        "github": "pointfreeco/swift-dependencies",
+        "revision": "2f83b70a6fbf45795dd40ccaa907bad3c8d93fe1",
+        "sha256": "839dd2ecf8ad1d8bf2770e07140a819537222b74798d98f2debf884261599e35",
+    },
+    "swift-identified-collections": {
+        "github": "pointfreeco/swift-identified-collections",
+        "revision": "322d9ffeeba85c9f7c4984b39422ec7cc3c56597",
+        "sha256": "ac2da338705639c35bdfa152c0249a02aa325719eae9c3583399d85e2e9a9bbc",
+    },
+    "swift-issue-reporting": {
+        "github": "pointfreeco/swift-issue-reporting",
+        "revision": "b23bb4493c439d3e05152bc167014235ba3d47fc",
+        "sha256": "ca9acc20dbd4182fc4cb5aae11b459920f09394902fec436448e2fddaab708a0",
+    },
+    "swift-log": {
+        "github": "apple/swift-log",
+        "revision": "c9c6bb9d275ec0d95c3ad16391f3f045dc623104",
+        "sha256": "d7627619439ea7bb0498533dde0b7735d60f2ce2352f3db3dedacbff2c668804",
+    },
+    "swift-perception": {
+        "github": "pointfreeco/swift-perception",
+        "revision": "597afd46249f4a71885b95d26b26cc5b893daf32",
+        "sha256": "56207fde5e342b6d49264350b089027a7ac3359cfb920036985462bacca36547",
+    },
+    "swift-sdk": {
+        "github": "romanbsd/swift-sdk",
+        "revision": "aa545cb891262979cd800170b6037143d6409d02",
+        "sha256": "73fa82a8a6d3171481ac1d8086116d1b3d6f842a763806f07d1b9bebaffe131f",
+    },
+    "swift-sharing": {
+        "github": "pointfreeco/swift-sharing",
+        "revision": "3552faf8a6c18ce896ec5a72bd8c34755f0f03e0",
+        "sha256": "6c35cce619323ba715f624306044d5c92a2fd04ab90e295ee2119add52c0774b",
+    },
+    "swift-structured-queries": {
+        "github": "pointfreeco/swift-structured-queries",
+        "revision": "72d536d5f0319097612bea961e356f4223efd926",
+        "sha256": "3039ba6e44c4b59c73821f8f400eb1062814ec92e523d2f247ddf255a5e02239",
+    },
+    "swift-syntax": {
+        "github": "swiftlang/swift-syntax",
+        "revision": "050f1a346fbbac0ca2cfb15a95274f7bd1cf0ccf",
+        "sha256": "2112986ef9432364bc75f400e501138eadb3719cb43d15fb861c67d8286f0ad6",
+    },
+    "swift-system": {
+        "github": "apple/swift-system",
+        "revision": "869129b7bf4ecc57b97d0193ad29690ca2134750",
+        "sha256": "bd18faa740f5bd92856c21bc6928d91511e153965087abbc81639c99491400a9",
+    },
+    "swifttreesitter": {
+        "github": "ChimeHQ/SwiftTreeSitter",
+        "revision": "08ef81eb8620617b55b08868126707ad72bf754f",
+        # The repository was renamed; its archives keep the new name.
+        "directory": "swift-tree-sitter",
+        "sha256": "7d5f1894b9cb99071e9ab601686231066825a14a365e1d57212d03a11962d2f1",
+    },
+    "textformation": {
+        "github": "ChimeHQ/TextFormation",
+        "revision": "b1ce9a14bd86042bba4de62236028dc4ce9db6a1",
+        "sha256": "8224c8affd7c8d92c79ab2a4dc3bcfa8b7ea154fa0a887ec0d230d7af18b589a",
+    },
+    "textstory": {
+        "github": "ChimeHQ/TextStory",
+        "revision": "a52db1a2eca74d37c8c19bf3165416941632ed45",
+        "sha256": "490e1c18cb41efc1305ef0713baaff0e85ac8f72d1c82e56ab2142095b407b63",
+    },
+    "tree-sitter": {
+        "github": "tree-sitter/tree-sitter",
+        "revision": "da6fe9beb4f7f67beb75914ca8e0d48ae48d6406",
+        "sha256": "d7ccf512347cac69a151ff174140ae6563ea01c6424b62dd963c977cfa8a0992",
+    },
+}
+
+spm_pins_test(
+    name = "pins_test",
+    revisions = {name: package["revision"] for name, package in PACKAGES.items()},
+)
+
+# What a package's manifest does not say about a binary target. Every grammar
+# CodeEditLanguages knows, prebuilt by CodeEdit as one static framework
+# (CodeLanguages-Container in that repository).
+BINARIES = {
+    "CodeLanguagesContainer": {
+        "framework": "CodeLanguages_Container",
+        "library": "CodeLanguagesContainer.xcframework/macos-arm64_x86_64",
+    },
+}
+
+# modules.bzl's tables: TRAITS, what each package builds with, its default
+# traits, as nothing here asks for others (SwiftPM makes each a compilation
+# condition of the package's targets); MINIMUM_MACOS, each package's manifest's
+# macOS minimum, else SwiftPM's default (10.13); and MODULES, each package
+# target modules build, with its manifest's settings: the module's directory
+# (`path`), its kind (library, macro, system library or C), dependencies (`deps`
+# modules, `macros` plugins), `defines`, upcoming and experimental features,
+# other `swift_flags`, `exclude`, and `language_mode` where it is not 6. A C
+# target has its sources, and its package's own module map in include/.
+modules = {name: module | BINARIES.get(name, {}) for name, module in MODULES.items()}
+
+spm_packages(PACKAGES, modules)
+
+spm_modules(modules, traits = TRAITS, minimum_macos = MINIMUM_MACOS)
+
+ARCHIVES = {name: ":" + name for name in PACKAGES}
+
+spm_manifest_test(
+    name = "manifest_test",
+    archives = ARCHIVES,
+)
+
+spm_tables(
+    name = "regenerate",
+    archives = ARCHIVES,
+    visibility = ["PUBLIC"],
+)

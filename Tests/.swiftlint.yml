@@ -1,0 +1,10 @@
+# The repository's rules (../.swiftlint.yml) less those against trapping: a
+# test that traps fails, which is what it should do, and `try!`, `as!` and
+# `!` keep fixtures short.
+parent_config: ../.swiftlint.yml
+
+disabled_rules:
+  - force_cast
+  - force_try
+  - force_unwrapping
+  - implicitly_unwrapped_optional

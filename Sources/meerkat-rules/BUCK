@@ -1,0 +1,102 @@
+load("//buck2/rules:check.bzl", "command", "command_test")
+
+# The rule toolchain's checks (`bun run check` runs them too): the type
+# checker the daemon compiles with (tsrs), Oxlint (type-aware, on tsrslint) with the meerkat/* rules, and
+# Oxfmt. Each runs from the repository root over the rule code here and the
+# runtime's JavaScript and declarations (Sources/meerkat-runtime/js, Sources/meerkat-runtime/types), with the
+# root .oxlintrc.json and .oxfmtrc.json.
+
+_RULE_CODE = ["Sources/meerkat-rules", "Sources/meerkat-runtime/js", "Sources/meerkat-runtime/types"]
+
+_OXFMT = "$(location //buck2/third_party/js:oxfmt[oxfmt-aarch64-apple-darwin])"
+
+# What Oxfmt formats beside the rule code. Tools/Bundler/AppIcon.icon/icon.json
+# is Icon Composer's, which rewrites it on every save.
+_FORMATTED = ["Sources/meerkat-lint/policy", ".oxlintrc.json", ".oxfmtrc.json", ".zed/settings.json"]
+
+# The runtime's declarations (composed by Sources/meerkat-runtime/build.rs, checked in), for
+# `meerkat rules check`, which does not link the runtime.
+export_file(
+    name = "deno.d.ts",
+    src = "deno.d.ts",
+    visibility = ["PUBLIC"],
+)
+
+_SRCS = glob(["**/*.ts", "tsconfig.json"])
+
+command_test(
+    name = "tsrs",
+    command = ["$(location //buck2/third_party/js:tsrs)/tsrs", "-p", "Sources/meerkat-rules"],
+    srcs = _SRCS,
+)
+
+command_test(
+    name = "oxlint",
+    command = ["$(location //buck2/third_party/js:oxlint[oxlint-aarch64-apple-darwin])"] + _RULE_CODE,
+    env = {"OXLINT_TSGOLINT_PATH": "$(location //buck2/third_party/js:tsrslint[tsrslint])"},
+    srcs = _SRCS,
+)
+
+command_test(
+    name = "meerkat-lint",
+    command = ["$(exe //Sources/meerkat-lint:meerkat-lint)"] + _RULE_CODE,
+    srcs = _SRCS,
+)
+
+command_test(
+    name = "oxfmt",
+    command = [_OXFMT, "--check"] + _RULE_CODE + _FORMATTED,
+    srcs = _SRCS,
+)
+
+# Rewrites formatting only.
+command(
+    name = "fmt",
+    command = [_OXFMT] + _RULE_CODE + _FORMATTED,
+)
+
+# Oxlint's and meerkat-lint's fixes, then Oxfmt, until
+# the lint passes (a fix can enable another), at most five passes.
+command(
+    name = "fix",
+    visibility = ["PUBLIC"],
+    command = [
+        "/bin/sh",
+        "-c",
+        """
+        oxlint=$1 tsrslint=$2 meerkat_lint=$3 oxfmt=$4
+        shift 4
+        for pass in 1 2 3 4 5; do
+            OXLINT_TSGOLINT_PATH=$tsrslint "$oxlint" --fix "$@" > /dev/null
+            "$meerkat_lint" --fix "$@" > /dev/null
+            "$oxfmt" "$@" %s > /dev/null
+            if OXLINT_TSGOLINT_PATH=$tsrslint "$oxlint" "$@" > /dev/null 2>&1 && "$meerkat_lint" "$@" > /dev/null 2>&1; then
+                exit 0
+            fi
+        done
+        OXLINT_TSGOLINT_PATH=$tsrslint "$oxlint" "$@"; "$meerkat_lint" "$@"
+        """ % " ".join(_FORMATTED),
+        "fix",
+        "$(location //buck2/third_party/js:oxlint[oxlint-aarch64-apple-darwin])",
+        "$(location //buck2/third_party/js:tsrslint[tsrslint])",
+        "$(exe //Sources/meerkat-lint:meerkat-lint)",
+        _OXFMT,
+    ] + _RULE_CODE,
+)
+
+# Rewrites the files `meerkat` generates. deno.d.ts is
+# //Sources/meerkat-runtime:regenerate's.
+command(
+    name = "regenerate",
+    visibility = ["PUBLIC"],
+    command = [
+        "/bin/sh",
+        "-c",
+        """
+        "$1" types --output Sources/meerkat-rules/meerkat.d.ts &&
+        "$1" config schema --output Sources/meerkat-rules/meerkat.schema.json
+        """,
+        "regenerate",
+        "$(exe //Sources/meerkat:meerkat)",
+    ],
+)

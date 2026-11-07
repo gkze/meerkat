@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Every check the repository has, through Buck: a debug `buck2 build` of
+# everything outside buck2/third_party but the release bundles (every module,
+# crate, executable and test, warnings as errors) and `buck2 test //...`
+# (formatting and lints per module and crate, the TypeScript checks,
+# conformance of Package.swift, Package.resolved and
+# Sources/meerkat-rules/bun.lock with the BUCK files, and the test suites).
+# Each check is its own target, so one can be run alone
+# (`buck2 test //Sources/MeerkatKit:MeerkatKit-format`). Run from anywhere;
+# exits non-zero if either step failed, after running both.
+#
+#   Tools/check          check only
+#   Tools/check --fix    `buck2 run //:fix` first: rewrite formatting and
+#                        apply lint fixes, then check
+set -uo pipefail
+
+cd "$(dirname "$0")/.." || exit 1
+
+case ${1:-} in
+--fix) buck2 run //:fix || exit 1 ;;
+"") ;;
+*)
+    echo "usage: Tools/check [--fix]" >&2
+    exit 2
+    ;;
+esac
+
+# Every target outside buck2/third_party, found by query, so a new package is
+# built without being listed here. Not `//...`, which also builds
+# buck2/third_party's targets for their own sake: every crate's build script
+# again in debug, and crates nothing here uses. What is used builds as a
+# dependency. Nor the release bundles, whose parts are a second, release build
+# of everything: CI builds them on a runner of their own
+# (.github/workflows/ci.yml), and `buck2 run //Tools/Bundler:app` locally.
+labels=$(buck2 uquery '//... - //buck2/third_party/... - attrfilter(mode, release, kind(bundle_command, //...))') ||
+    exit 1
+targets=()
+while IFS= read -r target; do targets+=("$target"); done <<<"$labels"
+
+status=0
+buck2 build --keep-going "${targets[@]}" || status=1
+buck2 test //... || status=1
+exit $status

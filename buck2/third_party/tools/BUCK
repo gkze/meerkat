@@ -1,0 +1,5 @@
+# The pinned linters and formatters, from TOOLS in defs.bzl.
+
+load(":defs.bzl", "tools")
+
+tools()

@@ -1,0 +1,81 @@
+// The Oxlint policy for rule code: the repository's examples and runtime
+// sources, and every rules folder. The root .oxlintrc.json extends it, and
+// the daemon writes a copy into each rules folder's .meerkat/, which that
+// folder's .oxlintrc.json extends. Ignores and per-file overrides belong in
+// the extending file: Oxlint does not inherit ignorePatterns.
+//
+// The meerkat/* rules are not here: Oxc's standalone Oxlint has no
+// JavaScript plugin host, so Sources/meerkat-lint (meerkat-lint) runs them natively,
+// next to Oxlint.
+{
+  // Every stable category is an error; nursery is left out because its
+  // rules are unfinished and change between releases. Each rule turned off
+  // below either contradicts a rule that stays on, is owned by another tool,
+  // or bans a language feature rather than a mistake.
+  "plugins": ["eslint", "typescript", "unicorn", "oxc", "import", "promise", "jsdoc"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "pedantic": "error",
+    "perf": "error",
+    "style": "error",
+    "restriction": "error"
+  },
+  "options": {
+    // Type-aware rules run on tsrslint, the backend OXLINT_TSGOLINT_PATH
+    // names. Type errors themselves are reported by tsrs, the compiler,
+    // not by the linter.
+    "typeAware": true,
+    "denyWarnings": true,
+    "reportUnusedDisableDirectives": "error"
+  },
+  "rules": {
+    // Named exports only: import/no-default-export stays on, and these
+    // three contradict it.
+    "import/no-named-export": "off",
+    "import/prefer-default-export": "off",
+    "import/group-exports": "off",
+    // Oxfmt's sortImports owns import order.
+    "eslint/sort-imports": "off",
+
+    // Bans on language features the es2024 target has, not on mistakes.
+    "eslint/no-ternary": "off",
+    "oxc/no-async-await": "off",
+    "oxc/no-optional-chaining": "off",
+    "oxc/no-rest-spread-properties": "off",
+    // null and undefined are different values here: JSON null in the
+    // runtime's op protocol and state API, undefined for an absent optional
+    // field under exactOptionalPropertyTypes.
+    "eslint/no-undefined": "off",
+    "unicorn/no-null": "off",
+
+    // Key order in rule definitions is written for reading (name, on,
+    // params, match, handle), not sorted.
+    "eslint/sort-keys": "off",
+    // Checks each `//` line alone, so every wrapped comment fails.
+    "eslint/capitalized-comments": "off",
+    // One binding per declaration keeps its comment and its diff local.
+    "eslint/one-var": "off",
+    // A `let` assigned in try/catch has no initial value to give it.
+    "eslint/init-declarations": "off",
+    // Destructure only where it reads better, not by default.
+    "eslint/prefer-destructuring": "off",
+    // Handler parameters are typed by the generated declarations, so rule
+    // code cannot satisfy this.
+    "typescript/prefer-readonly-parameter-types": "off",
+    // Types already state parameters and results; doc comments say why.
+    "jsdoc/require-param": "off",
+    "jsdoc/require-returns": "off",
+
+    "eslint/no-magic-numbers": ["error", { "ignore": [-1, 0, 1], "ignoreArrayIndexes": true }],
+
+    // Compact form, with fixes: meerkat-lint's const-arrow-functions,
+    // compact-arrow-returns and compact-control-statements own these
+    // shapes. The native rules they replace have no fix (func-style) or
+    // leave whitespace Oxfmt then moves; curly's default also requires
+    // braces.
+    "eslint/func-style": "off",
+    "eslint/arrow-body-style": "off",
+    "eslint/curly": "off"
+  }
+}

@@ -1,0 +1,25 @@
+load(":defs.bzl", "execution_platform")
+
+# Target platforms: the host (macOS on Apple silicon, from the prelude's host
+# detection) in each build mode.
+[
+    platform(
+        name = mode,
+        constraint_values = ["//buck2/config:mode[{}]".format(mode)],
+        deps = ["prelude//platforms:default"],
+        visibility = ["PUBLIC"],
+    )
+    for mode in ["debug", "release"]
+]
+
+# Build tools — Swift macro plugins and the swift-syntax they link, Rust
+# build scripts and proc macros — always build optimized, whatever the
+# targets' mode: the compiler runs macro plugins on every expansion, and
+# swift-syntax unoptimized makes that many times slower (SwiftPM uses a
+# prebuilt release swift-syntax for the same reason). One build of each
+# serves debug and release targets alike.
+execution_platform(
+    name = "exec",
+    platform = ":release",
+    visibility = ["PUBLIC"],
+)

@@ -1,0 +1,6 @@
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_test")
+
+meerkat_swift_test(
+    name = "ReleaseVersionTests",
+    deps = ["//Tools/ReleaseVersion:ReleaseVersion"],
+)

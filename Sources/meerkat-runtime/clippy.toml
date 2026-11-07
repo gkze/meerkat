@@ -1,0 +1,3 @@
+# Names clippy's `doc_markdown` would otherwise read as code identifiers.
+# ".." keeps clippy's own list.
+doc-valid-idents = ["UniFFI", ".."]

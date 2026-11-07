@@ -1,0 +1,18 @@
+load(":defs.bzl", "V8_VERSION")
+
+# The prebuilt V8 the `v8` crate's build script would download (see
+# fixups.toml), for V8_VERSION (defs.bzl). Update `sha256` with it.
+http_file(
+    name = "librusty_v8.a.gz",
+    sha256 = "5aeffd8d5a0c1b79ac1d70af83d5b19099655fd9c645a794dc43f101f779838c",
+    urls = ["https://github.com/denoland/rusty_v8/releases/download/v{}/librusty_v8_simdutf_release_aarch64-apple-darwin.a.gz".format(V8_VERSION)],
+)
+
+# gn_out/obj as the build script leaves it: the directory rustc searches.
+genrule(
+    name = "obj",
+    srcs = [":librusty_v8.a.gz"],
+    out = "obj",
+    cmd = "mkdir -p $OUT && gunzip -c $SRCS > $OUT/librusty_v8.a",
+    visibility = ["//buck2/third_party/rust/..."],
+)

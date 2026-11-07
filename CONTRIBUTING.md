@@ -1,0 +1,21 @@
+# Contributing
+
+Meerkat is pre-alpha: formats, the rule API and stored data change without
+migration, and there is no compatibility code to keep old ones working.
+
+- [AGENTS.md](AGENTS.md) is the short guide for anyone changing the code,
+  person or agent: the build, which check to run for which change, generated
+  files and the repository's rules.
+- [docs/development.md](docs/development.md) has the checks, style, tests,
+  releases and CI in full; [docs/architecture.md](docs/architecture.md) is
+  the map, and [docs/design/](docs/design/) holds each part's reasons.
+- Run `Tools/check` before you open a pull request. A cold build takes tens
+  of minutes; [README, "Building on another Mac"](README.md#building-on-another-mac)
+  moves it to a spare Mac.
+- Pull requests from forks run no CI until a maintainer pushes their commits
+  to a branch here ([docs/development.md, "CI runner"](docs/development.md#ci-runner)
+  says why).
+- Report a vulnerability privately, as [SECURITY.md](SECURITY.md) says, not
+  in an issue.
+
+Contributions are under the [MIT licence](LICENSE), as the rest of the code is.

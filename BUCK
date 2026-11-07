@@ -1,0 +1,201 @@
+load("//buck2/rules:check.bzl", "command", "command_test", "files_test", "over_files", "run_all", "swift_format_fix", "swift_format_test", "swiftlint_test")
+load("//buck2/rules:conformance.bzl", "swiftpm_graph_test")
+load("//buck2/rules:rust.bzl", "rustfmt_fix")
+load("//buck2/third_party/tools:defs.bzl", "tool")
+
+# Read by //Tools/Notices.
+[
+    export_file(name = file, src = file, visibility = ["PUBLIC"])
+    for file in ["Package.resolved", "rustfmt.toml"]
+]
+
+# Package.swift (for SourceKit-LSP and Xcode) declares the Swift targets Buck
+# builds, with the same dependencies, Swift settings and macOS: every
+# first-party Swift or C module that SwiftPM's products and tests reach.
+swiftpm_graph_test(
+    name = "package_swift_test",
+    targets = """
+        filter('^root//(Sources|Tests|Tools)/',
+            kind('swift_library|swift_binary|swift_test|clang_module',
+                deps(set(
+                    //Sources/MeerkatApp:MeerkatApp
+                    //Sources/meerkat:meerkat
+                    //Sources/meerkatd:meerkatd
+                    //Tests/CLITests:CLITests
+                    //Tests/MeerkatAppTests:MeerkatAppTests
+                    //Tests/MeerkatDaemonTests:MeerkatDaemonTests
+                    //Tests/MeerkatKitTests:MeerkatKitTests
+                    //Tests/ReleaseVersionTests:ReleaseVersionTests
+                    //Tools/Bundler:bundle
+                    //Tools/Release:release
+                ))))
+    """,
+    minimum_macos = read_root_config("meerkat", "minimum_macos"),
+)
+
+swift_format_test(
+    name = "Package.swift-format",
+    srcs = ["Package.swift"],
+)
+
+swiftlint_test(
+    name = "Package.swift-lint",
+    srcs = ["Package.swift"],
+    config = ".swiftlint.yml",
+)
+
+# Checks of the files no module owns: Starlark, shell, the workflow, TOML and
+# Markdown, each over the whole repository (`over_files`). The tools are
+# pinned in buck2/third_party/tools.
+
+# Generated Starlark is its generator's.
+_BUILD_FILES = ["*BUCK", "*PACKAGE", ":(exclude)buck2/third_party/rust/BUCK"]
+_BZL_FILES = ["*.bzl", ":(exclude)buck2/third_party/swift/modules.bzl"]
+
+# buck2's own linter, which knows its dialect (typed Starlark, its built-ins).
+# There is no formatter: buildifier, the only one, writes Bazel's layout
+# (hanging signatures, reordered attributes), not this repository's.
+# It runs in an isolation directory of its own, as a daemon beside the one
+# running this test, and stops that daemon after.
+command_test(
+    name = "starlark-lint",
+    command = over_files(
+        [
+            "/bin/sh",
+            "-c",
+            'buck2 --isolation-dir starlark-lint starlark lint "$@"; status=$?; ' +
+            "buck2 --isolation-dir starlark-lint kill > /dev/null 2>&1; exit $status",
+            "starlark-lint",
+        ],
+        _BUILD_FILES + _BZL_FILES,
+    ),
+    labels = ["lint"],
+)
+
+# Shell scripts are found by extension or shebang: Tools/check has neither
+# `.sh` nor a BUCK target. zsh is not shellcheck's; none is here.
+_SHELL_SCRIPTS = [
+    "/bin/bash",
+    "-c",
+    """
+    for file; do
+        if [[ $file == *.sh || $file == *.bash ]]; then echo "$file"; continue; fi
+        IFS= read -r line < "$file" 2> /dev/null || continue
+        if [[ $line =~ ^#!.*[/[:space:]](ba|da|k)?sh([[:space:]]|$) ]]; then echo "$file"; fi
+    done
+    """,
+    "shell-scripts",
+]
+
+files_test(
+    name = "shellcheck",
+    command = [tool("shellcheck")],
+    pathspecs = ["."],
+    keep = _SHELL_SCRIPTS,
+)
+
+# 4-space indentation, as the scripts are written; otherwise shfmt's defaults.
+_SHFMT = [tool("shfmt"), "--indent", "4"]
+
+files_test(
+    name = "shfmt",
+    command = _SHFMT + ["--diff"],
+    pathspecs = ["."],
+    keep = _SHELL_SCRIPTS,
+    labels = ["format"],
+)
+
+# The workflow: actionlint for expressions, contexts and the job graph (and
+# shellcheck over its `run:` steps), zizmor for injection, credentials and
+# permissions. zizmor runs offline: its online audits need a GitHub token.
+command_test(
+    name = "actionlint",
+    command = [tool("actionlint"), "-shellcheck", tool("shellcheck")],
+    labels = ["lint"],
+)
+
+files_test(
+    name = "zizmor",
+    command = [tool("zizmor"), "--offline", "--config", ".github/zizmor.yml"],
+    pathspecs = [".github/workflows/*.yml", ".github/actions/*/action.yml", ".github/dependabot.yml"],
+)
+
+# TOML, by tombi's defaults. Offline: no schema is fetched.
+_TOML_FILES = ["*.toml"]
+
+files_test(
+    name = "toml-format",
+    command = [tool("tombi"), "format", "--offline", "--check"],
+    pathspecs = _TOML_FILES,
+    labels = ["format"],
+)
+
+files_test(
+    name = "toml-lint",
+    command = [tool("tombi"), "lint", "--offline"],
+    pathspecs = _TOML_FILES,
+)
+
+# Markdown, with .rumdl.toml, and the links between the repository's files
+# and to their headings (lychee, offline: no web link is fetched).
+# CLAUDE.md is an import directive (`@AGENTS.md`), not a document.
+_MARKDOWN_FILES = ["*.md", ":(exclude)CLAUDE.md"]
+
+files_test(
+    name = "markdown-lint",
+    command = [tool("rumdl"), "check", "--no-cache"],
+    pathspecs = _MARKDOWN_FILES,
+)
+
+files_test(
+    name = "markdown-links",
+    command = [tool("lychee"), "--offline", "--include-fragments", "--no-progress"],
+    pathspecs = _MARKDOWN_FILES,
+)
+
+# `buck2 run //:fix` rewrites formatting and applies lint fixes in every
+# language (`Tools/check --fix` runs it first); `buck2 test //...` checks.
+swift_format_fix(
+    name = "swift-format-fix",
+    paths = ["Package.swift", "Sources", "Tests", "Tools", "buck2/conformance"],
+)
+
+rustfmt_fix(
+    name = "rustfmt-fix",
+    paths = ["Sources/meerkat-runtime", "Sources/meerkat-lint", "Tools/Notices"],
+)
+
+command(
+    name = "shfmt-fix",
+    command = over_files(_SHFMT + ["--write"], ["."], keep = _SHELL_SCRIPTS),
+)
+
+command(
+    name = "toml-fix",
+    command = over_files([tool("tombi"), "format", "--offline"], _TOML_FILES),
+)
+
+command(
+    name = "markdown-fix",
+    command = over_files([tool("rumdl"), "check", "--no-cache", "--fix"], _MARKDOWN_FILES),
+)
+
+run_all(
+    name = "fix",
+    commands = [
+        ":swift-format-fix",
+        ":rustfmt-fix",
+        ":shfmt-fix",
+        ":toml-fix",
+        ":markdown-fix",
+        "//Sources/meerkat-rules:fix",
+        # Builds meerkatd's static library, then rewrites the checked-in bindings in
+        # Sources/meerkat-runtime from it.
+        "//Sources/meerkat-runtime/bindgen:regenerate",
+        "//Sources/meerkat-runtime:regenerate",
+        "//Sources/meerkat-rules:regenerate",
+        "//buck2/third_party/swift:regenerate",
+        "//buck2/third_party/rust/check:regenerate",
+        "//Tools/Notices:regenerate",
+    ],
+)
