@@ -25,6 +25,11 @@ struct RollingSeries<Value> {
 
     var last: Value? { points.last?.value }
 
+    /// What a chart draws: `points` after the newest departed samples
+    /// `SlidingPlotView.spare` counts, which cover the left edge while a
+    /// glide is cut short.
+    var drawn: [Point] { departed.suffix(SlidingPlotView.spare) + points }
+
     init() {}
 
     private init(points: [Point], departed: [Point], capacity: Int, sequence: Int) {

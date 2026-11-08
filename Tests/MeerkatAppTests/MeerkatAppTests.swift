@@ -140,12 +140,15 @@ struct RollingSeriesTests {
     func windowWhileFilling() {
         var series = RollingSeries<Double>()
         series.append(1, limit: 5)
-        #expect(windowDomain(series) == -3...1)
+        #expect(windowDomain(series) == -4...1)
         series.append(2, limit: 5)
-        #expect(windowDomain(series) == -2...2)
+        #expect(windowDomain(series) == -3...2)
+        #expect(series.drawn.map(\.id) == [1, 2])
         for value in 3...7 { series.append(Double(value), limit: 5) }
-        #expect(windowDomain(series) == 3...7)
+        #expect(windowDomain(series) == 2...7)
         #expect(series.points.map(\.id) == [3, 4, 5, 6, 7])
+        // The spare departed sample covers an interrupted glide's left edge.
+        #expect(series.drawn.map(\.id) == [2, 3, 4, 5, 6, 7])
         #expect(series.map { $0 * 2 }.capacity == 5)
     }
 
@@ -186,6 +189,13 @@ struct SlidingPlotTests {
         #expect(SlidingPlotView.glideDuration(gap: 2) == 2)
         #expect(SlidingPlotView.glideDuration(gap: 0) == 0.1)
         #expect(SlidingPlotView.glideDuration(gap: 3600) == SamplingRates.chartSpan)
+    }
+
+    @Test("a glide cut short starts from where the drawing is, as far as the hidden slots reach")
+    func glideStart() {
+        #expect(SlidingPlotView.glideStart(slot: 10, inFlight: 0) == 10)
+        #expect(SlidingPlotView.glideStart(slot: 10, inFlight: 4) == 14)
+        #expect(SlidingPlotView.glideStart(slot: 10, inFlight: 25) == CGFloat(SlidingPlotView.hidden) * 10)
     }
 
     @Test("a new scale starts stretched to look like the one shown")

@@ -336,7 +336,7 @@ private struct ProcessTile: View {
             .lineLimit(1)
             .minimumScaleFactor(0.8)
             SlidingPlot(step: series.points.last?.id ?? 0, capacity: series.capacity, values: values) {
-                Chart(series.points) { point in
+                Chart(series.drawn) { point in
                     AreaMark(x: .value("Time", point.id), y: .value(label, point.value))
                         .foregroundStyle(tint.opacity(0.16))
                         .interpolationMethod(.monotone)
