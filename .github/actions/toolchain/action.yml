@@ -2,7 +2,8 @@ name: Toolchain
 description: >
   The Buck2 release, Xcode and Rust release (with clippy and rustfmt)
   .buckconfig pins, and Python. The runner provides Xcode and rustup
-  (docs/development.md, "CI runner").
+  (docs/development.md, "CI runner"). On a Linux arm64 runner, which runs
+  only the `portable` checks, there is no Xcode to select.
 
 runs:
   using: composite
@@ -13,24 +14,35 @@ runs:
       with:
         python-version: "3.13"
     # `[buck2_release]` in .buckconfig: facebook/buck2's release tag and the
-    # sha256 of its buck2-aarch64-apple-darwin.zst (GitHub's asset digest),
-    # read without Buck, which is not here yet.
+    # sha256 of its asset for this host (GitHub's asset digest), read
+    # without Buck, which is not here yet.
     - name: Install the Buck2 release .buckconfig pins
       shell: bash
+      env:
+        RUNNER_OS_NAME: ${{ runner.os }}
+        RUNNER_ARCH_NAME: ${{ runner.arch }}
       # GITHUB_PATH gets a fixed directory, not one derived from any input.
       run: | # zizmor: ignore[github-env]
+        case "$RUNNER_OS_NAME/$RUNNER_ARCH_NAME" in
+        macOS/ARM64) host=macos_arm64 asset=buck2-aarch64-apple-darwin.zst ;;
+        Linux/ARM64) host=linux_arm64 asset=buck2-aarch64-unknown-linux-gnu.zst ;;
+        *)
+          echo "no buck2 pin for a $RUNNER_OS_NAME $RUNNER_ARCH_NAME runner" >&2
+          exit 1
+          ;;
+        esac
         pin() {
           awk -v key="$1" '/^\[/ { section = $0 } section == "[buck2_release]" && $1 == key && $2 == "=" { print $3 }' .buckconfig
         }
         release=$(pin tag)
-        sha256=$(pin sha256)
+        sha256=$(pin "sha256_$host")
         if [ -z "$release" ] || [ -z "$sha256" ]; then
-          echo "no [buck2_release] tag and sha256 in .buckconfig" >&2
+          echo "no [buck2_release] tag and sha256_$host in .buckconfig" >&2
           exit 1
         fi
         mkdir -p "$RUNNER_TEMP/bin"
         curl --fail --location --silent --show-error --output "$RUNNER_TEMP/buck2.zst" \
-          "https://github.com/facebook/buck2/releases/download/$release/buck2-aarch64-apple-darwin.zst"
+          "https://github.com/facebook/buck2/releases/download/$release/$asset"
         echo "$sha256  $RUNNER_TEMP/buck2.zst" | shasum -a 256 --check
         zstd --quiet --decompress "$RUNNER_TEMP/buck2.zst" -o "$RUNNER_TEMP/bin/buck2"
         chmod +x "$RUNNER_TEMP/bin/buck2"
@@ -39,6 +51,7 @@ runs:
     # //buck2/rules/swift:xcode_test fails on any build but the pinned one, so
     # find that build among the Xcodes the image keeps.
     - name: Select the Xcode .buckconfig pins
+      if: runner.os == 'macOS'
       shell: bash
       # GITHUB_ENV gets a path from the image's /Applications, not from an input.
       run: | # zizmor: ignore[github-env]

@@ -9,6 +9,9 @@ migration, and there is no compatibility code to keep old ones working.
 - [docs/development.md](docs/development.md) has the checks, style, tests,
   releases and CI in full; [docs/architecture.md](docs/architecture.md) is
   the map, and [docs/design/](docs/design/) holds each part's reasons.
+- `buck2 run //:install-hooks` installs Git hooks that run the quick checks
+  (file hygiene and secrets on commit, formatting and lints on push), as
+  [docs/development.md, "Git hooks"](docs/development.md#git-hooks) says.
 - Run `Tools/check` before you open a pull request. A cold build takes tens
   of minutes; [docs/building.md, "Building on another Mac"](docs/building.md#building-on-another-mac)
   moves it to a spare Mac.

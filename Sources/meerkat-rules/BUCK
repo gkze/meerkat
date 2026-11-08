@@ -28,6 +28,7 @@ command_test(
     name = "tsrs",
     command = ["$(location //buck2/third_party/js:tsrs)/tsrs", "-p", "Sources/meerkat-rules"],
     srcs = _SRCS,
+    labels = ["lint"],
 )
 
 command_test(
@@ -35,8 +36,10 @@ command_test(
     command = ["$(location //buck2/third_party/js:oxlint[oxlint-aarch64-apple-darwin])"] + _RULE_CODE,
     env = {"OXLINT_TSGOLINT_PATH": "$(location //buck2/third_party/js:tsrslint[tsrslint])"},
     srcs = _SRCS,
+    labels = ["lint"],
 )
 
+# No label: it builds meerkat-lint (buck2/rules/check.bzl, "Labels").
 command_test(
     name = "meerkat-lint",
     command = ["$(exe //Sources/meerkat-lint:meerkat-lint)"] + _RULE_CODE,
@@ -47,6 +50,7 @@ command_test(
     name = "oxfmt",
     command = [_OXFMT, "--check"] + _RULE_CODE + _FORMATTED,
     srcs = _SRCS,
+    labels = ["format"],
 )
 
 # Rewrites formatting only.

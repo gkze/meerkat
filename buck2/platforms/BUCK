@@ -1,7 +1,8 @@
 load(":defs.bzl", "execution_platform")
 
-# Target platforms: the host (macOS on Apple silicon, from the prelude's host
-# detection) in each build mode.
+# Target platforms: the host (macOS on Apple silicon, or Linux on arm64 for
+# the `portable` checks, from the prelude's host detection) in each build
+# mode.
 [
     platform(
         name = mode,
@@ -23,3 +24,18 @@ execution_platform(
     platform = ":release",
     visibility = ["PUBLIC"],
 )
+
+# The hosts the pinned tools (buck2/third_party/tools) have an executable
+# for, which their downloads select on: macOS, where everything builds, and
+# Linux, which runs the `portable` checks (.github/workflows/ci.yml).
+[
+    config_setting(
+        name = "{}-arm64".format(os),
+        constraint_values = [
+            "prelude//os/constraints:os[{}]".format(os),
+            "prelude//cpu/constraints:cpu[arm64]",
+        ],
+        visibility = ["PUBLIC"],
+    )
+    for os in ["macos", "linux"]
+]

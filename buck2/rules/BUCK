@@ -17,10 +17,11 @@ command_test(
         fi
         """,
     ],
+    labels = ["portable"],
 )
 
-# `[buck2_release] version` in .buckconfig is the buck2 these files are
-# written for. The check is of the buck2 on PATH, which is the one that runs
+# `[buck2_release] version_<host>` in .buckconfig is the buck2 these files
+# are written for, as this host's build of it reports itself. The check is of the buck2 on PATH, which is the one that runs
 # them unless a build names another.
 command_test(
     name = "buck2_test",
@@ -30,15 +31,19 @@ command_test(
         """
         actual=`buck2 --version 2>&1`
         if [ "$actual" != "buck2 $1" ]; then
-            echo "[buck2_release] version in .buckconfig is $1, but buck2 on PATH (`command -v buck2`) is: $actual"
+            echo "[buck2_release] in .buckconfig names buck2 $1 for this host, but buck2 on PATH (`command -v buck2`) is: $actual"
             echo "install facebook/buck2's release $2, or change [buck2_release]"
             exit 1
         fi
         """,
         "buck2_test",
-        read_root_config("buck2_release", "version"),
+        select({
+            "//buck2/platforms:{}".format(host): read_root_config("buck2_release", "version_" + host.replace("-", "_"))
+            for host in ["macos-arm64", "linux-arm64"]
+        }),
         read_root_config("buck2_release", "tag"),
     ],
+    labels = ["portable"],
 )
 
 # `[rust] release` in .buckconfig is the Rust every Rust action runs, through
@@ -63,4 +68,5 @@ command_test(
         "rust_test",
         read_root_config("rust", "release"),
     ],
+    labels = ["portable"],
 )

@@ -47,15 +47,20 @@
 [rust]
   release = 1.99.1
 
-# The buck2 every build runs. `tag` is facebook/buck2's release and `sha256`
-# the digest of its buck2-aarch64-apple-darwin.zst, which CI installs
-# (.github/actions/toolchain); `version` is what that binary's `buck2
-# --version` reports, which //buck2/rules:buck2_test checks. Another buck2
-# brings its own bundled prelude, so may build something else without failing.
+# The buck2 every build runs. `tag` is facebook/buck2's release; for each
+# host CI installs it on (.github/actions/toolchain), `sha256_<host>` is the
+# digest of its asset, buck2-aarch64-apple-darwin.zst on macOS and
+# buck2-aarch64-unknown-linux-gnu.zst on Linux, and `version_<host>` what
+# that binary's `buck2 --version` reports, which //buck2/rules:buck2_test
+# checks. The two differ: the release's Linux build is not stamped with the
+# date. Another buck2 brings its own bundled prelude, so may build something
+# else without failing.
 [buck2_release]
   tag = 2026-10-15
-  sha256 = 62e20927aae73b5350f767d10c96d344ac96d361b8d05925f59a0fcd3c7b5cdf
-  version = 2026-10-14-9a1876786f32806f6b65fc51f4c1c3077efc38a5
+  sha256_macos_arm64 = 62e20927aae73b5350f767d10c96d344ac96d361b8d05925f59a0fcd3c7b5cdf
+  sha256_linux_arm64 = 0d6b4420f5ccedcc46c9cca09183448c523c75efb37b0f8e627a63c344b3d80c
+  version_macos_arm64 = 2026-10-14-9a1876786f32806f6b65fc51f4c1c3077efc38a5
+  version_linux_arm64 = ac801fef18ca26bb3c5e5637f5e2cd1359ca5160 <build-id>
 
 # The facebookincubator/reindeer commit CI installs to generate
 # buck2/third_party/rust/BUCK. Reindeer reports no version to check; what it

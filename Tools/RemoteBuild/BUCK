@@ -35,9 +35,10 @@ command(
         "--developer-dir",
         read_root_config("swift", "developer_dir"),
     ] + [
-        # What the toolchain tests check, as this Mac reads them.
+        # What the toolchain tests check, as this Mac reads them. The host is
+        # a Mac too, so the buck2 is macOS's.
         arg
-        for section, key in [("swift", "xcode_build"), ("rust", "release"), ("buck2_release", "version")]
+        for section, key in [("swift", "xcode_build"), ("rust", "release"), ("buck2_release", "version_macos_arm64")]
         for arg in ["--pin", "{}.{}={}".format(section, key, read_root_config(section, key))]
     ],
 )

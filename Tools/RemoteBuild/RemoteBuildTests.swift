@@ -28,7 +28,9 @@ import Testing
 /// A pin reaches the host as `buck2 -c section.key=value`; one without a
 /// value would leave the host's own setting in force.
 @Suite struct PinTests {
-    @Test(arguments: ["swift.xcode_build=27B52", "rust.release=1.99.1", "buck2_release.version=2026-10-14-9a18=x"])
+    @Test(arguments: [
+        "swift.xcode_build=27B52", "rust.release=1.99.1", "buck2_release.version_macos_arm64=2026-10-14-9a18=x",
+    ])
     func accepted(pin: String) {
         #expect(RemoteBuild.isPin(pin))
     }

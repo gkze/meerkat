@@ -3,9 +3,10 @@ name: CI
 # Every push and pull request runs Tools/check (the check job) and builds
 # Meerkat.app in release mode, signed ad hoc, and runs its CLI against the
 # tools it bundles (the bundle job). The two build in different modes, so each
-# has a runner, and its disk, of its own.
+# has a runner, and its disk, of its own. The portable job runs the checks
+# that need no Mac first, on GitHub's Linux arm64 runner, forks included.
 #
-# Every job runs on the runner label the repository's MEERKAT_RUNNER variable
+# Every other job runs on the runner label the repository's MEERKAT_RUNNER variable
 # names (Settings, Secrets and variables, Actions, Variables): a macOS 27
 # Apple silicon runner, hosted or self-hosted, holding what
 # docs/development.md, "CI runner", lists. A repository without the variable, such as a fork, runs no
@@ -49,6 +50,32 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  portable:
+    # The checks labelled `portable`: those that need neither Xcode nor a
+    # macOS build (formatting and lints of the repository's files, the
+    # toolchain pins, rustfmt, cargo-deny, reindeer and pinact), on a
+    # GitHub-hosted Linux runner. They report in minutes, and run for a pull
+    # request from a fork too: the runner is GitHub's, the token reads only,
+    # and no secret is in reach. The check job runs them again with the rest.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # //:gitleaks reads every commit, not only the tip.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+      - uses: ./.github/actions/reindeer
+      - name: Check
+        env:
+          # //:pinact-verify reads GitHub's API, whose limit without a token
+          # is per address and shared.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -t targets < <(buck2 uquery 'attrfilter(labels, portable, //...)')
+          buck2 test "${targets[@]}"
+
   check:
     if: >-
       vars.MEERKAT_RUNNER != ''
@@ -64,23 +91,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/toolchain
-      # facebookincubator/reindeer, for //buck2/third_party/rust/check:buckify_test.
-      - name: Read the reindeer .buckconfig pins
-        id: reindeer-pin
-        run: echo "rev=$(buck2 audit config --json reindeer.rev | jq --raw-output '."reindeer.rev"')" >> "$GITHUB_OUTPUT"
-      - name: Cache reindeer
-        id: reindeer
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cargo/bin/reindeer
-          key: reindeer-${{ steps.reindeer-pin.outputs.rev }}-${{ runner.os }}-${{ runner.arch }}
-      - name: Install reindeer
-        if: steps.reindeer.outputs.cache-hit != 'true'
-        env:
-          REINDEER_REV: ${{ steps.reindeer-pin.outputs.rev }}
-        run: |
-          cargo install --locked --git https://github.com/facebookincubator/reindeer \
-            --rev "$REINDEER_REV" --features cargo/vendored-openssl reindeer
+      - uses: ./.github/actions/reindeer
       - name: Plan the release
         id: plan
         run: buck2 run //Tools/Release:plan >> "$GITHUB_OUTPUT"
