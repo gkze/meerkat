@@ -8,3 +8,9 @@
 line-length = 120
 code-blocks = false
 tables = false
+
+# The README opens as GitHub's landing page: a centred icon, title and
+# badges, and a screenshot that follows the reader's light or dark mode,
+# which only HTML can lay out. Other pages stay plain Markdown.
+[per-file-ignores]
+"README.md" = ["MD033", "MD041"]

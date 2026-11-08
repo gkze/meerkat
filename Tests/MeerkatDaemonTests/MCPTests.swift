@@ -735,7 +735,7 @@ final class Inbox: Sendable {
     }
 }
 
-/// What MCP may sample by default (README, "MCP"; mcp.md, "Harm model").
+/// What MCP may sample by default (docs/cli.md, "MCP"; mcp.md, "Harm model").
 struct MCPDefaultPolicyTests {
     /// Kinds a rule must name to observe that MCP offers by default, and
     /// why: what each carries is no text a program chose to put there, or

@@ -110,7 +110,7 @@ struct Sample: ParsableCommand, JSONOutput {
     @Flag(help: "Human-readable single sample.")
     var table = false
 
-    @Flag(help: "Only processes whose executable ships with macOS (by path; see README).")
+    @Flag(help: "Only processes whose executable ships with macOS (by path; see docs/cli.md).")
     var systemOnly = false
 
     @Flag(name: .shortAndLong, help: "Suppress the sample output (for recorders).")

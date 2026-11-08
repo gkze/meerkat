@@ -10,7 +10,7 @@ migration, and there is no compatibility code to keep old ones working.
   releases and CI in full; [docs/architecture.md](docs/architecture.md) is
   the map, and [docs/design/](docs/design/) holds each part's reasons.
 - Run `Tools/check` before you open a pull request. A cold build takes tens
-  of minutes; [README, "Building on another Mac"](README.md#building-on-another-mac)
+  of minutes; [docs/building.md, "Building on another Mac"](docs/building.md#building-on-another-mac)
   moves it to a spare Mac.
 - Pull requests from forks run no CI until a maintainer pushes their commits
   to a branch here ([docs/development.md, "CI runner"](docs/development.md#ci-runner)

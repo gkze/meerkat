@@ -51,6 +51,8 @@
     /// decoding as real replies.
     enum SampleData {
         static let isEnabled = ProcessInfo.processInfo.environment["MEERKAT_SAMPLE_DATA"] != nil
+        /// The Mac's name the Overview shows in place of the real one.
+        static let host = "studio.local"
 
         private static let now = Date().timeIntervalSince1970 * 1000
 

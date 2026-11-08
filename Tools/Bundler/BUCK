@@ -1,4 +1,5 @@
 load("//buck2/rules:bundle.bzl", "bundle_command", "directory")
+load("//buck2/rules:check.bzl", "XCODE_ENV", "command", "command_test")
 load("//buck2/rules:meerkat.bzl", "meerkat_swift_binary")
 load(":parts.bzl", "PARTS")
 
@@ -73,4 +74,49 @@ bundle_command(
     mode = "debug",
     preview = True,
     **_COMMON
+)
+
+# docs/images/meerkat-icon.png, the icon the README shows: AppIcon.icon
+# compiled as the bundler compiles it, and the 256-pixel image (128 points at
+# 2x) of the AppIcon.icns that writes, as stored there. actool exits 0 even
+# when it compiles nothing, so a missing AppIcon.icns is the failure, with its
+# report. A genrule's sources are links, which actool refuses, so it compiles
+# a copy. Its icns is the same bytes on every run (Assets.car is not), so the
+# check compares bytes. `xcode_build` is in the environment, as for every Swift
+# action, so a new Xcode renders it again.
+genrule(
+    name = "readme-icon",
+    srcs = glob(["AppIcon.icon/**"]),
+    out = "meerkat-icon.png",
+    env = XCODE_ENV | {"MEERKAT_XCODE_BUILD": read_root_config("swift", "xcode_build")},
+    cmd = """
+    cp -RL "$SRCDIR/AppIcon.icon" "$TMP/AppIcon.icon" &&
+    /usr/bin/xcrun actool "$TMP/AppIcon.icon" --compile "$TMP" \
+        --platform macosx --target-device mac --minimum-deployment-target {} \
+        --app-icon AppIcon --include-all-app-icons \
+        --output-partial-info-plist "$TMP/partial.plist" --errors --warnings > "$TMP/report" &&
+    if [ ! -f "$TMP/AppIcon.icns" ]; then cat "$TMP/report" >&2; exit 1; fi &&
+    /usr/bin/iconutil --convert iconset --output "$TMP/AppIcon.iconset" "$TMP/AppIcon.icns" &&
+    cp "$TMP/AppIcon.iconset/icon_128x128@2x.png" "$OUT"
+    """.format(read_root_config("meerkat", "minimum_macos")),
+)
+
+# `buck2 run` it (or //:fix) to rewrite docs/images/meerkat-icon.png;
+# :icon_test fails while it is stale.
+command(
+    name = "regenerate",
+    command = ["/bin/cp", "-f", "$(location :readme-icon)", "docs/images/meerkat-icon.png"],
+    visibility = ["PUBLIC"],
+)
+
+command_test(
+    name = "icon_test",
+    command = [
+        "/bin/sh",
+        "-c",
+        'cmp -s "$1" "$2" || { echo "docs/images/meerkat-icon.png is stale; regenerate with: buck2 run //Tools/Bundler:regenerate" >&2; exit 1; }',
+        "icon_test",
+        "$(location :readme-icon)",
+        "$(location //:meerkat-icon.png)",
+    ],
 )

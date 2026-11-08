@@ -9,7 +9,8 @@ import SwiftUI
 /// Relaxed preset (2026-10-29). Here each character is its own text layer,
 /// and a change commits once: the render server plays the roll, so the app
 /// does no per-frame work. Digits that change roll up when the value rises
-/// and down when it falls; a change of length swaps the text in place.
+/// and down when it falls. Any other change, of length or of a character
+/// that is not a digit, lays the text out again without a roll.
 /// With Reduce Motion on, nothing rolls.
 struct RollingNumber: NSViewRepresentable {
     let text: String
@@ -79,7 +80,12 @@ final class RollingNumberView: NSView {
         guard new != text else { return }
         let old = text
         text = new
-        guard rolls, window != nil, old.count == new.count, glyphs.count == new.count else {
+        // Only digits share one width (the font's tabular figures), so only
+        // digit-for-digit changes can roll in the slots already laid out:
+        // 589 KB/s becoming 1.3 MB/s puts a point where a digit was, and a
+        // point in a digit's slot leaves a gap, a digit in a point's is cut.
+        let digitsOnly = zip(old, new).allSatisfy { was, now in was == now || (was.isNumber && now.isNumber) }
+        guard rolls, window != nil, old.count == new.count, glyphs.count == new.count, digitsOnly else {
             rebuild()
             return
         }
@@ -99,10 +105,6 @@ final class RollingNumberView: NSView {
             let rest = CGPoint(x: slot.bounds.midX, y: slot.bounds.midY)
             outgoing.position = rest
             outgoing.opacity = 1
-            guard was.isNumber, now.isNumber else {
-                outgoing.string = String(now)
-                continue
-            }
             let incoming = glyph(String(now), in: slot)
             glyphs[index] = incoming
             incoming.add(Self.spring("position.y", from: rest.y + travel, to: rest.y), forKey: "roll")

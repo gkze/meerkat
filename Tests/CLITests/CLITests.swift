@@ -291,7 +291,7 @@ struct MeerkatCLITests {
     }
 }
 
-/// The contract agents rely on (README, "Agent skills"): `--json` wherever
+/// The contract agents rely on (docs/cli.md, "Agent skills"): `--json` wherever
 /// there's data, and exit statuses that mean what they say.
 struct OutputContractTests {
     /// Commands whose output isn't data, and why. Every other command

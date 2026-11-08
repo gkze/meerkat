@@ -136,7 +136,7 @@ save to running are in [meerkatd.md, "Rule states"](design/meerkatd.md#rule-stat
 
 Rules and `meerkat.json`, the compiled rules, the rule store and the sample
 store each have a default location and two ways to move it: the table is in
-the [README, "Storage"](../README.md#storage).
+[configuration.md, "Storage"](configuration.md#storage).
 
 `DaemonPaths` reads these when the daemon starts; the CLI reads the same
 values. `meerkat.json` is read live: a saved change applies without a
@@ -144,13 +144,13 @@ restart.
 
 ## Source tree
 
-`Sources/` holds every module, whatever its language; the README says how
-they are named.
+`Sources/` holds every module, whatever its language;
+[building.md](building.md#repository-layout) says how they are named.
 
 | Path | Role |
 |---|---|
 | `Sources/MeerkatKit` | Samplers, process catalog and identity, the event catalog (descriptors, payloads, parameters, schemas), event sources, the hub, predicate and rate-limit evaluation, `JSONValue`. No dependencies. |
-| `Sources/MeerkatStore` | The sample store (normalized: the README, "Storage") and the rule store (state, logs). GRDB and SQLiteData. |
+| `Sources/MeerkatStore` | The sample store (normalized: configuration.md, "Storage") and the rule store (state, logs). GRDB and SQLiteData. |
 | `Sources/MeerkatIPC` | XPC messages, `DaemonClient` with reconnect and resubscribe, `DaemonPaths`, the `meerkat.json` schema. |
 | `Sources/MeerkatAgent` | `SMAppService` registration, shared by the CLI and the app. |
 | `Sources/MeerkatRules` | The rule compiler (tsrs) and linter over the bundled tools. The CLI uses it without the daemon. |

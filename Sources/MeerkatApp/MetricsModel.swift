@@ -196,6 +196,14 @@ final class MetricsModel {
         self.client = client
         self.isVisible = isVisible
         self.retryDelay = retryDelay
+        #if DEBUG
+            // Sample data is all made up, the Mac's name included, so
+            // screenshots of it show nothing of the Mac they were taken on.
+            if SampleData.isEnabled {
+                host = SampleData.host
+                return
+            }
+        #endif
         Task { [weak self] in
             let host = await Task.detached { ProcessInfo.processInfo.hostName }.value
             self?.host = host

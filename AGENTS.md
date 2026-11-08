@@ -17,8 +17,8 @@ Tools/check --fix    # first rewrites formatting, lint fixes and generated files
 ```
 
 A cold build takes tens of minutes and most of a machine's cores. If you have a
-faster or spare Mac, use `buck2 run //Tools/RemoteBuild:remote` (README, "Build
-and install"). Every check is its own target, so run the one you need:
+faster or spare Mac, use `buck2 run //Tools/RemoteBuild:remote` (docs/building.md,
+"Building on another Mac"). Every check is its own target, so run the one you need:
 `buck2 test //Sources/MeerkatKit:MeerkatKit-format`. Tools/check builds in
 debug; `buck2 run //Tools/Bundler:app -- --identity -` builds the release
 bundle, as CI does.
@@ -55,6 +55,7 @@ Change the authority, not the output. A check fails when one is stale. `buck2 ru
 | `buck2/third_party/rust/BUCK`, `Cargo.lock` | `Cargo.toml` and `fixups/`, through Reindeer | `//buck2/third_party/rust/check:buckify_test` |
 | `buck2/third_party/swift/modules.bzl` | each Swift package's manifest at its pin in `buck2/third_party/swift/BUCK` | `//buck2/third_party/swift:manifest_test` |
 | `Tools/Notices/bundled_crates.bzl` | the Cargo.lock files `LOCKFILES` in `Tools/Notices/BUCK` pins | `//Tools/Notices:notices` |
+| `docs/images/meerkat-icon.png` | `Tools/Bundler/AppIcon.icon`, through actool at `[swift] developer_dir` | `//Tools/Bundler:icon_test` |
 
 ## Rules of the repository
 
@@ -65,7 +66,7 @@ Change the authority, not the output. A check fails when one is stale. `buck2 ru
 - **Generators live in the pipeline.** No loose scripts: a task that produces a
   committed file is a Buck target with a staleness check.
 - **Comments say why.** Match the code around you: its density, naming and idiom.
-- **Docs are part of the change.** Keep the README and the design notes true.
+- **Docs are part of the change.** Keep the README, `docs/` and the design notes true.
 
 ## Trust boundaries
 

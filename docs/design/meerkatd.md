@@ -1010,7 +1010,7 @@ sequenceDiagram
 The dashboard's Overview subscribes only while its window is visible and
 cancels its subscriptions when it is occluded, so the daemon samples nothing
 on its behalf in the background. Which events it subscribes to, and at what
-rates, is listed in `MetricsModel` and the README's "Sampling cost".
+rates, is listed in `MetricsModel` and docs/dashboard.md, "Sampling cost".
 
 ## Sources and the hub
 

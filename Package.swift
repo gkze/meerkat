@@ -1,7 +1,7 @@
 // swift-tools-version:6.4
 import PackageDescription
 
-// Buck builds this repository (the BUCK files; README, "Build"). This
+// Buck builds this repository (the BUCK files; docs/building.md). This
 // manifest declares the same Swift targets, with the same dependencies, for
 // SourceKit-LSP and Xcode; //:package_swift_test fails when it and the BUCK
 // files disagree, and //buck2/third_party/swift:pins_test when Package.resolved

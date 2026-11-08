@@ -258,8 +258,8 @@ daemon. The rest of the app's switches are in
 [development.md, "Environment switches"](../development.md#environment-switches).
 
 To look at a change without replacing the installed app or its agent,
-build the preview bundle ([README, "Previewing app
-changes"](../../README.md#previewing-app-changes)): only the app, under
+build the preview bundle ([building.md, "Previewing app
+changes"](../building.md#previewing-app-changes)): only the app, under
 its own bundle identifier, talking to the installed daemon, and a debug
 build, so sample data works.
 

@@ -269,3 +269,40 @@ The icon is `Tools/Bundler/AppIcon.icon`. Edit it in Icon Composer (bundled
 with Xcode); its layers are the SVGs in its `Assets/` folder. The bundler
 compiles it with `actool` into `Assets.car` and `AppIcon.icns`, and takes
 `CFBundleIconName` from what `actool` reports.
+
+`docs/images/meerkat-icon.png`, the icon the README shows, is the 256-pixel
+image of that `AppIcon.icns`, compiled the same way by the Xcode at
+`[swift] developer_dir` (`//Tools/Bundler:readme-icon`).
+`//Tools/Bundler:icon_test` fails when it is stale, as after an edit to the
+icon or a new Xcode, and this rewrites it:
+
+```bash
+buck2 run //Tools/Bundler:regenerate
+```
+
+## Gotchas worth knowing
+
+- **mach timebase.** `ri_user_time` and friends come back in mach
+  absolute-time ticks, not nanoseconds. On Apple Silicon a tick is
+  41.666667 ns, so dividing by 1e9 undercounts every CPU number by 41×.
+  `MachTime` handles it and a test guards the assumption.
+- **EPERM for other users.** `proc_pid_rusage` fails for processes you do not
+  own (WindowServer, for example). Those rows come from `ps` instead: CPU time
+  at 10 ms resolution, with footprint, disk and energy reported as 0 because
+  `ps` cannot supply them. `proc_name` fails for them too, so their name is
+  taken from the executable path, which `proc_pidpath` returns unprivileged.
+- **TCC silences FSEvents.** Protected paths emit no events rather than
+  errors.
+- **Disk I/O is a cumulative counter**, so it is meaningful only as a delta
+  between two snapshots.
+- **Pids are reused.** Deltas, the name cache and every process effect use
+  pid plus start time (`kinfo_proc`), so a reused pid is never mistaken for
+  the process that had it before.
+- **Main run loop.** NSWorkspace, distributed-notification and CoreGraphics
+  callbacks are delivered only while the main thread runs `CFRunLoopRun()`.
+- **Bluetooth without a usage string kills the process.** macOS terminates a
+  process that touches Bluetooth without `NSBluetoothAlwaysUsageDescription`
+  in its Info.plist. `bluetooth.devices` checks for the key before using
+  IOBluetooth, and refuses to start under a test runner.
+- **Interface counters from `getifaddrs` are 32-bit** and wrap every 4 GB, so
+  `network.sample` reads the 64-bit `if_data64` from `NET_RT_IFLIST2`.

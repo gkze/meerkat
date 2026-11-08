@@ -50,7 +50,7 @@ Acceptance criteria:
 | Typed vocabulary                      | `EventCatalog`: one descriptor, payload `TypeSchema` and parameters `TypeSchema` per kind, with examples checked by `SchemaValidator`; `JSONSchema.document` projects them to JSON Schema.                                                                        |
 | Rule state                            | `RuleEngine.report()` (rules, compile diagnostics, lint), `RuleEngine.logs`, `setEnabled`, `reload`.                                                                                                                                                              |
 | History                               | `SampleStore` (`samples.db`): samples, top-N process rows, churn buckets.                                                                                                                                                                                         |
-| Configuration                         | `meerkat.json` in the rules directory, read live by `DaemonSettings` (README, "Configuration").                                                                                                                                                                   |
+| Configuration                         | `meerkat.json` in the rules directory, read live by `DaemonSettings` (docs/configuration.md).                                                                                                                                                                   |
 | User code, sandboxed and hot-reloaded | The rules directory: type-checked by bundled tsrs, a Deno worker per entry file, deadlines, per-rule capability grants checked by `EffectExecutor`, observation grants checked at load and dispatch ([effects.md](effects.md), "Observation"), a circuit breaker. |
 
 What is missing for the open steps:
@@ -455,7 +455,7 @@ The server's parts and their state:
 | `meerkat` CLI                                | `meerkat mcp`: the byte pump; exits when the daemon restarts.                                                                                                                    | Done (`MCPBridge`)                                                                                                                                                    |
 
 The MCP server's own policy is `meerkat.json`'s `mcp` section, in the rules
-directory (D3; README, "Configuration"):
+directory (D3; docs/configuration.md):
 
 ```json
 {

@@ -1,7 +1,7 @@
 # Building on another Mac: remote builds and Buck2 remote execution
 
-Status: `//Tools/RemoteBuild:remote` is implemented (README, "Building on
-another Mac"), and so is toolchain identity in action keys for Rust and C
+Status: `//Tools/RemoteBuild:remote` is implemented (docs/building.md, "Building
+on another Mac"), and so is toolchain identity in action keys for Rust and C
 (fix 1 below; Python's version is outside the keys by decision, see
 [Python](#python)). Buck2 remote execution itself is evaluated here, not set
 up.
@@ -37,7 +37,7 @@ the git-ignored `.buckconfig.local` (`[remote_build] host`, and optionally
 
 It copies the checkout there, has Buck build every part, copies the parts
 back and runs the bundler here, where the signing identity is: the steps are
-in the [README, "Building on another Mac"](../../README.md#building-on-another-mac).
+in [building.md, "Building on another Mac"](../building.md#building-on-another-mac).
 
 Measured on an M1 Max (10 cores) build host: a cold `app-debug` took 13.5
 minutes (4,949 actions); a run with nothing changed takes about 15 seconds,
