@@ -316,15 +316,16 @@ struct StatRow: View {
 // MARK: - Charts
 
 /// The x-axis: the series' whole window, `capacity` samples ending at the
-/// newest. A series still filling grows in from the right edge, so every
-/// sample moves the chart by the same one slot and `SlidingPlot` glides it.
+/// newest, and the spare departed ones `drawn` adds left of it. A series
+/// still filling grows in from the right edge, so every sample moves the
+/// chart by the same one slot and `SlidingPlot` glides it.
 /// A domain from the oldest point to the newest squeezed every point left
 /// by a fraction of a slot instead, in one frame, for the window's first
 /// two minutes. Pinned, too, because sequence numbers keep growing and the
 /// automatic domain would reach back toward zero.
 func windowDomain<Value>(_ series: RollingSeries<Value>) -> ClosedRange<Int> {
     let last = series.points.last?.id ?? 0
-    return (last - max(series.capacity, 2) + 1)...last
+    return (last - max(series.capacity, 2) - SlidingPlotView.spare + 1)...last
 }
 
 typealias SparkPoint = RollingSeries<Double>.Point
@@ -388,7 +389,7 @@ struct Sparkline: View {
     /// The time the series covers, for the axis and VoiceOver.
     var span = "\(SamplingRates.chartSpanText) ago"
 
-    private var points: [SparkPoint] { series.points }
+    private var points: [SparkPoint] { series.drawn }
 
     private var values: [Double] { points.map(\.value) }
 
@@ -451,7 +452,7 @@ struct DualSparkline: View {
     var height: CGFloat = 56
     var format: (Double) -> String = { Format.number($0, digits: 1) }
 
-    private var points: [RatePoint] { series.points }
+    private var points: [RatePoint] { series.drawn }
 
     private var upper: Double {
         max((StickyTop.peak(of: series) { max($0.area, $0.line) } ?? 0.001) * 1.25, 0.001)

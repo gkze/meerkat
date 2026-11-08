@@ -8,17 +8,21 @@ import SwiftUI
 /// every frame, and SwiftUI rebuild the window's display list with it: about
 /// 27% of a core for the Overview's six charts at the Relaxed preset
 /// (2026-10-29). Here the chart is drawn once per sample, and the render
-/// server moves the drawing. The plot is drawn one slot wider than shown,
-/// starting one slot left of the visible edge, so the oldest point sits just
-/// out of view: the new drawing, offset one slot right, is exactly the old
-/// one, and gliding it back into place scrolls without a gap at either edge.
+/// server moves the drawing. The plot is drawn `hidden` slots wider than
+/// shown, starting that far left of the visible edge, so the oldest points sit
+/// just out of view: the new drawing, offset one slot right, is exactly the
+/// old one, and gliding it back into place scrolls without a gap at either
+/// edge.
 ///
 /// The glide is linear and lasts as long as the last gap between samples,
 /// so the series moves at a steady pace instead of stepping a slot and
 /// waiting. The newest sample is in full view only once its glide ends, a
 /// sample's time after it arrived; the reading beside the chart shows it at
 /// once. A sample that lands before the glide ends starts the next glide
-/// from where the drawing is, so it never snaps.
+/// from where the drawing is, up to one slot further right than a glide
+/// starts: the spare departed sample each chart draws (`RollingSeries.drawn`)
+/// covers that, so the left edge never shows a gap. A burst that would push
+/// the drawing further drops the excess.
 ///
 /// A new value range (`values`: a new peak, or the scale's top shrinking
 /// after one leaves) eases in the same way: the new drawing starts stretched
@@ -77,9 +81,16 @@ final class SlidingPlotView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    /// One slot's width: the drawn span is `capacity - 1` slots across the
-    /// visible width plus the hidden slot, so a slot is the visible width
-    /// over `capacity - 2`.
+    /// Departed samples a chart draws past the hidden slot, so a glide a new
+    /// sample interrupts, which starts up to a slot further right, still
+    /// covers the left edge.
+    static let spare = 1
+    /// Slots drawn left of the visible edge.
+    static let hidden = 1 + spare
+
+    /// One slot's width: the drawn span is `capacity - 1 + spare` slots
+    /// across the visible width plus the `hidden` slots, so a slot is the
+    /// visible width over `capacity - 2`.
     private var slot: CGFloat { capacity > 2 ? bounds.width / CGFloat(capacity - 2) : 0 }
 
     func update(root: AnyView, step: Int, capacity: Int, values: ClosedRange<Double>, animated: Bool) {
@@ -107,7 +118,7 @@ final class SlidingPlotView: NSView {
         // new one is a slot further left, so it starts a slot further right.
         let inFlight = layer.presentation()?.value(forKeyPath: "transform.translation.x") as? CGFloat ?? 0
         let glide = CABasicAnimation(keyPath: "transform.translation.x")
-        glide.fromValue = slot + inFlight
+        glide.fromValue = Self.glideStart(slot: slot, inFlight: inFlight)
         glide.toValue = 0
         glide.duration = duration
         glide.timingFunction = CAMediaTimingFunction(name: .linear)
@@ -147,10 +158,17 @@ final class SlidingPlotView: NSView {
         min(max(gap, 0.1), SamplingRates.chartSpan)
     }
 
+    /// Where the new drawing starts: a slot right of the old one's place on
+    /// screen, but no further than the hidden slots cover.
+    static func glideStart(slot: CGFloat, inFlight: CGFloat) -> CGFloat {
+        min(slot + inFlight, CGFloat(hidden) * slot)
+    }
+
     override func layout() {
         super.layout()
         scaler.frame = bounds
-        slider.frame = CGRect(x: -slot, y: 0, width: bounds.width + slot, height: bounds.height)
+        let lead = CGFloat(Self.hidden) * slot
+        slider.frame = CGRect(x: -lead, y: 0, width: bounds.width + lead, height: bounds.height)
         host.frame = slider.bounds
     }
 }
