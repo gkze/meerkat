@@ -77,7 +77,7 @@ command_test(
         ],
         _BUILD_FILES + _BZL_FILES,
     ),
-    labels = ["lint"],
+    labels = ["lint", "portable"],
 )
 
 # Shell scripts are found by extension or shebang: Tools/check has neither
@@ -100,6 +100,7 @@ files_test(
     command = [tool("shellcheck")],
     pathspecs = ["."],
     keep = _SHELL_SCRIPTS,
+    labels = ["lint", "portable"],
 )
 
 # 4-space indentation, as the scripts are written; otherwise shfmt's defaults.
@@ -110,7 +111,7 @@ files_test(
     command = _SHFMT + ["--diff"],
     pathspecs = ["."],
     keep = _SHELL_SCRIPTS,
-    labels = ["format"],
+    labels = ["format", "portable"],
 )
 
 # The workflow: actionlint for expressions, contexts and the job graph (and
@@ -119,13 +120,42 @@ files_test(
 command_test(
     name = "actionlint",
     command = [tool("actionlint"), "-shellcheck", tool("shellcheck")],
-    labels = ["lint"],
+    labels = ["lint", "portable"],
 )
 
 files_test(
     name = "zizmor",
     command = [tool("zizmor"), "--offline", "--config", ".github/zizmor.yml"],
     pathspecs = [".github/workflows/*.yml", ".github/actions/*/action.yml", ".github/dependabot.yml"],
+    labels = ["lint", "portable"],
+)
+
+# Every action the workflow and the composite actions use, pinned to a full
+# commit SHA with the version it is as a comment (`uses: o/r@<sha> # v1.2.3`).
+# :pinact checks that offline: the SHA's form and the comment's presence. A
+# tag or branch ref, or a bare SHA, fails it; `buck2 run //:pinact-fix`
+# pins them through GitHub's API. :pinact-verify asks GitHub whether each
+# comment names the version its SHA is, which a comment written by hand
+# need not.
+_ACTION_FILES = [".github/workflows/*.yml", ".github/actions/*/action.yml"]
+
+files_test(
+    name = "pinact",
+    command = [tool("pinact"), "run", "--fix=false", "--no-api"],
+    pathspecs = _ACTION_FILES,
+    labels = ["lint", "portable"],
+)
+
+files_test(
+    name = "pinact-verify",
+    command = [tool("pinact"), "run", "--fix=false", "--verify-comment"],
+    pathspecs = _ACTION_FILES,
+    labels = ["lint", "network", "portable"],
+)
+
+command(
+    name = "pinact-fix",
+    command = over_files([tool("pinact"), "run"], _ACTION_FILES),
 )
 
 # TOML, by tombi's defaults. Offline: no schema is fetched.
@@ -135,13 +165,14 @@ files_test(
     name = "toml-format",
     command = [tool("tombi"), "format", "--offline", "--check"],
     pathspecs = _TOML_FILES,
-    labels = ["format"],
+    labels = ["format", "portable"],
 )
 
 files_test(
     name = "toml-lint",
     command = [tool("tombi"), "lint", "--offline"],
     pathspecs = _TOML_FILES,
+    labels = ["lint", "portable"],
 )
 
 # Markdown, with .rumdl.toml, and the links between the repository's files
@@ -153,12 +184,61 @@ files_test(
     name = "markdown-lint",
     command = [tool("rumdl"), "check", "--no-cache"],
     pathspecs = _MARKDOWN_FILES,
+    labels = ["lint", "portable"],
 )
 
 files_test(
     name = "markdown-links",
     command = [tool("lychee"), "--offline", "--include-fragments", "--no-progress"],
     pathspecs = _MARKDOWN_FILES,
+    labels = ["lint", "portable"],
+)
+
+# Secrets, by gitleaks' rules: in every commit the clone has (a shallow one
+# has fewer), and, for the pre-commit hook, in the staged changes. Findings
+# print redacted. A false positive goes in .gitleaksignore by the
+# fingerprint gitleaks prints, or takes a `gitleaks:allow` comment.
+command_test(
+    name = "gitleaks",
+    command = [tool("gitleaks"), "git", "--redact", "--no-banner"],
+    labels = ["lint", "portable"],
+)
+
+# The hook passes the index of the commit being made as
+# MEERKAT_GIT_INDEX_FILE, not GIT_INDEX_FILE, which a buck2 daemon it starts
+# would keep (prek.toml says why); git reads the latter, so it is set back.
+command(
+    name = "gitleaks-staged",
+    command = [
+        "/bin/sh",
+        "-c",
+        'if [ -n "${MEERKAT_GIT_INDEX_FILE-}" ]; then GIT_INDEX_FILE=$MEERKAT_GIT_INDEX_FILE; export GIT_INDEX_FILE; fi; exec "$@"',
+        "gitleaks-staged",
+        tool("gitleaks"),
+        "git",
+        "--pre-commit",
+        "--staged",
+        "--redact",
+        "--no-banner",
+    ],
+)
+
+# prek.toml's file checks (conflict markers, large and case-clashing files,
+# shebangs, JSON and YAML syntax, line endings, whitespace) over every
+# tracked file: the pre-commit hook runs them over the staged ones. A
+# malformed prek.toml fails here too.
+command_test(
+    name = "hygiene",
+    command = [tool("prek"), "run", "--all-files", "--hook-stage", "manual"],
+    labels = ["lint", "portable"],
+)
+
+# Installs the Git hooks prek.toml declares. The hooks name this prek by its
+# path in buck-out, and `prek` on PATH when that is gone: after `buck2
+# clean`, run this again.
+command(
+    name = "install-hooks",
+    command = [tool("prek"), "install"],
 )
 
 # `buck2 run //:fix` rewrites formatting and applies lint fixes in every

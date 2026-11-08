@@ -28,21 +28,55 @@ The files no module owns have checks in the root [BUCK](../BUCK), each over the
 whole repository's files of its kind (tracked or new, not ignored). The
 tools are release executables pinned by version and SHA-256 in
 [buck2/third_party/tools/defs.bzl](../buck2/third_party/tools/defs.bzl); none ships.
+Each tool has one version and an asset for each host: macOS on Apple
+silicon, and Linux on arm64 for the [portable checks](#portable-checks).
+Changing a version means a new digest for each asset.
 
 | Files | Checks |
 |---|---|
 | BUCK, PACKAGE, `.bzl` | `buck2 starlark lint` (`:starlark-lint`); no formatter, as buildifier writes Bazel's layout, not this repository's |
 | Shell scripts (by extension or shebang) | ShellCheck (`:shellcheck`), shfmt with 4-space indentation (`:shfmt`) |
 | `.github/` | actionlint, with ShellCheck over `run:` steps (`:actionlint`); zizmor, offline, with [.github/zizmor.yml](../.github/zizmor.yml) (`:zizmor`) |
+| Actions the workflow uses | pinact: every `uses:` pinned to a full commit SHA with its version as a comment, offline (`:pinact`); each comment checked against its SHA through GitHub's API (`:pinact-verify`); `buck2 run //:pinact-fix` pins new ones |
 | TOML | tombi formatting and lint, offline (`:toml-format`, `:toml-lint`) |
 | Markdown | rumdl, with [.rumdl.toml](../.rumdl.toml) (`:markdown-lint`); lychee, offline, for links to files and headings (`:markdown-links`) |
 | Rust dependencies | cargo-deny with [deny.toml](../buck2/third_party/rust/check/deny.toml): licenses, bans and sources (`//buck2/third_party/rust/check:deny_test`), RustSec advisories (`:advisories_test`) |
+| Every commit | gitleaks, for secrets, findings redacted (`:gitleaks`); a false positive goes in `.gitleaksignore` by its fingerprint |
+| Every tracked file | prek's file checks from [prek.toml](../prek.toml): conflict markers, case-clashing files, shebangs, JSON, JSONC and YAML syntax, line endings, trailing whitespace, a final newline (`:hygiene`) |
 
 Generated Starlark (`buck2/third_party/rust/BUCK`, `modules.bzl`) is left to
 its generator. `:advisories_test` reads the advisory database as it is when
 it runs, so it can fail on a tree that has not changed; the other checks
 change only with the repository. The cargo-deny checks, like
 `:buckify_test`, read the crates' manifests from crates.io.
+`:pinact-verify` asks GitHub, unauthenticated unless `GITHUB_TOKEN` is set.
+
+zizmor requires a SHA for every action, GitHub's own included. Dependabot's
+weekly updates keep the SHA and its comment together. An action added by
+hand fails `:pinact` until `buck2 run //:pinact-fix` pins it, which is not
+part of `//:fix`: it reads GitHub and changes which commit the workflow
+runs.
+
+### Portable checks
+
+The checks labelled `portable` need neither Xcode nor a macOS build, so CI
+also runs them on GitHub's Linux arm64 runner (the `portable` job). They are
+the root BUCK file's checks of the repository's files and of the workflow,
+pinact included; the toolchain pins (`//buck2/rules:buck2_test`,
+`:python_test`, `:rust_test`); rustfmt; and cargo-deny and reindeer
+(`//buck2/third_party/rust/check/...`). They report in minutes, and run for
+pull requests from forks too, which the [CI runner](#ci-runner) does not
+take. The check job runs them again with everything else. To run them as
+that job does:
+
+```bash
+buck2 test $(buck2 uquery 'attrfilter(labels, portable, //...)')
+```
+
+A check is portable only if each of its tools has a `linux-arm64` asset, or
+runs on Linux from rustup or the PATH. A Swift check (swift-format,
+SwiftLint, SwiftPM's manifests), a build or a test suite is not: Linux has
+no Xcode, and Xcode's license allows its SDKs only on Apple-branded computers.
 
 Builds are debug unless a mode file says otherwise (`@buck2/mode/release`);
 build tools (macro plugins, build scripts) always build optimized. Buck's
@@ -66,6 +100,39 @@ In Zed, install the Starlark extension. [.zed/settings.json](../.zed/settings.js
 selects its native Buck2 language server (`buck2 lsp`) for this project instead
 of Starpls, whose Bazel defaults report false errors for Buck imports, built-ins
 and type annotations. `buck2` must be on Zed's PATH.
+
+## Git hooks
+
+```bash
+buck2 run //:install-hooks
+```
+
+installs the hooks [prek.toml](../prek.toml) declares. prek is pinned with
+the other tools, and every check a hook runs Tools/check and CI run too,
+over every file, except prek's check for large files (over 500 KB), which
+runs only on a commit that adds one:
+
+| Hook | Runs | Over |
+|---|---|---|
+| pre-commit | prek's file checks (`:hygiene`'s), gitleaks (`//:gitleaks-staged`), and `:pinact` when a workflow or action is staged | the staged files and changes |
+| pre-push | `buck2 test //... --include format lint --exclude network --always-exclude` | the working tree |
+
+The `format` and `lint` labels mark the checks that build nothing and read
+only the repository ([buck2/rules/check.bzl](../buck2/rules/check.bzl)), so
+the pre-push hook downloads tools at most, and takes a few seconds on an
+M-series Mac once they are downloaded. Builds, test suites, conformance and
+the checks that read the network are left to Tools/check and CI. A check
+that comes to build something should lose its label, or the hook will build
+it.
+
+The pre-push hook checks the working tree, not the commits being pushed: an
+unstaged change can fail it, or hide what a commit would fail. The file
+checks only check; formatting is `buck2 run //:fix`'s. The installed hooks
+name prek by its path in `buck-out`, falling back to `prek` on PATH: after
+`buck2 clean`, install them again. The first push after a tool's pin
+changes downloads it, so it fails offline or while GitHub does not serve
+the release. `git commit --no-verify` and `git push
+--no-verify` skip them; CI runs every check regardless.
 
 ## Swift and Rust style
 
@@ -244,10 +311,13 @@ environment's secrets, which the workflow's header lists.
 
 ## CI runner
 
-Every CI job runs on the runner label the repository's Actions variable
-`MEERKAT_RUNNER` names. The repository defines no runner of its own. Without
-the variable, as in a fork, no job runs. A pull request from a fork runs no
-job either, as the runner may be self-hosted, the machine the release job
+The portable job runs on GitHub's `ubuntu-24.04-arm` runner, which the
+toolchain action gives buck2, Python and the `[rust] release` (through the
+image's rustup), and no Xcode. Every other CI job runs on the runner label
+the repository's Actions variable `MEERKAT_RUNNER` names. The repository
+defines no runner of its own. Without the variable, as in a fork, no such
+job runs. A pull request from a fork runs none of them either, as the
+runner may be self-hosted, the machine the release job
 signs on; a maintainer checks one by pushing its commits to a branch of the
 repository. The runner must be a macOS 27 Apple silicon machine with:
 

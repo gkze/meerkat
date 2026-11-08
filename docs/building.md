@@ -16,6 +16,9 @@ directory holds.
 
 ## Requirements
 
+Building needs a Mac. A Linux arm64 host can run only the checks labelled
+`portable`, which build nothing ([development.md](development.md#portable-checks)).
+
 - macOS 27 and Xcode 27 (Swift 6.4), at the build `[swift] xcode_build` in
   [.buckconfig](../.buckconfig) names (`//buck2/rules/swift:xcode_test` checks).
   Buck uses the Xcode at `[swift] developer_dir` for Swift and for clang,

@@ -5,3 +5,10 @@ rules:
   # `./.github/actions/toolchain`. Turn this back on when actionlint accepts it.
   self-repository:
     disable: true
+  # Every action by full commit SHA, GitHub's own too (zizmor lets
+  # `actions/*` use a tag by default). //:pinact also holds each SHA to its
+  # version comment.
+  unpinned-uses:
+    config:
+      policies:
+        "*": hash-pin

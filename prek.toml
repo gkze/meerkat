@@ -1,0 +1,58 @@
+# The Git hooks, which `buck2 run //:install-hooks` installs
+# (docs/development.md, "Git hooks"). Each check is a Buck target or one of
+# prek's own, so a hook, Tools/check and CI run the same tools at the same
+# pins; prek decides only when they run.
+#
+#   pre-commit  prek's file checks over the staged files, gitleaks over the
+#               staged changes, and pinact when a workflow is staged
+#   pre-push    every format and lint check, over the working tree
+#
+# The file checks also run at the `manual` stage, which //:hygiene runs over
+# every file: they alone, without the hooks that call Buck.
+default_install_hook_types = ["pre-commit", "pre-push"]
+default_stages = ["pre-commit", "manual"]
+
+# Check only, never fix: //:hygiene runs these as a test, which must not
+# rewrite the tree, and the formatters (`buck2 run //:fix`) own the rewriting.
+[[repos]]
+repo = "builtin"
+hooks = [
+  # Always, not only while Git reports a merge: a conflict resolved by hand
+  # after a stash or cherry-pick leaves no merge state.
+  { id = "check-merge-conflict", args = ["--assume-in-merge"] },
+  # A file a commit adds, so on commit alone: //:hygiene stages nothing, and
+  # the generated deno.d.ts and buck2/third_party/rust/BUCK are larger.
+  { id = "check-added-large-files", stages = ["pre-commit"] },
+  { id = "check-case-conflict" },
+  { id = "check-executables-have-shebangs" },
+  { id = "check-shebang-scripts-are-executable" },
+  # The configurations their tools read as JSONC (comments allowed): Oxlint's,
+  # Oxfmt's, tsrs's and Zed's. Every other JSON file is plain JSON.
+  { id = "check-json", exclude = '(^|/)(\.?oxlintrc|\.?oxfmtrc|tsconfig)\.json$|^\.zed/settings\.json$' },
+  { id = "check-jsonc", files = '(^|/)(\.?oxlintrc|\.?oxfmtrc|tsconfig)\.json$|^\.zed/settings\.json$', types = ["json"] },
+  { id = "check-yaml" },
+  { id = "mixed-line-ending", args = ["--fix", "no"] },
+  # Whitespace in the files no formatter covers (BUCK and .bzl files have
+  # none). The generators write clean files, except UniFFI, whose bindings
+  # //Sources/meerkat-runtime/bindgen:bindings_current holds to its output.
+  { id = "deny-pattern", name = "no trailing whitespace", alias = "trailing-whitespace", args = ['[ \t]+$'], types = ["text"], exclude = "^Sources/meerkat-runtime/(MeerkatRuntimeBindings|CMeerkatRuntime/include)/" },
+  { id = "deny-pattern", name = "a newline at the end", alias = "end-of-file", args = ["--multiline", '[^\n]\z'], types = ["text"], exclude = "^Sources/meerkat-runtime/(MeerkatRuntimeBindings|CMeerkatRuntime/include)/" },
+]
+
+[[repos]]
+repo = "local"
+# A commit hook runs with GIT_INDEX_FILE set, during `git commit -a` to a
+# lock file that is gone once the commit is made. A buck2 daemon started
+# from a hook would keep it for its life and hand it to every build action
+# after, so these start buck2 without it: gitleaks, which reads the staged
+# changes through it, has it back from MEERKAT_GIT_INDEX_FILE (//:BUCK).
+hooks = [
+  { id = "gitleaks", name = "no secrets in the staged changes", entry = '/bin/sh -c "MEERKAT_GIT_INDEX_FILE=\"${GIT_INDEX_FILE-}\" exec env -u GIT_INDEX_FILE buck2 run //:gitleaks-staged"', language = "system", pass_filenames = false, always_run = true, stages = ["pre-commit"] },
+  # When a workflow or action is staged: the files //:BUCK's _ACTION_FILES
+  # names, which the check reads whole.
+  { id = "pinact", name = "actions pinned to commit SHAs", entry = "env -u GIT_INDEX_FILE buck2 test //:pinact", language = "system", pass_filenames = false, files = '^\.github/(workflows/[^/]+|actions/[^/]+/action)\.yml$', stages = ["pre-commit"] },
+  # The labels mark the checks that build nothing and read only the
+  # repository (buck2/rules/check.bzl); `network` ones (cargo-deny) stay in
+  # Tools/check and CI, with the builds and test suites.
+  { id = "checks", name = "format and lint checks", entry = "buck2 test //... --include format lint --exclude network --always-exclude", language = "system", pass_filenames = false, always_run = true, stages = ["pre-push"] },
+]

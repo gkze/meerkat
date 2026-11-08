@@ -41,7 +41,7 @@ def rustfmt_test(name: str, srcs: list, config: str, edition: str = "2024"):
         command = _rustup("rustfmt") + ["--check", "--edition", edition, "--config-path", "$(location {})".format(config)],
         srcs = srcs,
         pass_srcs = True,
-        labels = ["format"],
+        labels = ["format", "portable"],
     )
 
 def rustfmt_fix(name: str, paths: list[str], edition: str = "2024"):

@@ -23,6 +23,7 @@ command_test(
         '"$@" --cargo-options=--locked buckify --stdout | diff -u buck2/third_party/rust/BUCK - && echo current',
         "buckify_test",
     ] + _REINDEER,
+    labels = ["portable"],
 )
 
 # `buck2 run` it (or //:fix) to rewrite buck2/third_party/rust/BUCK, and
@@ -58,14 +59,14 @@ command_test(
     name = "deny_test",
     command = _CARGO_DENY + ["licenses", "bans", "sources"],
     env = _RUSTUP_ENV,
-    labels = ["lint"],
+    labels = ["lint", "network", "portable"],
 )
 
 command_test(
     name = "advisories_test",
     command = _CARGO_DENY + ["advisories"],
     env = _RUSTUP_ENV,
-    labels = ["lint", "network"],
+    labels = ["lint", "network", "portable"],
 )
 
 # Read by //Tools/Notices, which holds every shipped component to the same

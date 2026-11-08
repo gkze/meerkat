@@ -1,0 +1,27 @@
+name: Reindeer
+description: >
+  facebookincubator/reindeer at the commit `[reindeer] rev` in .buckconfig
+  pins, for //buck2/third_party/rust/check:buckify_test. Built with rustup's
+  cargo, so it runs after the toolchain action.
+
+runs:
+  using: composite
+  steps:
+    - name: Read the reindeer .buckconfig pins
+      id: pin
+      shell: bash
+      run: echo "rev=$(buck2 audit config --json reindeer.rev | jq --raw-output '."reindeer.rev"')" >> "$GITHUB_OUTPUT"
+    - name: Cache reindeer
+      id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cargo/bin/reindeer
+        key: reindeer-${{ steps.pin.outputs.rev }}-${{ runner.os }}-${{ runner.arch }}
+    - name: Install reindeer
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        REINDEER_REV: ${{ steps.pin.outputs.rev }}
+      run: |
+        cargo install --locked --git https://github.com/facebookincubator/reindeer \
+          --rev "$REINDEER_REV" --features cargo/vendored-openssl reindeer

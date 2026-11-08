@@ -14,6 +14,7 @@ BUCK files.
 ```bash
 Tools/check          # everything: warnings as errors, formatting, lints, tests
 Tools/check --fix    # first rewrites formatting, lint fixes and generated files
+buck2 run //:install-hooks   # Git hooks: file checks and secrets on commit, format and lint on push
 ```
 
 A cold build takes tens of minutes and most of a machine's cores. If you have a
@@ -37,6 +38,7 @@ before you finish:
 | A catalog or `meerkat.json`'s schema | `buck2 run //:fix`, then MeerkatDaemonTests, which compare the generated files |
 | `Package.swift` or a BUCK file's deps | `buck2 test //:package_swift_test` |
 | Markdown | `buck2 test //:markdown-lint //:markdown-links` |
+| `prek.toml` | `buck2 test //:hygiene` |
 
 Passing tests don't show a UI works. Exercise the real app for anything a person
 sees, and say so if you couldn't.

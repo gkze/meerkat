@@ -4,6 +4,13 @@ load("//buck2/third_party/tools:defs.bzl", "tool")
 # when it exits 0. `srcs` are what it reads (appended to the command with
 # `pass_srcs`); the command names its tools with `$(exe …)` or
 # `$(location …)`, which Buck builds first.
+#
+# Labels: `format` and `lint` mark the checks that build nothing (their
+# tools are downloads, Xcode's or rustup's) and that read only the
+# repository; the pre-push hook runs every one of them (prek.toml).
+# `network` marks a format or lint check that also reads the network, which
+# the hook leaves out. A check that builds, such as clippy or meerkat-lint, has
+# neither, and runs in Tools/check and CI.
 
 def external_test(command: cmd_args, labels: list[str], env: dict = {}) -> ExternalRunnerTestInfo:
     """A test that runs `command` from the repository root."""
