@@ -8,6 +8,7 @@ import Observation
 /// gives a chart a stable mark identity, so a new sample scrolls the series
 /// instead of re-valuing every slot in place, and it is what `SlidingPlot`
 /// counts: the series must number its samples one by one to glide.
+/// `capacity` is the window a chart draws, full or not.
 struct RollingSeries<Value> {
     struct Point: Identifiable {
         let id: Int
@@ -18,19 +19,23 @@ struct RollingSeries<Value> {
     /// The last `StickyTop.memory` samples that scrolled out of `points`,
     /// oldest first: a chart's scale still remembers them for a while.
     private(set) var departed: [Point] = []
+    /// How many samples the series keeps: the `limit` of the last append.
+    private(set) var capacity = 0
     private var sequence = 0
 
     var last: Value? { points.last?.value }
 
     init() {}
 
-    private init(points: [Point], departed: [Point], sequence: Int) {
+    private init(points: [Point], departed: [Point], capacity: Int, sequence: Int) {
         self.points = points
         self.departed = departed
+        self.capacity = capacity
         self.sequence = sequence
     }
 
     mutating func append(_ value: Value, limit: Int) {
+        capacity = limit
         sequence += 1
         points.append(Point(id: sequence, value: value))
         guard points.count > limit else { return }
@@ -50,7 +55,8 @@ struct RollingSeries<Value> {
     func map<T>(_ transform: (Value) -> T) -> RollingSeries<T> {
         RollingSeries<T>(
             points: points.map { .init(id: $0.id, value: transform($0.value)) },
-            departed: departed.map { .init(id: $0.id, value: transform($0.value)) }, sequence: sequence)
+            departed: departed.map { .init(id: $0.id, value: transform($0.value)) }, capacity: capacity,
+            sequence: sequence)
     }
 }
 

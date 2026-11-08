@@ -215,7 +215,11 @@ subscribes again at once rather than at the next retry.
   ("Memory pressure, last 2 min"); `RollingNumber` gives VoiceOver the
   plain text.
 - **Rendering cost.** Live numbers (`RollingNumber`) and scrolling charts
-  (`SlidingPlot`) animate in Core Animation, committed once per sample.
+  (`SlidingPlot`) animate in Core Animation, committed once per sample. A
+  chart spans its whole window from the first sample, filling in from the
+  right, and glides linearly for the gap between samples, so it scrolls at
+  a steady pace and shows the newest sample in full one sample later. A
+  new value range eases over the same glide instead of snapping.
   The SwiftUI equivalents (`.numericText()`, animated Swift Charts) rebuilt
   the window's display list every frame: about a third of a core for the
   Overview at the Relaxed preset (2026-10-29). `MEERKAT_PLAIN=1` (no

@@ -315,11 +315,16 @@ struct StatRow: View {
 
 // MARK: - Charts
 
-/// Sequence numbers keep growing, so pin the x-axis to the window rather
-/// than letting the automatic domain reach back toward zero.
-private func sequenceDomain(first: Int?, last: Int?) -> ClosedRange<Int> {
-    let lo = first ?? 0
-    return lo...max(last ?? lo, lo + 1)
+/// The x-axis: the series' whole window, `capacity` samples ending at the
+/// newest. A series still filling grows in from the right edge, so every
+/// sample moves the chart by the same one slot and `SlidingPlot` glides it.
+/// A domain from the oldest point to the newest squeezed every point left
+/// by a fraction of a slot instead, in one frame, for the window's first
+/// two minutes. Pinned, too, because sequence numbers keep growing and the
+/// automatic domain would reach back toward zero.
+func windowDomain<Value>(_ series: RollingSeries<Value>) -> ClosedRange<Int> {
+    let last = series.points.last?.id ?? 0
+    return (last - max(series.capacity, 2) + 1)...last
 }
 
 typealias SparkPoint = RollingSeries<Double>.Point
@@ -387,21 +392,17 @@ struct Sparkline: View {
 
     private var values: [Double] { points.map(\.value) }
 
-    private var xDomain: ClosedRange<Int> {
-        sequenceDomain(first: points.first?.id, last: points.last?.id)
-    }
-
     private var domain: ClosedRange<Double> {
         if banded, let lo = values.min(), let hi = values.max(), hi > lo {
             let pad = max((hi - lo) * 0.4, 1)
             return max(lo - pad, 0)...(hi + pad)
         }
-        return 0...max((StickyTop.peak(of: series) { $0 } ?? 1) * 1.15, 0.0001)
+        return StickyTop.range(of: series, headroom: 1.15) { $0 }
     }
 
     var body: some View {
         ScaledChart(top: format(domain.upperBound), bottom: format(domain.lowerBound), span: span) {
-            SlidingPlot(step: points.last?.id ?? 0, count: points.count) {
+            SlidingPlot(step: points.last?.id ?? 0, capacity: series.capacity, values: domain) {
                 Chart {
                     // A banded chart is zoomed to a narrow value range, so an area
                     // fill would cover the whole plot and hide the drift it exists
@@ -428,7 +429,7 @@ struct Sparkline: View {
                 .chartLegend(.hidden)
                 .chartXAxis(.hidden)
                 .chartYAxis(.hidden)
-                .chartXScale(domain: xDomain)
+                .chartXScale(domain: windowDomain(series))
                 .chartYScale(domain: domain)
             }
             .frame(height: height)
@@ -456,13 +457,9 @@ struct DualSparkline: View {
         max((StickyTop.peak(of: series) { max($0.area, $0.line) } ?? 0.001) * 1.25, 0.001)
     }
 
-    private var xDomain: ClosedRange<Int> {
-        sequenceDomain(first: points.first?.id, last: points.last?.id)
-    }
-
     var body: some View {
         ScaledChart(top: format(upper), bottom: "0", span: "\(SamplingRates.chartSpanText) ago") {
-            SlidingPlot(step: points.last?.id ?? 0, count: points.count) {
+            SlidingPlot(step: points.last?.id ?? 0, capacity: series.capacity, values: 0...upper) {
                 Chart {
                     ForEach(points) { point in
                         AreaMark(x: .value("Time", point.id), y: .value(metric, point.value.area))
@@ -489,7 +486,7 @@ struct DualSparkline: View {
                 .chartLegend(.hidden)
                 .chartXAxis(.hidden)
                 .chartYAxis(.hidden)
-                .chartXScale(domain: xDomain)
+                .chartXScale(domain: windowDomain(series))
                 .chartYScale(domain: 0...upper)
             }
             .frame(height: height)
