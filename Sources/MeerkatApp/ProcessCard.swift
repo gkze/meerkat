@@ -295,19 +295,19 @@ private struct ProcessTiles: View {
             GridRow {
                 ProcessTile(
                     label: "CPU", value: p.map { Format.number($0.cpuPct) }, unit: "% of a core",
-                    points: model.cpu.points, tint: Theme.cpu)
+                    series: model.cpu, tint: Theme.cpu)
                 ProcessTile(
                     label: "Memory", value: footprint?.value, unit: footprint?.unit ?? "GB",
-                    points: model.memory.points, tint: Theme.memory)
+                    series: model.memory, tint: Theme.memory)
             }
             GridRow {
                 ProcessTile(
                     label: "Energy", value: p?.energyWatts.map { Format.number($0, digits: 1) }, unit: "W",
-                    points: model.energy.points, tint: Theme.power)
+                    series: model.energy, tint: Theme.power)
                 ProcessTile(
                     label: "Disk", value: disk.map { Format.number($0.value, digits: 1) },
                     unit: disk.map { $0.unit + " written" } ?? "written",
-                    points: model.disk.points, tint: Theme.disk)
+                    series: model.disk, tint: Theme.disk)
             }
         }
     }
@@ -318,8 +318,10 @@ private struct ProcessTile: View {
     /// Nil until the first sample, or when this user cannot read the counter.
     let value: String?
     let unit: String
-    let points: [SparkPoint]
+    let series: RollingSeries<Double>
     let tint: Color
+
+    private var values: ClosedRange<Double> { StickyTop.range(of: series, headroom: 1.15) { $0 } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -333,18 +335,22 @@ private struct ProcessTile: View {
             }
             .lineLimit(1)
             .minimumScaleFactor(0.8)
-            Chart(points) { point in
-                AreaMark(x: .value("Time", point.id), y: .value(label, point.value))
-                    .foregroundStyle(tint.opacity(0.16))
-                    .interpolationMethod(.monotone)
-                LineMark(x: .value("Time", point.id), y: .value(label, point.value))
-                    .foregroundStyle(tint)
-                    .interpolationMethod(.monotone)
-                    .lineStyle(StrokeStyle(lineWidth: 1.4))
+            SlidingPlot(step: series.points.last?.id ?? 0, capacity: series.capacity, values: values) {
+                Chart(series.points) { point in
+                    AreaMark(x: .value("Time", point.id), y: .value(label, point.value))
+                        .foregroundStyle(tint.opacity(0.16))
+                        .interpolationMethod(.monotone)
+                    LineMark(x: .value("Time", point.id), y: .value(label, point.value))
+                        .foregroundStyle(tint)
+                        .interpolationMethod(.monotone)
+                        .lineStyle(StrokeStyle(lineWidth: 1.4))
+                }
+                .chartXAxis(.hidden)
+                .chartYAxis(.hidden)
+                .chartLegend(.hidden)
+                .chartXScale(domain: windowDomain(series))
+                .chartYScale(domain: values)
             }
-            .chartXAxis(.hidden)
-            .chartYAxis(.hidden)
-            .chartLegend(.hidden)
             .frame(height: 22)
             .accessibilityHidden(true)
         }

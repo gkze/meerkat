@@ -136,6 +136,19 @@ struct RollingSeriesTests {
         #expect(disk.last == 3)
     }
 
+    @Test("a filling series spans its whole window, so each sample moves the chart one slot")
+    func windowWhileFilling() {
+        var series = RollingSeries<Double>()
+        series.append(1, limit: 5)
+        #expect(windowDomain(series) == -3...1)
+        series.append(2, limit: 5)
+        #expect(windowDomain(series) == -2...2)
+        for value in 3...7 { series.append(Double(value), limit: 5) }
+        #expect(windowDomain(series) == 3...7)
+        #expect(series.points.map(\.id) == [3, 4, 5, 6, 7])
+        #expect(series.map { $0 * 2 }.capacity == 5)
+    }
+
     @Test("clearing keeps numbering, so a mark never reuses an id")
     func clearing() {
         var series = RollingSeries<Double>()
@@ -162,6 +175,35 @@ struct RollingSeriesTests {
         for value in 0..<(StickyTop.memory + 10) { series.append(Double(value), limit: 3) }
         #expect(series.departed.count == StickyTop.memory)
         #expect(series.departed.last.map { $0.id + 1 } == series.points.first?.id)
+    }
+}
+
+@Suite("Sliding plot")
+@MainActor
+struct SlidingPlotTests {
+    @Test("a glide lasts the gap between samples, bounded at both ends")
+    func glideDuration() {
+        #expect(SlidingPlotView.glideDuration(gap: 2) == 2)
+        #expect(SlidingPlotView.glideDuration(gap: 0) == 0.1)
+        #expect(SlidingPlotView.glideDuration(gap: 3600) == SamplingRates.chartSpan)
+    }
+
+    @Test("a new scale starts stretched to look like the one shown")
+    func verticalMap() throws {
+        // The top doubles: the new drawing starts twice as tall, so a value
+        // keeps its place on screen.
+        let grow = try #require(VerticalMap(from: 0...10, to: 0...20))
+        #expect(grow == VerticalMap(scale: 2, offset: 0))
+        // A banded range shifts up a quarter of the shown span.
+        let shift = try #require(VerticalMap(from: 100...140, to: 110...150))
+        #expect(shift == VerticalMap(scale: 1, offset: 0.25))
+        // 15 in 0...20 sits at 0.75 of the drawing; shown over 0...10 it
+        // would sit at 1.5: the stretched drawing puts it there.
+        #expect(grow.scale * 0.75 + grow.offset == 1.5)
+        #expect(VerticalMap(from: 5...5, to: 0...1) == nil)
+        // Mid-rescale, the next change composes with what is on screen.
+        let half = VerticalMap(scale: 0.5, offset: 0)
+        #expect(half.after(grow) == VerticalMap(scale: 1, offset: 0))
     }
 }
 
