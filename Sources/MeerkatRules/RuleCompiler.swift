@@ -1,5 +1,4 @@
 import Foundation
-import MeerkatIPC
 import MeerkatKit
 
 /// Type-checks and compiles the rules directory with tsrs, the Rust port of
@@ -78,9 +77,9 @@ public struct RuleCompiler: Sendable {
         try fileManager.createDirectory(at: workDirectory, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: workDirectory) }
 
-        let declarationsFile = workDirectory.appendingPathComponent("meerkat.d.ts")
+        let declarationsFile = workDirectory.appendingPathComponent(EditorSupport.declarationsFile)
         try declarations.write(to: declarationsFile, atomically: true, encoding: .utf8)
-        let runtimeFile = workDirectory.appendingPathComponent("deno.d.ts")
+        let runtimeFile = workDirectory.appendingPathComponent(TypeScriptToolchain.runtimeDeclarationsFile)
         try runtimeDeclarations.write(to: runtimeFile, atomically: true, encoding: .utf8)
         let outDirectory = workDirectory.appendingPathComponent("out")
 
@@ -125,7 +124,7 @@ public struct RuleCompiler: Sendable {
         for source in sources {
             let id = Self.moduleId(source)
             // An entry file's name is the first part of its rules' ids.
-            if !id.contains("/"), let refusal = RuleID.refusal(file: source) {
+            if Self.isEntry(id), let refusal = RuleID.refusal(file: source) {
                 output.rejected[id] = refusal
                 output.diagnostics.append(RuleDiagnostic(tool: .loader, file: source, message: refusal, fixable: false))
                 continue
@@ -141,52 +140,12 @@ public struct RuleCompiler: Sendable {
                 continue
             }
             output.modules.append(Module(id: id, code: code))
-            if !id.contains("/") { output.entries.append(id) }
+            if Self.isEntry(id) { output.entries.append(id) }
         }
         return output
     }
 
     // MARK: - Files
-
-    /// Declarations and an editor configuration in the rules directory, so
-    /// an editor (and the linter's type-aware rules) checks rules against
-    /// this catalog and runtime with the daemon's compiler options.
-    /// `.meerkat/` is rewritten as needed; `tsconfig.json` is written only
-    /// when absent: it is the author's file once it exists.
-    ///
-    /// - Parameter runtimeDeclarations: the runtime's globals; nil leaves
-    ///   any copy already there.
-    public static func writeEditorSupport(
-        in rulesDirectory: URL, declarations: String, runtimeDeclarations: String?
-    ) throws {
-        let support = rulesDirectory.appendingPathComponent(".meerkat")
-        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        let base: JSONValue = .object([
-            "compilerOptions": .object(compilerOptions.merging(["noEmit": true]) { $1 }),
-            "include": .array([.string("../**/*.ts"), .string("./meerkat.d.ts"), .string("./deno.d.ts")]),
-            "exclude": .array([.string("../**/node_modules")]),
-        ])
-        try writeIfChanged(declarations, to: support.appendingPathComponent("meerkat.d.ts"))
-        if let runtimeDeclarations {
-            try writeIfChanged(runtimeDeclarations, to: support.appendingPathComponent("deno.d.ts"))
-        }
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        try writeIfChanged(
-            String(decoding: try encoder.encode(base), as: UTF8.self) + "\n",
-            to: support.appendingPathComponent("tsconfig.base.json"))
-        let tsconfig = rulesDirectory.appendingPathComponent("tsconfig.json")
-        if !FileManager.default.fileExists(atPath: tsconfig.path) {
-            try writeIfChanged("{\n  \"extends\": \"./.meerkat/tsconfig.base.json\"\n}\n", to: tsconfig)
-        }
-    }
-
-    /// Writes only when the contents differ, so the rules directory's
-    /// watcher does not see a change that is not one.
-    static func writeIfChanged(_ text: String, to url: URL) throws {
-        if (try? String(contentsOf: url, encoding: .utf8)) == text { return }
-        try text.write(to: url, atomically: true, encoding: .utf8)
-    }
 
     /// `*.ts` files relative to the rules directory, excluding declarations,
     /// hidden directories (including `.meerkat`) and `node_modules`.
@@ -205,7 +164,7 @@ public struct RuleCompiler: Sendable {
                 continue
             }
             let path = url.standardizedFileURL.path
-            guard path.hasSuffix(".ts"), !path.hasSuffix(".d.ts"), path.hasPrefix(base + "/"),
+            guard path.hasPrefix(base + "/"), isRuleSource(String(path.dropFirst(base.count + 1))),
                 (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
             else { continue }
             sources.append(String(path.dropFirst(base.count + 1)))
@@ -213,9 +172,27 @@ public struct RuleCompiler: Sendable {
         return sources.sorted()
     }
 
+    /// Whether `path`, relative to the rules directory, is one `ruleSources`
+    /// finds: a `.ts` file, not a declaration file, with no hidden part
+    /// (`.meerkat` included) and not under `node_modules`.
+    public static func isRuleSource(_ path: String) -> Bool {
+        guard path.hasSuffix(".ts"), !path.hasSuffix(".d.ts") else { return false }
+        return path.split(separator: "/", omittingEmptySubsequences: false).allSatisfy {
+            !$0.isEmpty && !$0.hasPrefix(".") && $0 != "node_modules"
+        }
+    }
+
     public static func moduleId(_ source: String) -> String {
         String(source.dropLast(3))
     }
+
+    /// Whether a module is an entry file, one whose rules run: a file at the
+    /// top of the rules directory. Files in folders are helpers its entries
+    /// import.
+    public static func isEntry(_ moduleId: String) -> Bool { !moduleId.contains("/") }
+
+    /// The source file of an entry module, as rule ids and logs name it.
+    public static func entryFile(_ moduleId: String) -> String { moduleId + ".ts" }
 
     // MARK: - Diagnostics
 
@@ -263,50 +240,20 @@ public struct RuleCompiler: Sendable {
     // MARK: - Process
 
     /// Runs a bundled tool (tsrs, or one of `RuleLinter`'s) to completion,
-    /// stopped after 60 seconds, with stdout and stderr combined.
-    /// `environment` replaces the inherited one when given.
+    /// bounded as the `exec` effect is (`ChildProcess`): its process group
+    /// is ended after 60 seconds or when the calling task is cancelled, and
+    /// each output is cut at 8 MiB. Its stdout, then its stderr. `environment`
+    /// replaces the inherited one when given.
     static func runTool(
         _ executable: URL, arguments: [String], directory: URL, environment: [String: String]? = nil
     ) async throws -> (status: Int32, output: String) {
-        let process = Process()
-        process.executableURL = executable
-        process.arguments = arguments
-        process.currentDirectoryURL = directory
-        if let environment { process.environment = environment }
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        // The exit is awaited through a continuation, which ignores task
-        // cancellation: reading `terminationStatus` of a process that is
-        // still running raises an Objective-C exception. Cancellation instead
-        // terminates the tool, and the exit still arrives.
-        let exited = ExitSignal()
-        process.terminationHandler = { _ in exited.fire() }
-        try process.run()
-        // A blocking read belongs on a dispatch thread, not on the Swift
-        // concurrency threads every actor in the daemon shares.
-        let handle = pipe.fileHandleForReading
-        let output = Task {
-            await withCheckedContinuation { (continuation: CheckedContinuation<Data, Never>) in
-                DispatchQueue.global(qos: .utility).async {
-                    continuation.resume(returning: (try? handle.readToEnd()) ?? Data())
-                }
-            }
-        }
-        let watchdog = Task {
-            try await Task.sleep(for: .seconds(60))
-            process.terminate()
-            try await Task.sleep(for: .seconds(2))
-            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-        }
-        await withTaskCancellationHandler {
-            await exited.wait()
-        } onCancel: {
-            process.terminate()
-        }
-        watchdog.cancel()
-        let data = await output.value
-        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
+        let result = try await ChildProcess.run(
+            path: executable.path, arguments: arguments,
+            environment: environment ?? ProcessInfo.processInfo.environment, directory: directory.path, stdin: nil,
+            timeout: 60, outputLimit: 8 << 20)
+        // A tool a signal ended has no status; the signal stands in for it
+        // in the failure callers report.
+        return (result.status ?? result.signal ?? -1, result.stdout + result.stderr)
     }
 }
 
@@ -315,9 +262,13 @@ public struct RuleCompiler: Sendable {
 /// The compiler, and the checked-in copy of the runtime's declarations
 /// installed next to it.
 public struct TypeScriptToolchain: Sendable, Equatable {
-    /// Where Meerkat.app keeps tsrs, under `Contents/Resources`, which the
+    /// Where Meerkat.app keeps tsrs, under `AppBundle.resources`, which the
     /// bundler fills.
     public static let bundledDirectory = "typescript"
+    /// The runtime's declarations, by this name beside tsrs in the bundle,
+    /// in the repository, in the compile's work directory and in the rules
+    /// directory's editor support.
+    public static let runtimeDeclarationsFile = "deno.d.ts"
 
     /// tsrs, next to the `lib.*.d.ts` it resolves beside itself.
     public let compiler: URL
@@ -337,7 +288,7 @@ public struct TypeScriptToolchain: Sendable, Equatable {
     /// the repository's `Sources/meerkat-rules/` for development builds.
     public static func locate(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        executable: URL = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
+        executable: URL = .currentExecutable
     ) -> TypeScriptToolchain? {
         let fileManager = FileManager.default
         let resolved = executable.resolvingSymlinksInPath()
@@ -348,24 +299,24 @@ public struct TypeScriptToolchain: Sendable, Equatable {
         if let override = environment["MEERKAT_TSRS"], fileManager.isExecutableFile(atPath: override) {
             let types =
                 environment["MEERKAT_RUNTIME_TYPES"].map(URL.init(fileURLWithPath:))
-                ?? repository?.appendingPathComponent("deno.d.ts")
+                ?? repository?.appendingPathComponent(runtimeDeclarationsFile)
             return TypeScriptToolchain(
                 compiler: URL(fileURLWithPath: override), runtimeDeclarations: installed(types))
         }
-        // Contents/MacOS/meerkatd -> Contents/Resources/typescript/
-        let bundled = resolved.deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Resources").appendingPathComponent(Self.bundledDirectory)
+        let bundled = AppBundle.resource(Self.bundledDirectory, besideExecutable: resolved)
         let bundledCompiler = bundled.appendingPathComponent("tsrs")
         if fileManager.isExecutableFile(atPath: bundledCompiler.path) {
             return TypeScriptToolchain(
-                compiler: bundledCompiler, runtimeDeclarations: installed(bundled.appendingPathComponent("deno.d.ts")))
+                compiler: bundledCompiler,
+                runtimeDeclarations: installed(bundled.appendingPathComponent(runtimeDeclarationsFile)))
         }
         guard let repository else { return nil }
         let compiler = repository.appendingPathComponent("node_modules/.bun/node_modules/@tsrs/darwin-arm64/tsrs")
             .resolvingSymlinksInPath()
         guard fileManager.isExecutableFile(atPath: compiler.path) else { return nil }
         return TypeScriptToolchain(
-            compiler: compiler, runtimeDeclarations: installed(repository.appendingPathComponent("deno.d.ts")))
+            compiler: compiler,
+            runtimeDeclarations: installed(repository.appendingPathComponent(runtimeDeclarationsFile)))
     }
 
     /// `.build/<config>/meerkatd` or a test bundle: the nearest enclosing
@@ -374,7 +325,8 @@ public struct TypeScriptToolchain: Sendable, Equatable {
         var directory = executable.deletingLastPathComponent()
         for _ in 0..<8 {
             let rules = directory.appendingPathComponent("Sources/meerkat-rules")
-            if FileManager.default.fileExists(atPath: rules.appendingPathComponent("deno.d.ts").path) { return rules }
+            let declarations = rules.appendingPathComponent(runtimeDeclarationsFile)
+            if FileManager.default.fileExists(atPath: declarations.path) { return rules }
             directory.deleteLastPathComponent()
         }
         return nil

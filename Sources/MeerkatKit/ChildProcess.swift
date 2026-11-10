@@ -1,34 +1,24 @@
 import Darwin
 import Foundation
-import Synchronization
 
-/// Runs one executable for the `exec` effect, bounded in time and output.
+/// Runs one executable bounded in time and output: the daemon's `exec`
+/// effect, and the rules tools (`RuleCompiler.runTool`).
 ///
 /// The child gets its own process group (so a timeout also ends anything it
 /// started), only the three pipes as file descriptors, and no shell. All I/O
 /// goes through non-blocking dispatch sources, so nothing here blocks a
 /// thread, and a child that floods stdout while ignoring stdin cannot
 /// deadlock the daemon. The deadline is armed before any I/O starts; after
-/// it, the child and its group get SIGTERM and, a second later, SIGKILL. One
-/// second after the child exits, whatever in its group still holds the pipes
-/// is killed and the result is returned.
-enum ChildProcess {
-    /// `ExecResult` in the effect catalog: an absent status or signal is left
-    /// out, never null.
-    struct Result: Sendable, Equatable, Encodable {
-        /// Exit status, or nil when a signal ended the process.
-        var status: Int32?
-        var signal: Int32?
-        var stdout: String
-        var stderr: String
-        var timedOut: Bool
-    }
-
-    enum Failure: Error, CustomStringConvertible {
+/// it, or when the calling task is cancelled, the child and its group get
+/// SIGTERM and, a second later, SIGKILL. One second after the child exits,
+/// whatever in its group still holds the pipes is killed and the result is
+/// returned.
+public enum ChildProcess {
+    public enum Failure: Error, CustomStringConvertible {
         case spawn(path: String, errno: Int32)
         case pipe(Int32)
 
-        var description: String {
+        public var description: String {
             switch self {
             case .spawn(let path, let code): return "could not start \(path): \(String(cString: strerror(code)))"
             case .pipe(let code): return "could not create pipes: \(String(cString: strerror(code)))"
@@ -36,10 +26,15 @@ enum ChildProcess {
         }
     }
 
-    static func run(
-        path: String, arguments: [String], environment: [String: String], stdin input: String?,
-        timeout: Double, outputLimit: Int, onSpawn: @Sendable (pid_t) -> Void = { _ in }
-    ) async throws -> Result {
+    /// - Parameters:
+    ///   - environment: the child's whole environment; nothing is inherited.
+    ///   - directory: its working directory, the caller's when nil.
+    ///   - outputLimit: bytes kept of stdout and of stderr, each; the rest is
+    ///     read and dropped.
+    public static func run(
+        path: String, arguments: [String], environment: [String: String], directory: String? = nil,
+        stdin input: String?, timeout: Double, outputLimit: Int, onSpawn: @Sendable (pid_t) -> Void = { _ in }
+    ) async throws -> ExecResult {
         let (pid, stdinFD, stdoutFD, stderrFD) = try { () throws -> (pid_t, Int32, Int32, Int32) in
             var stdinPipe: [Int32] = [-1, -1]
             var stdoutPipe: [Int32] = [-1, -1]
@@ -70,6 +65,7 @@ enum ChildProcess {
             posix_spawn_file_actions_adddup2(&actions, stdinPipe[0], 0)
             posix_spawn_file_actions_adddup2(&actions, stdoutPipe[1], 1)
             posix_spawn_file_actions_adddup2(&actions, stderrPipe[1], 2)
+            if let directory { posix_spawn_file_actions_addchdir(&actions, directory) }
 
             var attributes: posix_spawnattr_t?
             posix_spawnattr_init(&attributes)
@@ -114,12 +110,13 @@ enum ChildProcess {
         }()
         onSpawn(pid)
 
-        return await withCheckedContinuation { continuation in
-            Run(
-                pid: pid, stdin: stdinFD, stdout: stdoutFD, stderr: stderrFD,
-                input: input.map { Data($0.utf8) }, timeout: timeout, outputLimit: outputLimit,
-                continuation: continuation
-            ).start()
+        let run = Run(
+            pid: pid, stdin: stdinFD, stdout: stdoutFD, stderr: stderrFD,
+            input: input.map { Data($0.utf8) }, timeout: timeout, outputLimit: outputLimit)
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in run.start(continuation) }
+        } onCancel: {
+            run.cancel()
         }
     }
 
@@ -135,7 +132,7 @@ enum ChildProcess {
         let timeout: Double
         let outputLimit: Int
         let queue = DispatchQueue(label: "com.gkze.meerkat.exec")
-        var continuation: CheckedContinuation<Result, Never>?
+        var continuation: CheckedContinuation<ExecResult, Never>?
 
         var readers: [Int32: any DispatchSourceRead] = [:]
         var writer: (any DispatchSourceWrite)?
@@ -148,8 +145,7 @@ enum ChildProcess {
         var timedOut = false
 
         init(
-            pid: pid_t, stdin: Int32, stdout: Int32, stderr: Int32, input: Data?, timeout: Double,
-            outputLimit: Int, continuation: CheckedContinuation<Result, Never>
+            pid: pid_t, stdin: Int32, stdout: Int32, stderr: Int32, input: Data?, timeout: Double, outputLimit: Int
         ) {
             self.pid = pid
             self.stdin = stdin
@@ -158,11 +154,11 @@ enum ChildProcess {
             self.input = input
             self.timeout = timeout
             self.outputLimit = outputLimit
-            self.continuation = continuation
         }
 
-        func start() {
+        func start(_ continuation: CheckedContinuation<ExecResult, Never>) {
             queue.async { [self] in
+                self.continuation = continuation
                 // Deadline first: nothing after this can wait unbounded.
                 queue.asyncAfter(deadline: .now() + timeout) { [self] in expire() }
 
@@ -259,9 +255,20 @@ enum ChildProcess {
             finishIfDone()
         }
 
+        /// The caller no longer wants the result: the child ends as at the
+        /// deadline, without counting as timed out.
+        func cancel() {
+            queue.async { [self] in end() }
+        }
+
         private func expire() {
             guard exitStatus == nil else { return }
             timedOut = true
+            end()
+        }
+
+        private func end() {
+            guard exitStatus == nil else { return }
             // The group, and the child itself in case it left the group.
             kill(-pid, SIGTERM)
             kill(pid, SIGTERM)
@@ -281,7 +288,7 @@ enum ChildProcess {
             writer = nil
             let signalled = (status & 0x7F) != 0 && (status & 0x7F) != 0x7F
             continuation.resume(
-                returning: Result(
+                returning: ExecResult(
                     status: signalled ? nil : (status >> 8) & 0xFF,
                     signal: signalled ? status & 0x7F : nil,
                     stdout: String(decoding: buffers[stdoutFD] ?? Data(), as: UTF8.self),

@@ -7,13 +7,15 @@ import Foundation
 // them must agree with the BUCK files that own the same facts:
 //
 //   conformance spm-graph EXPECTED.json   Package.swift's targets, their
-//                                         dependencies and their Swift
+//                                         dependencies, their Swift
 //                                         settings (warnings, upcoming
-//                                         features) are Buck's Swift graph,
-//                                         and its macOS is `[meerkat]
-//                                         minimum_macos`
+//                                         features) and what they link are
+//                                         Buck's Swift graph, and its macOS
+//                                         is `[meerkat] minimum_macos`
 //   conformance spm-pins EXPECTED.json    Package.resolved pins the revisions
-//                                         //buck2/third_party/swift builds
+//                                         //buck2/third_party/swift builds,
+//                                         and Package.swift's exact and
+//                                         revision requirements name them
 //   conformance spm-manifest ARCHIVES.json  buck2/third_party/swift/modules.bzl
 //                                         is what each package manifest at its
 //                                         pin says (Manifests.swift)
@@ -62,14 +64,11 @@ struct SwiftSettings: Decodable, Equatable, CustomStringConvertible {
     init(_ target: PackageManifest.Target) {
         var warnings = "default"
         var features: [String] = []
-        for setting in target.settings where setting.tool == "swift" && setting.condition == nil {
-            for (kind, argument) in setting.kind {
-                guard let value = argument._0?.description else { continue }
-                switch kind {
-                case "treatAllWarnings": warnings = value
-                case "enableUpcomingFeature": features.append(value)
-                default: break
-                }
+        for (kind, value) in unconditionalSettings(of: target, tool: "swift") {
+            switch kind {
+            case "treatAllWarnings": warnings = value
+            case "enableUpcomingFeature": features.append(value)
+            default: break
             }
         }
         self.init(warnings: warnings, upcomingFeatures: features)
@@ -78,14 +77,37 @@ struct SwiftSettings: Decodable, Equatable, CustomStringConvertible {
     var description: String { "warnings \(warnings), upcoming features \(upcomingFeatures)" }
 }
 
-/// Every target in both, with the same dependencies and, for a Swift
-/// target, the same settings, for the same macOS. A C target's settings are
-/// not compared: Package.swift gives every target the Swift settings, which
-/// clang ignores.
+/// What a target links that Package.swift states as `linkedLibrary` and
+/// `linkedFramework`, in Buck's spelling (`-l<library>`, `-framework
+/// <name>`), sorted. Unsafe flags are not compared: they say where SwiftPM
+/// finds what Buck builds for it (the runtime's library).
+func linkerSettings(_ target: PackageManifest.Target) -> [String] {
+    unconditionalSettings(of: target, tool: "linker").compactMap { kind, value in
+        switch kind {
+        case "linkedLibrary": "-l" + value
+        case "linkedFramework": "-framework " + value
+        default: nil
+        }
+    }.sorted()
+}
+
+/// Each setting `target` applies for `tool` unconditionally, as its kind
+/// and its argument.
+func unconditionalSettings(of target: PackageManifest.Target, tool: String) -> [(kind: String, value: String)] {
+    target.settings.filter { $0.tool == tool && $0.condition == nil }.flatMap { setting in
+        setting.kind.compactMap { kind, argument in argument._0.map { (kind: kind, value: $0.description) } }
+    }
+}
+
+/// Every target in both, with the same dependencies, the same linker
+/// settings and, for a Swift target, the same Swift settings, for the same
+/// macOS. A C target's Swift settings are not compared: Package.swift gives
+/// every target the Swift settings, which clang ignores.
 func checkGraph(expected path: String) throws -> [String] {
     struct Expected: Decodable {
         struct Target: Decodable {
             let deps: [String]
+            let linker: [String]
             /// None for a C target.
             let swift: SwiftSettings?
         }
@@ -120,6 +142,10 @@ func checkGraph(expected path: String) throws -> [String] {
         if buck.deps != dependencies {
             problems.append("\(name): Buck depends on \(buck.deps), Package.swift on \(dependencies)")
         }
+        let linked = linkerSettings(manifest)
+        if buck.linker != linked {
+            problems.append("\(name): Buck links \(buck.linker), Package.swift \(linked)")
+        }
         if let settings = buck.swift, settings != SwiftSettings(manifest) {
             problems.append("\(name): Buck builds with \(settings), Package.swift with \(SwiftSettings(manifest))")
         }
@@ -127,11 +153,15 @@ func checkGraph(expected path: String) throws -> [String] {
     return problems
 }
 
-/// Package.resolved's revision for each package Buck builds.
+/// Package.resolved's revision for each package Buck builds, and the pin
+/// of each package Package.swift requires at an exact version or revision.
 func checkSwiftPins(expected path: String) throws -> [String] {
     struct Resolved: Decodable {
         struct Pin: Decodable {
-            struct State: Decodable { let revision: String }
+            struct State: Decodable {
+                let revision: String
+                let version: String?
+            }
             let identity: String
             let state: State
         }
@@ -140,15 +170,29 @@ func checkSwiftPins(expected path: String) throws -> [String] {
     let expected = try readJSON([String: String].self, at: path)
     let resolved = Dictionary(
         uniqueKeysWithValues: try readJSON(Resolved.self, at: "Package.resolved").pins.map {
-            ($0.identity, $0.state.revision)
+            ($0.identity, $0.state)
         })
-    return expected.sorted(by: { $0.key < $1.key }).compactMap { identity, revision in
-        switch resolved[identity] {
+    var problems = expected.sorted(by: { $0.key < $1.key }).compactMap { identity, revision -> String? in
+        switch resolved[identity]?.revision {
         case nil: return "\(identity): built by Buck at \(revision), not pinned in Package.resolved"
         case revision: return nil
         case let pinned?: return "\(identity): Buck builds \(revision), Package.resolved pins \(pinned)"
         }
     }
+    for dependency in try dumpPackage(at: ".").dependencies.flatMap({ $0.sourceControl ?? [] }) {
+        let pin = resolved[dependency.identity]
+        if let revision = dependency.requirement?.revision?.first, revision != pin?.revision {
+            problems.append(
+                "\(dependency.identity): Package.swift requires revision \(revision), "
+                    + "Package.resolved pins \(pin?.revision ?? "none")")
+        }
+        if let version = dependency.requirement?.exact?.first, version != pin?.version {
+            problems.append(
+                "\(dependency.identity): Package.swift requires exactly \(version), "
+                    + "Package.resolved pins \(pin?.version ?? "none")")
+        }
+    }
+    return problems
 }
 
 /// bun.lock's `integrity` for each `package@version` Buck builds, against

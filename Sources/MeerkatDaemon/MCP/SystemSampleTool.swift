@@ -20,15 +20,10 @@ struct SystemSampleTool: Sendable {
     static let name = "system_sample"
     /// The kinds whose data a sample carries.
     static let kinds = ["process.top", "cpu.sample", "memory.sample"]
-    static let defaultWindow = 10.0
-    static let defaultTop = 10
     static let maxTop = 50
 
-    var defaultWindow: Double { min(Self.defaultWindow, policy.limits.sampleSeconds) }
-
-    struct Failure: Error, CustomStringConvertible {
-        let description: String
-    }
+    /// The sampler's own default, within what the policy allows.
+    var defaultWindow: Double { min(SystemSampler.Options().window, policy.limits.sampleSeconds) }
 
     /// The kinds the policy denies, in `kinds` order; empty when a sample
     /// may run.
@@ -36,48 +31,40 @@ struct SystemSampleTool: Sendable {
         Self.kinds.filter { name in catalog.kind(named: name).map { !policy.allows($0) } ?? true }
     }
 
-    func inputSchema() -> TypeSchema {
-        let ceiling = EventSampler.format(policy.limits.sampleSeconds)
-        return .object(
-            ObjectSchema([
-                .init(
-                    "window", .number, optional: true,
-                    doc:
-                        "Seconds to measure CPU and disk over: more than 0, at most \(ceiling), default \(EventSampler.format(defaultWindow))."
-                ),
-                .init(
-                    "top", .number, optional: true,
-                    doc: "Processes to report, busiest first: 1 to \(Self.maxTop), default \(Self.defaultTop)."),
-                .init(
-                    "systemOnly", .boolean, optional: true,
-                    doc: "Only processes whose executable ships with macOS."),
-            ]))
+    /// Why the policy hides the tool now, or nil.
+    var denial: String? {
+        let denied = deniedKinds
+        guard !denied.isEmpty else { return nil }
+        return
+            "system_sample reads what \(Self.kinds.joined(separator: ", ")) carry, and meerkat.json's mcp policy denies \(denied.joined(separator: ", "))"
     }
 
-    /// Checks a call's arguments against the schema, the ranges and the
-    /// policy, before anything is measured.
-    func request(_ arguments: JSONValue) throws(Failure) -> SystemSampler.Options {
-        let denied = deniedKinds
-        guard denied.isEmpty else {
-            throw Failure(
-                description:
-                    "system_sample reads what \(Self.kinds.joined(separator: ", ")) carry, and meerkat.json's mcp policy denies \(denied.joined(separator: ", "))"
-            )
-        }
-        let problems = SchemaValidator.violations(of: arguments, against: inputSchema(), at: "arguments")
-        guard problems.isEmpty else { throw Failure(description: problems.joined(separator: "; ")) }
-        let window = arguments["window"]?.numberValue ?? defaultWindow
-        guard window > 0, window <= policy.limits.sampleSeconds else {
-            throw Failure(
-                description:
-                    "window must be more than 0 and at most \(EventSampler.format(policy.limits.sampleSeconds))")
-        }
-        let top = arguments["top"]?.numberValue ?? Double(Self.defaultTop)
-        guard top >= 1, top <= Double(Self.maxTop), top.rounded() == top else {
-            throw Failure(description: "top must be a whole number from 1 to \(Self.maxTop)")
-        }
-        return SystemSampler.Options(
-            window: window, top: Int(top), systemOnly: arguments["systemOnly"]?.boolValue ?? false)
+    func inputSchema() -> ObjectSchema {
+        ObjectSchema([
+            .init(
+                "window", .bounded(.positive(atMost: policy.limits.sampleSeconds)),
+                default: .number(defaultWindow), doc: "Seconds to measure CPU and disk over."),
+            .init(
+                "top", .bounded(.integer(1...Self.maxTop)), default: .number(Double(SystemSampler.Options().top)),
+                doc: "Processes to report, busiest first."),
+            .init(
+                "systemOnly", .boolean, default: .bool(SystemSampler.Options().systemOnly),
+                doc: SystemSampler.Options.systemOnlyDoc),
+        ])
+    }
+
+    /// Checks a call's arguments against the schema, whose bounds are the
+    /// policy's, before anything is measured. Whether the policy allows a
+    /// sample at all is the dispatch's (`denial`).
+    func request(_ arguments: JSONValue) throws(Refusal) -> SystemSampler.Options {
+        let input: Input = try MCPService.decoded(arguments, inputSchema())
+        return SystemSampler.Options(window: input.window, top: input.top, systemOnly: input.systemOnly)
+    }
+
+    private struct Input: Decodable {
+        let window: Double
+        let top: Int
+        let systemOnly: Bool
     }
 
     /// What a client gets: the sample without its host name. That is the
@@ -89,17 +76,5 @@ struct SystemSampleTool: Sendable {
         guard case .object(var fields) = try JSONValue(encoding: sample) else { return .object([:]) }
         fields["host"] = nil
         return .object(fields)
-    }
-
-    /// Takes the sample. The sampler sleeps through its window, so it runs
-    /// on a dispatch thread rather than one of the few the daemon's actors
-    /// share. It can't be interrupted: a cancelled call waits out the
-    /// window, which the policy bounds, and holds its slot until then.
-    static func run(_ options: SystemSampler.Options) async throws -> SystemSample {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<SystemSample, any Error>) in
-            DispatchQueue.global(qos: .utility).async {
-                continuation.resume(with: Result { try SystemSampler.sample(options) })
-            }
-        }
     }
 }

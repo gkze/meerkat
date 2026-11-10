@@ -442,7 +442,7 @@ final class ProblemAnnotations: @preconcurrency TextViewCoordinator {
             // A zero-width range (a missing token) still gets a mark.
             let length = max(end - start, 1)
             let range = NSRange(location: start, length: min(length, max(textView.textStorage.length - start, 0)))
-            return Emphasis(range: range, style: .underline(color: Self.color(problem.severity)))
+            return Emphasis(range: range, style: .underline(color: problem.severity.status.nsColor))
         }
         textView.emphasisManager?.replaceEmphases(emphases, for: Self.emphasisGroup)
 
@@ -455,12 +455,12 @@ final class ProblemAnnotations: @preconcurrency TextViewCoordinator {
             label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
             // The text variant: the underline's system colour is too light
             // for small text on a light theme. It resolves for the theme's
-            // background, not the app's appearance: Dracula and Nord are
-            // dark in both.
+            // background, not the app's appearance: a dark-only theme
+            // (`RuleEditorTheme.isDarkOnly`) is dark in both.
             label.appearance = labelAppearance
-            label.textColor = problem.severity == .error ? .criticalText : .warnText
+            label.textColor = problem.severity.status.nsText
             label.drawsBackground = true
-            label.backgroundColor = Self.color(problem.severity).withAlphaComponent(0.12)
+            label.backgroundColor = problem.severity.status.nsColor.withAlphaComponent(0.12)
             label.lineBreakMode = .byTruncatingTail
             label.toolTip = problem.message
             label.sizeToFit()
@@ -493,9 +493,5 @@ final class ProblemAnnotations: @preconcurrency TextViewCoordinator {
         guard let background = controller?.theme.background.usingColorSpace(.sRGB) else { return nil }
         let isDark = background.brightnessComponent < 0.5
         return NSAppearance(named: isDark ? .darkAqua : .aqua)
-    }
-
-    private static func color(_ severity: RuleEditorModel.Problem.Severity) -> NSColor {
-        severity == .error ? .systemRed : .systemOrange
     }
 }

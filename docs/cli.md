@@ -80,9 +80,11 @@ Clients that don't expand `~` need the full path.
 - **Bounded replies.** A resource read or tool reply over `outputKiB`
   is cut to it and marked `truncated`; a rule's log keeps its newest entries
   instead, and `events_sample` stops adding events once theirs would pass it.
-- **Restarts.** When meerkatd restarts, the bridge exits with status 69, and
-  the client starts it again. A line from the client longer than 4 MiB ends
-  the session with status 1: a new bridge would refuse it too.
+- **Restarts.** When meerkatd restarts, can't be reached, or turns a message
+  away because the session is backed up or closing, the bridge exits with
+  status 69, and the client starts it again. A line from the client longer
+  than 4 MiB, or a meerkatd of a different build, ends the session with
+  status 1: a new bridge would meet it too.
 
 The design and the remaining steps are in
 [docs/design/mcp.md](design/mcp.md).
@@ -111,8 +113,11 @@ and runs the built `meerkat` to check each status, stream and error object
 below for the failures that need no daemon. A failed check (rules, lint, format,
 `config check`, `agent status`) exits 1 with or without `--json`, and its
 findings are its output. A file or folder that doesn't exist is 66, a daemon or
-tool the app ships that isn't there is 69, a usage error is 64, and an
-`agent install` whose daemon didn't answer yet is 75. With
+tool the app ships that isn't there is 69 (a daemon that doesn't answer in
+time, or answers what wasn't asked, included), a usage error is 64, and an
+`agent install` whose daemon didn't answer yet is 75; `ExitStatus` is the one
+list, which the help prints. A daemon that refuses a request, or is a
+different build, is 1. With
 `--json`, any other failure, a usage error included, writes one object to
 stderr, `{"error": {"status": 69, "message": "..."}}`, after any notes in
 text; so does a usage error of a command that always prints JSON (`events

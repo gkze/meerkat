@@ -149,11 +149,11 @@ restart.
 
 | Path | Role |
 |---|---|
-| `Sources/MeerkatKit` | Samplers, process catalog and identity, the event catalog (descriptors, payloads, parameters, schemas), event sources, the hub, predicate and rate-limit evaluation, `JSONValue`. No dependencies. |
+| `Sources/MeerkatKit` | Samplers, process catalog and identity, the event catalog (descriptors, payloads, parameters, schemas), event sources, the hub, predicate and rate-limit evaluation, `JSONValue`, what rule checks report (`RuleDiagnostic`, `LintReport`) and a rules folder's layout (`RulesDirectoryLayout`), deadlines (`withDeadline`), the bounded child-process runner `exec` and the rules tools share (`ChildProcess`), the bundle's layout (`AppBundle`). No dependencies. |
 | `Sources/MeerkatStore` | The sample store (normalized: configuration.md, "Storage") and the rule store (state, logs). GRDB and SQLiteData. |
-| `Sources/MeerkatIPC` | XPC messages, `DaemonClient` with reconnect and resubscribe, `DaemonPaths`, the `meerkat.json` schema. |
+| `Sources/MeerkatIPC` | XPC messages, `DaemonClient` with reconnect and resubscribe and `DaemonFailure`, `DaemonPaths`, the bundle's names (`DaemonService`), the `meerkat.json` schema, the agent skills. |
 | `Sources/MeerkatAgent` | `SMAppService` registration, shared by the CLI and the app. |
-| `Sources/MeerkatRules` | The rule compiler (tsrs) and linter over the bundled tools. The CLI uses it without the daemon. |
+| `Sources/MeerkatRules` | The rule compiler (tsrs) and linter over the bundled tools, and the editor support both write into a rules folder (`EditorSupport`). It depends on MeerkatKit only; the CLI uses it without the daemon. |
 | `Sources/MeerkatDaemon` | Rule engine, handler host supervisor (over the `HandlerHostTransport` protocol, a test seam), the Deno runtime as its transport, effects, XPC server, MCP server. Only `meerkatd` and the daemon tests link it (and V8). |
 | `Sources/CICU` | ICU's C regex API, for time-bounded `match` regexes. |
 | `Sources/meerkat-runtime` | The embedded Deno runtime (Rust), the one static library `meerkatd` links, with std once: a worker per rule file, module loader, the `meerkat` module (`js/runtime.js`), console, watchdog, host protocol. `build.rs` composes the runtime's globals from Deno's libraries; `bindgen/` generates its C header (`CMeerkatRuntime`) and Swift API (`MeerkatRuntimeBindings`). |

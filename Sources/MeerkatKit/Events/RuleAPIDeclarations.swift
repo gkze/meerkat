@@ -12,6 +12,35 @@ public enum RuleLimits {
     public static let maximumMatchInput = 16_384
     public static let defaultTimeoutSeconds = 5.0
     public static let timeoutRange = 0.1...60.0
+    /// `throttleSeconds` and `debounceSeconds`.
+    public static let rateSeconds = NumberBounds.positive(atMost: 86_400)
+    public static let maxPerMinute = NumberBounds.integer(1...10_000)
+
+    public static let rate = ObjectSchema([
+        ObjectSchema.Field(
+            "throttleSeconds", .bounded(rateSeconds), optional: true,
+            doc: "At most one invocation per window of this many seconds; the first event wins"),
+        ObjectSchema.Field(
+            "debounceSeconds", .bounded(rateSeconds), optional: true,
+            doc: "Invoke with the last event once no event arrived for this many seconds"),
+        ObjectSchema.Field(
+            "maxPerMinute", .bounded(maxPerMinute), optional: true,
+            doc: "Drop events beyond this many invocations per rolling minute"),
+    ])
+
+    /// The definition's options a schema states, with their bounds and
+    /// defaults: what `RuleDefinition` decodes them through and the
+    /// declarations below render.
+    public static let options = ObjectSchema([
+        ObjectSchema.Field("rate", .named("Rate", rate), optional: true),
+        ObjectSchema.Field(
+            "includeOwn", .boolean, default: false, doc: "Also receive events caused by this daemon's own effects."),
+        ObjectSchema.Field(
+            "timeoutSeconds", .bounded(NumberBounds(timeoutRange)), default: .number(defaultTimeoutSeconds),
+            doc:
+                "Seconds each invocation may run, from when the handler starts; past it a promise still pending is abandoned, and synchronous code still running stops the handler host"
+        ),
+    ])
 }
 
 /// The hand-written part of the `meerkat` TypeScript module: the rule API.
@@ -111,12 +140,7 @@ enum RuleAPIDeclarations {
         // ---------------------------------------------------------------- rate
 
         export interface Rate {
-          /** At most one invocation per window; the first event wins. */
-          throttleSeconds?: number;
-          /** Invoke with the last event once no event arrived for this long. */
-          debounceSeconds?: number;
-          /** Drop events beyond this many invocations per rolling minute. */
-          maxPerMinute?: number;
+        \#(fields(RuleLimits.rate))
         }
 
         // ---------------------------------------------------------------- context
@@ -161,24 +185,20 @@ enum RuleAPIDeclarations {
           {} extends EventObservation[K] ? {} : { capabilities: EventObservation[K] };
 
         export type RuleDefinition<K extends EventName, G extends Grants> = {
-          /** Unique within the entry file that exports the rule; the rule id is `<file>#<name>`. */
+          /**
+           * Unique within the entry file that exports the rule, at most
+           * \#(RuleID.maximumNameBytes) bytes and without `#`; the rule id is `<file>#<name>`.
+           */
           name: string;
           on: K;
           match?: Match<Events[K]>;
-          rate?: Rate;
+        \#(options("rate"))
           /**
            * What the rule may do, and what it may observe: `on` may need a grant
            * (`EventObservation`), and a rule without it does not load.
            */
           capabilities?: G & OnlyGrants<G, Grants>;
-          /** Also receive events caused by this daemon's own effects. Default false. */
-          includeOwn?: boolean;
-          /**
-           * Deadline per invocation, \#(timeouts) seconds, from when the handler starts.
-           * Default \#(seconds(RuleLimits.defaultTimeoutSeconds)). A promise still pending then is abandoned; synchronous code
-           * still running then stops the handler host.
-           */
-          timeoutSeconds?: number;
+        \#(options("includeOwn", "timeoutSeconds"))
           handle(event: Events[K], ctx: Context<G>, meta: EventMeta<K>): void | Promise<void>;
         } & ParamsField<K> & ObservationField<K>;
 
@@ -202,11 +222,12 @@ enum RuleAPIDeclarations {
         export function rule<K extends EventName, const G extends Grants = {}>(definition: RuleDefinition<K, G>): Rule<K>;
         """#
 
-    private static let timeouts =
-        "\(seconds(RuleLimits.timeoutRange.lowerBound))–\(seconds(RuleLimits.timeoutRange.upperBound))"
+    /// `object`'s fields as interface members, with their documentation.
+    private static func fields(_ object: ObjectSchema) -> String {
+        TypeScriptDeclarations.fieldLines(object, indent: "  ").joined(separator: "\n")
+    }
 
-    /// A number of seconds as the declarations write it: `60`, not `60.0`.
-    private static func seconds(_ value: Double) -> String {
-        value.rounded() == value ? String(Int(value)) : String(value)
+    private static func options(_ names: String...) -> String {
+        fields(ObjectSchema(RuleLimits.options.fields.filter { names.contains($0.name) }))
     }
 }

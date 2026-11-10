@@ -1,5 +1,8 @@
 {
   "$schema": "./Sources/meerkat-rules/node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "tabWidth": 2,
+  "useTabs": false,
   "sortImports": {},
   "ignorePatterns": [
     "Sources/meerkat-rules/meerkat.d.ts",

@@ -22,11 +22,10 @@ path = "top/main.rs"
 
 [dependencies]
 camino = "1.2.6"
-# Sources/meerkat-runtime (//Sources/meerkat-runtime:meerkat_runtime). Exact pins: deno_runtime 0.268.0 is
-# Deno 2.9.8, the release whose declarations Sources/meerkat-runtime/types/deno/ holds, so
-# the types rules are checked against describe the runtime that runs them.
-# Changing deno_runtime fails a test until types/deno/ is copied again
-# (DENO_RUNTIME_VERSION in Sources/meerkat-runtime/build.rs).
+# Sources/meerkat-runtime (//Sources/meerkat-runtime:meerkat_runtime). Exact pins: deno_runtime is
+# DENO_RUNTIME_VERSION in Sources/meerkat-runtime/deno.bzl, what the Deno release whose
+# declarations rules are checked against is built on, so those types describe the runtime
+# that runs them. Changing deno_runtime fails a test until deno.bzl names its release.
 deno_core = "=0.413.0"
 deno_error = "=0.7.1"
 deno_resolver = { version = "=0.91.0", features = ["sync"] }

@@ -81,8 +81,8 @@ public struct FocusedWindowPayload: EventPayload, Equatable {
 public enum FocusedWindowEvent: EventKind {
     public static let descriptor = EventDescriptor(
         "window.focused",
-        "The frontmost app, its focused window, or that window's title changed. The current state is delivered first. Position, size, minimized and full-screen are read at each change but moving or resizing alone does not produce an event. Some apps expose no windows to Accessibility (the Electron-based Claude desktop app, checked on macOS 27); for them `window` is absent. With no window open, Finder reports the desktop. Needs the Accessibility permission; window titles can contain document names and web page titles.",
-        mechanism: .push, semantics: .state, loss: .coalesced, permission: .accessibility,
+        "The frontmost app, its focused window, or that window's title changed. The current state is delivered first. Position, size, minimized and full-screen are read at each change but moving or resizing alone does not produce an event. Some apps expose no windows to Accessibility (the Electron-based Claude desktop app, checked on macOS 27); for them `window` is absent. With no window open, Finder reports the desktop. Window titles can contain document names and web page titles.",
+        mechanism: .push, semantics: .state, loss: .coalesced, permission: .required(.accessibility),
         observation: .named,
         source:
             "AXObserver kAXFocusedWindowChanged, kAXMainWindowChanged, kAXTitleChanged on the frontmost app; NSWorkspace.didActivateApplicationNotification"
@@ -116,7 +116,7 @@ final class AXFocusSource: EventSource {
     /// The workspace observer, and the AXObserver with the app element it
     /// watches (used only on the AX thread).
     private struct State {
-        var workspaceToken: TokenBox?
+        var workspaceToken: NotificationSource.TokenBox?
         var observed: Observed?
     }
 
@@ -126,7 +126,6 @@ final class AXFocusSource: EventSource {
         let observer: AXObserver
     }
 
-    private struct TokenBox: @unchecked Sendable { let value: any NSObjectProtocol }
     private struct AppBox: @unchecked Sendable { let value: NSRunningApplication }
 
     /// The observer callback's context. Observers are removed on the AX
@@ -148,7 +147,6 @@ final class AXFocusSource: EventSource {
     }
 
     func start() throws {
-        try EventDescriptor.Permission.accessibility.require(for: FocusedWindowEvent.descriptor.name)
         thread.start()
         let token = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: nil
@@ -159,7 +157,7 @@ final class AXFocusSource: EventSource {
             let box = AppBox(value: app)
             self.thread.perform { [weak self] runLoop in self?.follow(box.value, on: runLoop) }
         }
-        let tokenBox = TokenBox(value: token)
+        let tokenBox = NotificationSource.TokenBox(value: token)
         state.withLock { $0.workspaceToken = tokenBox }
         if let front = NSWorkspace.shared.frontmostApplication.map({ AppBox(value: $0) }) {
             thread.perform { [weak self] runLoop in self?.follow(front.value, on: runLoop) }

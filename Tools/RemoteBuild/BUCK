@@ -2,7 +2,8 @@ load("//buck2/rules:check.bzl", "command")
 load("//buck2/rules:meerkat.bzl", "meerkat_swift_executable", "meerkat_swift_test")
 
 # Builds a //Tools/Bundler bundle on another Mac, then assembles, signs and
-# installs it here.
+# installs it here. Buck-only, like //buck2/conformance: Package.swift does
+# not build it (//:package_swift_test leaves it out).
 meerkat_swift_executable(
     name = "remote_build",
     srcs = ["RemoteBuild.swift"],

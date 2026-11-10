@@ -101,12 +101,14 @@ const describe = (error) => {
 
 // Deno's console, printing to the daemon's rule log instead of stdout.
 // Its levels: 0 debug, 1 log and info, 2 warn, 3 and up error.
+// A line with no rule is the file's: the host files it under the file's
+// name (host.rs, `log`).
 const LEVELS = ["debug", "info", "warn", "error"];
 const print = (rule) => (message, level) => {
   const text = StringPrototypeEndsWith(message, "\n")
     ? StringPrototypeSlice(message, 0, -1)
     : message;
-  op_meerkat_log(rule() ?? file, LEVELS[level] ?? "error", text);
+  op_meerkat_log(rule() ?? null, LEVELS[level] ?? "error", text);
 };
 
 // ------------------------------------------------------------------ effects
@@ -331,11 +333,11 @@ const register = (namespace, made) => {
     );
   if (unexported.length > 0)
     op_meerkat_log(
-      file,
+      null,
       "warn",
       `rules created but not exported by ${file}, so not running: ${names}`,
     );
-  else if (loaded.length === 0) op_meerkat_log(file, "warn", `${file} exports no rules`);
+  else if (loaded.length === 0) op_meerkat_log(null, "warn", `${file} exports no rules`);
   return loaded;
 };
 
@@ -399,14 +401,14 @@ const invoke = (message, consoleClass) => {
   );
 };
 
-const resolveEffect = ({ local, ok, payload }) => {
+const settleEffect = (local, settle) => {
   const entry = pending.get(local);
   if (entry === undefined) return;
   pending.delete(local);
-  if (ok) entry.resolve(payload);
-  else entry.reject(new Error(payload));
+  settle(entry);
 };
 
+// The messages the host sends (worker.rs, `JsMessage`).
 const dispatch = (message, consoleClass) => {
   switch (message.type) {
     case "load": {
@@ -418,13 +420,16 @@ const dispatch = (message, consoleClass) => {
       invoke(message, consoleClass);
       break;
     }
-    case "effectResult": {
-      resolveEffect(message);
+    case "effectSucceeded": {
+      settleEffect(message.local, (entry) => entry.resolve(message.value));
+      break;
+    }
+    case "effectFailed": {
+      settleEffect(message.local, (entry) => entry.reject(new Error(message.message)));
       break;
     }
     default: {
-      // The host sends only the types above; anything else is ignored.
-      break;
+      throw new TypeError(`the host sent a message of unknown type "${message.type}"`);
     }
   }
 };
@@ -433,18 +438,19 @@ const serve = async (consoleClass) => {
   for (;;) {
     const text = await op_meerkat_next();
     if (text === null) return;
-    const message = JSONParse(text);
     // One message failing, whatever rule code did to the globals it uses,
     // must not end the loop that serves every rule of the file; an
     // invocation that failed before its handler ran is reported as its
     // failure, so the daemon is not left waiting.
+    let message = null;
     try {
+      message = JSONParse(text);
       dispatch(message, consoleClass);
     } catch (error) {
-      if (message.type === "invoke") op_meerkat_done(message.invocation, describe(error));
+      if (message?.type === "invoke") op_meerkat_done(message.invocation, describe(error));
       else {
         const { message: reason } = JSONParse(describe(error));
-        op_meerkat_log(file, "error", `the runtime could not handle "${message.type}": ${reason}`);
+        op_meerkat_log(null, "error", `the runtime could not handle "${message?.type}": ${reason}`);
       }
     }
   }
@@ -503,11 +509,11 @@ const start = () => {
   // logged; it does not end the file's worker.
   globalThis.addEventListener("error", (event) => {
     event.preventDefault();
-    op_meerkat_log(file, "error", `uncaught ${show(event.error ?? event.message)}`);
+    op_meerkat_log(null, "error", `uncaught ${show(event.error ?? event.message)}`);
   });
   globalThis.addEventListener("unhandledrejection", (event) => {
     event.preventDefault();
-    op_meerkat_log(file, "error", `unhandled rejection: ${show(event.reason)}`);
+    op_meerkat_log(null, "error", `unhandled rejection: ${show(event.reason)}`);
   });
   PromisePrototypeThen(serve(consoleModule.Console), undefined, (error) => {
     op_meerkat_log(null, "error", `the runtime's dispatcher failed: ${show(error)}`);

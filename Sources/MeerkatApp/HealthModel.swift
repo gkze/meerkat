@@ -41,11 +41,15 @@ final class HealthModel {
     private(set) var dropped: [DroppedReport] = []
 
     private let client: any DaemonConnection
+    private let retry: FeedRetry
+    private let back: DaemonReturn
     private var previous: (date: Date, delivered: [SourceStatistics.ID: UInt64])?
     private var nextDroppedID = 0
 
-    init(client: any DaemonConnection) {
+    init(client: any DaemonConnection, retry: FeedRetry = FeedRetry(), back: DaemonReturn = DaemonReturn()) {
         self.client = client
+        self.retry = retry
+        self.back = back
     }
 
     var startedAt: Date? {
@@ -91,19 +95,23 @@ final class HealthModel {
         }
     }
 
+    /// The page shows no failure of this feed itself: status, refreshed
+    /// whenever it stops and polled beside it, says why the daemon is gone
+    /// or a different build.
     private func followDropped() async {
-        while !Task.isCancelled {
-            do {
-                for try await (payload, envelope) in try await client.events(
-                    MeerkatDroppedEvent.self, parameters: NoParameters())
-                {
-                    append(payload, at: envelope.time)
-                }
-            } catch {
-                if Task.isCancelled { return }
-            }
-            try? await Task.sleep(for: .seconds(5))
-        }
+        let client = client
+        await follow(
+            retry: retry, back: back,
+            subscribe: { try await client.events(MeerkatDroppedEvent.self, parameters: NoParameters()) },
+            subscribed: { await self.refresh() },
+            event: { report in
+                self.append(report.0, at: report.1.time)
+                return true
+            },
+            stopped: { _ in
+                await self.refresh()
+                return true
+            })
     }
 
     /// `time` is Unix epoch milliseconds, as in envelopes.

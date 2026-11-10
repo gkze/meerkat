@@ -1,0 +1,10 @@
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_test")
+
+meerkat_swift_test(
+    name = "MeerkatAgentTests",
+    deps = [
+        "//Sources/MeerkatAgent:MeerkatAgent",
+        "//Sources/MeerkatIPC:MeerkatIPC",
+        "//Sources/MeerkatKit:MeerkatKit",
+    ],
+)

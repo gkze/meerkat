@@ -95,11 +95,19 @@ struct LintTests {
             ])
     }
 
+    /// What the daemon writes into a rules directory, without the runtime's
+    /// declarations or `meerkat.json`'s schema.
+    static func editorSupport(_ linter: RuleLinter) -> EditorSupport {
+        EditorSupport(
+            declarations: TypeScriptDeclarations.render(), runtimeDeclarations: nil, configurationSchema: nil,
+            linter: linter)
+    }
+
     /// Every field survives XPC's coding, a diagnostic without a file
     /// included.
     @Test func diagnosticsRoundTrip() throws {
         let report = RulesReport(
-            rules: [],
+            rulesDirectory: "/rules", rules: [],
             diagnostics: [
                 RuleDiagnostic(tool: .compiler, file: nil, code: "TS5023", message: "Unknown option.", fixable: false),
                 .toolFailure(.loader, message: "no rule runtime is available; rules cannot load"),
@@ -127,10 +135,8 @@ struct LintTests {
     @Test func emptyRulesDirectoryIsClean() async throws {
         let rules = try Self.temporaryRules()
         defer { try? FileManager.default.removeItem(at: rules) }
-        try RuleCompiler.writeEditorSupport(
-            in: rules, declarations: TypeScriptDeclarations.render(), runtimeDeclarations: nil)
         let linter = RuleLinter(toolchain: try Self.toolchain())
-        try await linter.writeConfiguration(in: rules)
+        try await Self.editorSupport(linter).write(in: rules)
         #expect(await linter.check(rules).diagnostics == [])
         #expect(await linter.fix(rules).diagnostics == [])
     }
@@ -141,10 +147,8 @@ struct LintTests {
         let toolchain = try Self.toolchain()
         let rules = try Self.temporaryRules()
         defer { try? FileManager.default.removeItem(at: rules) }
-        try RuleCompiler.writeEditorSupport(
-            in: rules, declarations: TypeScriptDeclarations.render(), runtimeDeclarations: nil)
         let linter = RuleLinter(toolchain: toolchain)
-        try await linter.writeConfiguration(in: rules)
+        try await Self.editorSupport(linter).write(in: rules)
         try """
         import { rule } from "meerkat";
 

@@ -1,12 +1,12 @@
-load(":check.bzl", "command", "command_test")
-load(":toolchains.bzl", "rustup")
+load(":check.bzl", "command", "command_test", "over_files")
+load(":toolchains.bzl", "RUST_EDITION", "rustup")
 
 # Checks for first-party Rust crates, as `buck2 test` targets: what
 # `cargo clippy -- -D warnings` and `cargo fmt --check` did.
 #
 #   clippy_test   fails when clippy (or rustc) reports anything for a crate
 #   rustfmt_test  fails when rustfmt would change a crate's sources
-#   rustfmt_fix   `buck2 run` target that rewrites them (cargo fmt)
+#   rustfmt_fix   `buck2 run` target that rewrites the repository's (cargo fmt)
 #
 # meerkat_rust_crate is what every first-party crate is: the crate, its tests,
 # clippy and rustfmt checks.
@@ -34,22 +34,25 @@ clippy_test = rule(
 def _rustup(tool: str) -> list[str]:
     return rustup(read_root_config("rust", "release"), tool)
 
-def rustfmt_test(name: str, srcs: list, config: str, edition: str = "2024"):
-    """`rustfmt --check` over `srcs` with the crate's rustfmt.toml."""
+# Every crate formats with the repository's rustfmt.toml.
+_RUSTFMT = _rustup("rustfmt") + ["--edition", RUST_EDITION, "--config-path", "$(location //:rustfmt.toml)"]
+
+def rustfmt_test(name: str, srcs: list):
+    """`rustfmt --check` over `srcs`."""
     command_test(
         name = name,
-        command = _rustup("rustfmt") + ["--check", "--edition", edition, "--config-path", "$(location {})".format(config)],
+        command = _RUSTFMT + ["--check"],
         srcs = srcs,
         pass_srcs = True,
         labels = ["format", "portable"],
     )
 
-def rustfmt_fix(name: str, paths: list[str], edition: str = "2024"):
-    """Rewrites the Rust sources under `paths` (repository-relative) with
-    rustfmt, as `cargo fmt` did."""
+def rustfmt_fix(name: str, pathspecs: list[str]):
+    """Rewrites the Rust sources git's `pathspecs` match (`over_files`)
+    with rustfmt, as `cargo fmt` did."""
     command(
         name = name,
-        command = ["/usr/bin/find"] + paths + ["-name", "*.rs", "-exec"] + _rustup("rustfmt") + ["--edition", edition, "--config-path", "rustfmt.toml", "{}", "+"],
+        command = over_files(_RUSTFMT, pathspecs),
     )
 
 def meerkat_rust_crate(
@@ -76,7 +79,6 @@ def meerkat_rust_crate(
         srcs = srcs + extra_srcs,
         crate = crate,
         crate_root = "src/lib.rs" if library else "src/main.rs",
-        edition = "2024",
         env = package_env | env,
         rustc_flags = rustc_flags + manifest_dir + lints,
         deps = deps,
@@ -86,7 +88,7 @@ def meerkat_rust_crate(
     (native.rust_library if library else native.rust_binary)(name = name, visibility = visibility, **compile)
     native.rust_test(name = "test", **compile)
     clippy_test(name = "clippy", crate = ":test")
-    rustfmt_test(name = "rustfmt", config = "//:rustfmt.toml", srcs = srcs + format_srcs)
+    rustfmt_test(name = "rustfmt", srcs = srcs + format_srcs)
 
 def cargo_env(name: str, version: str, manifest_dir: str) -> (dict[str, str], list[str]):
     """What Cargo sets for a first-party crate: its name and version, and

@@ -15,7 +15,7 @@ struct MetricsFeedTests {
     private let lowPower = LowPowerModeEvent.descriptor.name
 
     private func model(_ daemon: FeedDaemon) -> MetricsModel {
-        MetricsModel(client: daemon, isVisible: { true }, retryDelay: .milliseconds(100))
+        MetricsModel(client: daemon, isVisible: { true }, retry: FeedRetry(first: .milliseconds(100)))
     }
 
     /// A polling source whose tick throws ends its own subscription
@@ -34,8 +34,8 @@ struct MetricsFeedTests {
         daemon.end(churn, throwing: DaemonClient.ClientError.daemon("fs.churn could not measure /Volumes/Gone"))
         try await waitUntil { model.feedFailures[churn] != nil }
         #expect(model.feedFailures[churn] == "fs.churn could not measure /Volumes/Gone")
-        #expect(model.feedFailure(.files) == "fs.churn could not measure /Volumes/Gone")
-        #expect(model.feedFailure(.cpu) == nil)
+        #expect(model.feedFailure(.files, on: .card) == "fs.churn could not measure /Volumes/Gone")
+        #expect(model.feedFailure(.cpu, on: .card) == nil)
         #expect(!model.connection.isUnavailable)
         // The others were never cancelled; only the churn feed comes back.
         try await waitUntil { daemon.subscribes(churn) == 2 }
@@ -43,9 +43,58 @@ struct MetricsFeedTests {
         #expect(daemon.open == feeds)
     }
 
-    /// `process.list` feeds only the pages' process tables: its failure is
-    /// shown on those pages, not on the cards, whose numbers keep coming.
-    @Test func aFailedProcessListShowsOnThePagesThatUseIt() async throws {
+    /// What each card and page draws, read off their views (`Dashboard`,
+    /// `ResourcePages`): a feed's failure belongs exactly where its numbers
+    /// stop. The views can't be asked, so this is the second reading that
+    /// the feed table has to agree with.
+    nonisolated static let drawnBy: [(kind: String, cards: Set<Resource>, pages: Set<Resource>)] = [
+        (CPUSampleEvent.descriptor.name, [.cpu], [.cpu]),
+        // The CPU chart's points come with memory samples.
+        (MemorySampleEvent.descriptor.name, [.cpu, .memory], [.cpu, .memory]),
+        (MemoryPressureEvent.descriptor.name, [.memory], [.memory]),
+        (DiskSampleEvent.descriptor.name, [.disk], [.disk]),
+        (NetworkPathEvent.descriptor.name, [], [.network]),
+        (PowerAssertionsEvent.descriptor.name, [], [.power]),
+        (NetworkSampleEvent.descriptor.name, [.network], [.network]),
+        (BatterySampleEvent.descriptor.name, [.power], [.power]),
+        (PowerSourceEvent.descriptor.name, [.power], [.power]),
+        (ThermalStateEvent.descriptor.name, [.cpu], [.cpu]),
+        // The Power card's badge; the CPU page's Thermal panel and the Power page.
+        (LowPowerModeEvent.descriptor.name, [.power], [.cpu, .power]),
+        // The cards' rows; the pages' tables list `process.list`.
+        (ProcessTopEvent.descriptor.name, [.cpu, .disk], []),
+        (ProcessListEvent.descriptor.name, [], [.cpu, .memory, .disk, .power]),
+        (FSChurnEvent.descriptor.name, [.files], [.files]),
+    ]
+
+    @Test func everyFeedIsDrawnSomewhere() {
+        #expect(Set(Self.drawnBy.map(\.kind)) == Set(MetricsModel.feeds.map(\.kind)))
+    }
+
+    /// A feed that fails is reported on every card and page that draws its
+    /// numbers, and on none that doesn't, whose numbers keep coming.
+    @Test(arguments: MetricsFeedTests.drawnBy)
+    func aFailedFeedShowsWhereItsNumbersStop(kind: String, cards: Set<Resource>, pages: Set<Resource>)
+        async throws
+    {
+        let daemon = FeedDaemon()
+        let model = model(daemon)
+        model.start()
+        defer { model.stop() }
+        try await waitUntil { daemon.subscribes(kind) == 1 }
+
+        daemon.end(kind, throwing: DaemonClient.ClientError.daemon("\(kind) failed"))
+        try await waitUntil { model.feedFailures[kind] != nil }
+        for resource in Resource.allCases {
+            #expect(model.feedFailure(resource, on: .card) == (cards.contains(resource) ? "\(kind) failed" : nil))
+            #expect(model.feedFailure(resource, on: .page) == (pages.contains(resource) ? "\(kind) failed" : nil))
+        }
+    }
+
+    /// A process whose start time can't make an identity names no instance:
+    /// it is listed with the rest, and opens no card, which would follow
+    /// whichever process holds its pid.
+    @Test func aProcessWithoutAnIdentityOpensNoCard() async throws {
         let list = ProcessListEvent.descriptor.name
         let daemon = FeedDaemon()
         let model = model(daemon)
@@ -53,14 +102,15 @@ struct MetricsFeedTests {
         defer { model.stop() }
         try await waitUntil { daemon.subscribes(list) == 1 }
 
-        daemon.end(list, throwing: DaemonClient.ClientError.daemon("the process table could not be read"))
-        try await waitUntil { model.feedFailures[list] != nil }
-        for resource in [Resource.cpu, .memory, .disk, .power] {
-            #expect(model.feedFailure(resource, onPage: true) == "the process table could not be read")
-            #expect(model.feedFailure(resource) == nil)
-        }
-        #expect(model.feedFailure(.network, onPage: true) == nil)
-        #expect(model.feedFailure(.files, onPage: true) == nil)
+        try daemon.emit(
+            list,
+            ProcessListPayload(processes: [
+                ProcessCardFeedTests.delta(cpu: 1, footprint: nil, pid: 7, startedAt: 1e300),
+                ProcessCardFeedTests.delta(cpu: 1, footprint: nil, pid: 8),
+            ]))
+        try await waitUntil { model.allProcesses.count == 2 }
+        #expect(model.connection == .connected)
+        #expect(model.allProcesses.map { ProcessTarget($0)?.pid } == [nil, 8])
     }
 
     /// A payload on the resubscribed feed clears its mark.
@@ -92,7 +142,7 @@ struct MetricsFeedTests {
         daemon.end(battery, throwing: DaemonClient.ClientError.daemon("the battery could not be read"))
         try await waitUntil { model.feedFailures[battery] != nil }
         #expect(model.battery == .waiting)
-        #expect(model.feedFailure(.power) == "the battery could not be read")
+        #expect(model.feedFailure(.power, on: .card) == "the battery could not be read")
         #expect(!model.connection.isUnavailable)
         try await waitUntil { daemon.subscribes(battery) == 2 }
     }
@@ -126,12 +176,6 @@ struct MetricsFeedTests {
         try await waitUntil { model.connection.isUnavailable }
         #expect(model.feedFailures.isEmpty)
         try await waitUntil { daemon.subscribes(lowPower) == 2 }
-    }
-}
-
-extension MetricsModel.Connection {
-    fileprivate var isUnavailable: Bool {
-        if case .unavailable = self { true } else { false }
     }
 }
 
@@ -200,7 +244,7 @@ struct ProcessCardFeedTests {
     /// tiles get no points, not a line at zero.
     @Test func anUnreadableCounterAddsNoPoint() async throws {
         let daemon = FeedDaemon()
-        let target = ProcessTarget(Self.delta(cpu: 12, footprint: nil))
+        let target = try #require(ProcessTarget(Self.delta(cpu: 12, footprint: nil)))
         let model = ProcessCardModel(target: target, client: daemon)
         model.start()
         defer { model.stop() }
@@ -222,7 +266,7 @@ struct ProcessCardFeedTests {
     /// next sample clears the problem.
     @Test func anEndedFeedIsTheCardsProblemUntilItComesBack() async throws {
         let daemon = FeedDaemon()
-        let model = card(daemon, running: true)
+        let model = try card(daemon, running: true)
         model.start()
         defer { model.stop() }
         try await waitUntil { daemon.subscribes(kind) == 1 }
@@ -239,7 +283,7 @@ struct ProcessCardFeedTests {
     /// rather than leaving the tiles silently frozen.
     @Test func aSilentEndIsStillAProblem() async throws {
         let daemon = FeedDaemon()
-        let model = card(daemon, running: true)
+        let model = try card(daemon, running: true)
         model.start()
         defer { model.stop() }
         try await waitUntil { daemon.subscribes(kind) == 1 }
@@ -252,7 +296,7 @@ struct ProcessCardFeedTests {
     /// and is no problem: the card shows it has exited.
     @Test func anExitedProcessIsNotFollowedAgain() async throws {
         let daemon = FeedDaemon()
-        let model = card(daemon, running: false)
+        let model = try card(daemon, running: false)
         model.start()
         defer { model.stop() }
         try await waitUntil { daemon.subscribes(kind) == 1 }
@@ -263,16 +307,21 @@ struct ProcessCardFeedTests {
         #expect(daemon.subscribes(kind) == 1)
     }
 
-    private func card(_ daemon: FeedDaemon, running: Bool) -> ProcessCardModel {
+    private func card(_ daemon: FeedDaemon, running: Bool) throws -> ProcessCardModel {
         ProcessCardModel(
-            target: ProcessTarget(Self.delta(cpu: 1, footprint: nil)), client: daemon,
-            retryDelay: .milliseconds(100), isRunning: { _ in running })
+            target: try #require(ProcessTarget(Self.delta(cpu: 1, footprint: nil))), client: daemon,
+            retry: FeedRetry(first: .milliseconds(100)), isRunning: { _ in running })
     }
 
-    private static func delta(cpu: Double, footprint: Double?) -> ProcessDelta {
+    static let startedAt = 1_792_887_367_209.0
+
+    /// Another user's process when `footprint` is nil: CPU only.
+    static func delta(
+        cpu: Double, footprint: Double?, pid: Int32 = 4242, startedAt: Double = Self.startedAt
+    ) -> ProcessDelta {
         ProcessDelta(
-            pid: 4242, name: "worker", path: "/usr/local/bin/worker", cpuPct: cpu, cpuSeconds: 1, windowSeconds: 1,
+            pid: pid, name: "worker", path: "/usr/local/bin/worker", cpuPct: cpu, cpuSeconds: 1, windowSeconds: 1,
             footprintMB: footprint, diskReadMB: footprint.map { _ in 0 }, diskWriteMB: footprint.map { _ in 0 },
-            energyJoules: footprint.map { _ in 1 }, startedAt: 1_792_887_367_209, uid: 0)
+            energyJoules: footprint.map { _ in 1 }, startedAt: startedAt, uid: 0)
     }
 }

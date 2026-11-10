@@ -9,14 +9,14 @@ load("@prelude//toolchains:cxx.bzl", "cxx_tools_info_toolchain")
 load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
 load("@prelude//toolchains:python.bzl", "system_python_bootstrap_toolchain", "system_python_toolchain")
 load("@prelude//toolchains:remote_test_execution.bzl", "remote_test_execution_toolchain")
-load("@root//buck2/rules:toolchains.bzl", "rustup_toolchain", "xcode_clang_tools")
+load("@root//buck2/rules:toolchains.bzl", "RUST_EDITION", "rustup_toolchain", "xcode_clang_tools")
 load("@root//buck2/rules/swift:toolchain.bzl", "swift_toolchain")
 
-DEVELOPER_DIR = read_root_config("swift", "developer_dir", "/Applications/Xcode.app/Contents/Developer")
+DEVELOPER_DIR = read_root_config("swift", "developer_dir")
 
 MINIMUM_MACOS = read_root_config("meerkat", "minimum_macos")
 
-XCODE_BUILD = read_root_config("swift", "xcode_build", "")
+XCODE_BUILD = read_root_config("swift", "xcode_build")
 
 # Build tools (//buck2/platforms:exec) have no debug info: they only run during
 # a build, and it is most of what a build script linking Deno weighs. Meerkat's
@@ -67,7 +67,7 @@ swift_toolchain(
 rustup_toolchain(
     name = "rust",
     release = read_root_config("rust", "release"),
-    default_edition = "2024",
+    default_edition = RUST_EDITION,
     # Stable-only, as Cargo builds: no RUSTC_BOOTSTRAP, so dependents link
     # against each crate's full rlib rather than a separately compiled
     # `-Zno-codegen` rmeta. The two compiles of a crate can disagree (askama's

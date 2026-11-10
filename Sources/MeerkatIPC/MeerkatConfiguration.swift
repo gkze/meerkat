@@ -11,18 +11,19 @@ import MeerkatKit
 /// `schema` is the one authority for the file's shape and ranges. The JSON
 /// Schema editors use (`meerkat config schema`, and the copy the daemon
 /// writes to `.meerkat/meerkat.schema.json`) is projected from it, and the
-/// daemon validates the file against it before decoding. Every field is
-/// optional in the file; an absent one keeps its default.
+/// file is decoded through it (`ObjectSchema.decode`), as every input from
+/// outside is. Every field is optional in the file; an absent one, a whole
+/// section included, has the schema's default.
 ///
 /// The file is data, never code: nothing in it runs, and rule code can write
 /// neither the rules directory nor this file, wherever a symlink to it leads,
 /// so no rule can widen the policy it runs under.
 public struct MeerkatConfiguration: Codable, Sendable, Equatable {
     public var mcp: MCP
-    public var samples: Samples
+    public var samples: SampleBudget
     public var files: Files
 
-    public init(mcp: MCP = .init(), samples: Samples = .init(), files: Files = .init()) {
+    public init(mcp: MCP = .init(), samples: SampleBudget = .init(), files: Files = .init()) {
         self.mcp = mcp
         self.samples = samples
         self.files = files
@@ -32,7 +33,7 @@ public struct MeerkatConfiguration: Codable, Sendable, Equatable {
     public static let fileName = "meerkat.json"
     /// Where the daemon writes the JSON Schema, relative to the rules
     /// directory; `meerkat.json` names it in `$schema`.
-    public static let schemaPath = ".meerkat/meerkat.schema.json"
+    public static let schemaPath = RulesDirectoryLayout.supportDirectory + "/meerkat.schema.json"
 
     // MARK: - MCP
 
@@ -90,22 +91,6 @@ public struct MeerkatConfiguration: Codable, Sendable, Equatable {
         }
     }
 
-    // MARK: - Samples
-
-    /// The sample store's own budget, whoever records into it. A rule's
-    /// `store.record({ retain })` bounds its own label within this.
-    public struct Samples: Codable, Sendable, Equatable {
-        /// Samples older than this are deleted.
-        public var maxAgeDays: Int
-        /// The store is trimmed, oldest first, when it grows past this.
-        public var maxMegabytes: Int
-
-        public init(maxAgeDays: Int = SampleBudget.maxAgeDays, maxMegabytes: Int = SampleBudget.maxMegabytes) {
-            self.maxAgeDays = maxAgeDays
-            self.maxMegabytes = maxMegabytes
-        }
-    }
-
     // MARK: - Files
 
     /// What file churn (`fs.churn`, the Files card and page) watches when a
@@ -137,6 +122,12 @@ public struct MeerkatConfiguration: Codable, Sendable, Equatable {
     /// The file's schema. Kind patterns are enumerated from `catalog`, so a
     /// misspelt kind is a validation error, and editors complete them.
     public static func schema(_ catalog: EventCatalog = .standard) -> TypeSchema {
+        .named("MeerkatConfiguration", objectSchema(catalog))
+    }
+
+    /// The defaults are read from the initialisers, so the Swift type and
+    /// the file agree on them; a section's default is `{}`, its fields'.
+    private static func objectSchema(_ catalog: EventCatalog) -> ObjectSchema {
         let kinds = catalog.kinds.map(\.name)
         var families: [String] = []
         for kind in catalog.kinds where !families.contains(kind.descriptor.family) {
@@ -145,93 +136,93 @@ public struct MeerkatConfiguration: Codable, Sendable, Equatable {
         let pattern = TypeSchema.enumeration(kinds + families.map { $0 + ".*" })
         let defaults = MeerkatConfiguration()
         let limits = defaults.mcp.limits
-        return .named(
-            "MeerkatConfiguration",
-            ObjectSchema([
-                .init("$schema", .string, optional: true, doc: "The JSON Schema editors check this file against."),
-                .init(
-                    "mcp",
-                    .named(
-                        "MCPConfiguration",
-                        ObjectSchema([
-                            .init(
-                                "events",
-                                .named(
-                                    "MCPEvents",
-                                    ObjectSchema([
-                                        .init(
-                                            "allow", .array(pattern), optional: true,
-                                            doc:
-                                                "Kinds or family.* patterns MCP clients may sample although the default denies them: kinds that need a privacy permission, and log.entry, darwin.notification, distributed.notification and iokit.*. A permission kind still needs its grant, and is never prompted for."
-                                        ),
-                                        .init(
-                                            "deny", .array(pattern), optional: true,
-                                            doc:
-                                                "Kinds or family.* patterns MCP clients may not sample. Deny wins over allow."
-                                        ),
-                                    ])), optional: true),
-                            .init(
-                                "limits",
-                                .named(
-                                    "MCPLimits",
-                                    ObjectSchema([
-                                        .init(
-                                            "sampleSeconds", .bounded(NumberBounds(minimum: 1, maximum: 300)),
-                                            optional: true,
-                                            doc:
-                                                "Longest events_sample, and longest system_sample window, in seconds: 1 to 300, default \(NumberBounds.format(limits.sampleSeconds))."
-                                        ),
-                                        .init(
-                                            "sampleEvents", .bounded(.integer(1...10_000)), optional: true,
-                                            doc:
-                                                "Most events one events_sample returns: 1 to 10000, default \(limits.sampleEvents)."
-                                        ),
-                                        .init(
-                                            "outputKiB", .bounded(.integer(16...16_384)), optional: true,
-                                            doc:
-                                                "Most text one MCP resource read or tool reply returns, in KiB: 16 to 16384, default \(limits.outputKiB). A longer reply is cut; events_sample instead stops adding events at it."
-                                        ),
-                                        .init(
-                                            "concurrentSamples", .bounded(.integer(1...32)), optional: true,
-                                            doc:
-                                                "events_sample and system_sample calls one MCP session runs at once: 1 to 32, default \(limits.concurrentSamples)."
-                                        ),
-                                    ])), optional: true),
-                        ])), optional: true, doc: "What MCP clients (`meerkat mcp`) may sample, and how much."),
-                .init(
-                    "samples",
-                    .named(
-                        "SampleStoreConfiguration",
-                        ObjectSchema([
-                            .init(
-                                "maxAgeDays", .bounded(.integer(1...3650)), optional: true,
-                                doc:
-                                    "Samples older than this many days are deleted: 1 to 3650, default \(defaults.samples.maxAgeDays)."
-                            ),
-                            .init(
-                                "maxMegabytes", .bounded(.integer(10...100_000)), optional: true,
-                                doc:
-                                    "The store is trimmed, oldest first, past this size in MB: 10 to 100000, default \(defaults.samples.maxMegabytes)."
-                            ),
-                        ])), optional: true, doc: "The sample store's budget (samples.db)."),
-                .init(
-                    "files",
-                    .named(
-                        "FilesConfiguration",
-                        ObjectSchema([
-                            .init(
-                                "root", .string, optional: true,
-                                doc:
-                                    "Directory file churn watches, absolute or starting with ~. Default \(defaults.files.root), the whole startup volume."
-                            ),
-                            .init(
-                                "exclude", .array(.string), optional: true,
-                                doc:
-                                    "Paths under root whose changes are not counted, absolute or starting with ~. Replaces the default list: \(defaults.files.exclude.joined(separator: ", "))."
-                            ),
-                        ])), optional: true,
-                    doc: "What file churn watches: the Files card and page, and fs.churn subscriptions without a root."),
-            ]))
+        typealias Field = ObjectSchema.Field
+        let raw = (MCP.Events.rawKinds.sorted() + MCP.Events.rawFamilies.sorted().map { $0 + ".*" })
+        let rawList = raw.dropLast().joined(separator: ", ") + (raw.count > 1 ? " and " : "") + (raw.last ?? "")
+        let section: JSONValue = .object([:])
+        return ObjectSchema([
+            Field("$schema", .string, optional: true, doc: "The JSON Schema editors check this file against."),
+            Field(
+                "mcp",
+                .named(
+                    "MCPConfiguration",
+                    ObjectSchema([
+                        Field(
+                            "events",
+                            .named(
+                                "MCPEvents",
+                                ObjectSchema([
+                                    Field(
+                                        "allow", .array(pattern), default: [],
+                                        doc:
+                                            "Kinds or family.* patterns MCP clients may sample although the default denies them: kinds that need a privacy permission, and \(rawList). A permission kind still needs its grant, and is never prompted for."
+                                    ),
+                                    Field(
+                                        "deny", .array(pattern), default: [],
+                                        doc:
+                                            "Kinds or family.* patterns MCP clients may not sample. Deny wins over allow."
+                                    ),
+                                ])), default: section),
+                        Field(
+                            "limits",
+                            .named(
+                                "MCPLimits",
+                                ObjectSchema([
+                                    Field(
+                                        "sampleSeconds", .bounded(NumberBounds(1...300)),
+                                        default: .number(limits.sampleSeconds),
+                                        doc: "Longest events_sample, and longest system_sample window, in seconds"
+                                    ),
+                                    Field(
+                                        "sampleEvents", .bounded(.integer(1...10_000)),
+                                        default: .number(Double(limits.sampleEvents)),
+                                        doc: "Most events one events_sample returns"),
+                                    Field(
+                                        "outputKiB", .bounded(.integer(16...16_384)),
+                                        default: .number(Double(limits.outputKiB)),
+                                        doc:
+                                            "Most text one MCP resource read or tool reply returns, in KiB. A longer reply is cut; events_sample instead stops adding events at it."
+                                    ),
+                                    Field(
+                                        "concurrentSamples", .bounded(.integer(1...32)),
+                                        default: .number(Double(limits.concurrentSamples)),
+                                        doc: "events_sample and system_sample calls one MCP session runs at once"
+                                    ),
+                                ])), default: section),
+                    ])), default: section, doc: "What MCP clients (`meerkat mcp`) may sample, and how much."),
+            Field(
+                "samples",
+                .named(
+                    "SampleStoreConfiguration",
+                    ObjectSchema([
+                        Field(
+                            "maxAgeDays", .bounded(.integer(1...3650)),
+                            default: .number(Double(defaults.samples.maxAgeDays)),
+                            doc: "Samples older than this many days are deleted"),
+                        Field(
+                            "maxMegabytes", .bounded(.integer(10...100_000)),
+                            default: .number(Double(defaults.samples.maxMegabytes)),
+                            doc: "The store is trimmed, oldest first, past this size in MB"),
+                    ])), default: section, doc: "The sample store's budget (samples.db)."),
+            Field(
+                "files",
+                .named(
+                    "FilesConfiguration",
+                    ObjectSchema([
+                        Field(
+                            "root", .string, default: .string(defaults.files.root),
+                            doc:
+                                "Directory file churn watches, absolute or starting with ~; by default the whole startup volume."
+                        ),
+                        Field(
+                            "exclude", .array(.string),
+                            default: .array(defaults.files.exclude.map(JSONValue.string)),
+                            doc:
+                                "Paths under root whose changes are not counted, absolute or starting with ~. Replaces the default list."
+                        ),
+                    ])), default: section,
+                doc: "What file churn watches: the Files card and page, and fs.churn subscriptions without a root."),
+        ])
     }
 
     /// The JSON Schema document for the file, as `meerkat config schema`
@@ -254,8 +245,9 @@ public struct MeerkatConfiguration: Codable, Sendable, Equatable {
         public var description: String { problems.joined(separator: "; ") }
     }
 
-    /// Validates `data` against `schema`, then decodes it over the defaults.
-    /// Throws `Invalid` with every problem found.
+    /// `data` as `objectSchema` admits it: undeclared fields named first,
+    /// then every other problem, then the defaults filled; `null` is `{}`.
+    /// Throws `Invalid` with what was found.
     public static func decode(_ data: Data, catalog: EventCatalog = .standard) throws -> MeerkatConfiguration {
         let value: JSONValue
         do {
@@ -272,15 +264,12 @@ public struct MeerkatConfiguration: Codable, Sendable, Equatable {
                 }
             throw Invalid(problems: ["not valid JSON: \(detail)"])
         }
-        let problems = SchemaValidator.violations(of: value, against: schema(catalog))
-        guard problems.isEmpty else { throw Invalid(problems: problems) }
         do {
-            // The schema has rejected anything undeclared or out of range;
-            // absent fields keep their defaults.
-            var configuration = try JSONValue(encoding: MeerkatConfiguration()).merging(value)
-                .decode(as: MeerkatConfiguration.self)
+            var configuration = try objectSchema(catalog).decode(value, as: MeerkatConfiguration.self, at: "$")
             configuration.files = try configuration.files.resolved()
             return configuration
+        } catch let mismatch as SchemaMismatch {
+            throw Invalid(problems: mismatch.problems)
         } catch EventError.invalidParameters(let problem) {
             // A path the schema cannot check: relative, not ~.
             throw Invalid(problems: ["files: " + problem])

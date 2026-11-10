@@ -20,13 +20,15 @@ struct MCPBridge: AsyncParsableCommand {
         discussion: """
             Configure an MCP client to start this as a stdio server:
 
-              { "command": "~/Applications/Meerkat.app/Contents/MacOS/meerkat", "args": ["mcp"] }
+              { "command": "~/\(DaemonService.installedApp)/\(DaemonService.cliPath)", "args": ["mcp"] }
 
             It must be the meerkat inside Meerkat.app: meerkatd accepts only clients signed with the app. \
-            Diagnostics go to stderr. The bridge exits with status 0 when stdin closes; 69 when meerkatd \
-            restarts or cannot be reached, since MCP sessions do not survive a restart and the client \
-            starts the bridge again; and 1 when the client sends a line longer than \
-            \(DaemonRequest.mcpMessageLimit >> 20) MiB, which a new bridge would refuse too.
+            Diagnostics go to stderr. The bridge exits with status \(ExitStatus.success.code) when stdin \
+            closes; \(ExitStatus.unavailable.code) when meerkatd restarts, cannot be reached, or turns a \
+            message away because the session is backed up or closing, since MCP sessions do not survive a \
+            restart and the client starts the bridge again; and \(ExitStatus.failure.code) when the client \
+            sends a line longer than \(DaemonRequest.mcpMessageLimit >> 20) MiB, or meerkatd is a different \
+            build, which a new bridge would meet too.
             """
     )
 
@@ -36,9 +38,6 @@ struct MCPBridge: AsyncParsableCommand {
     /// forever.
     static let checkInterval = Duration.seconds(2)
 
-    /// How the session ends. A failure says whose it is by its status: 69
-    /// for the daemon, which a new bridge may reach, and 1 for the client's
-    /// input, which a new bridge would refuse again.
     private enum Outcome: Sendable {
         case inputClosed
         case failed(CommandFailure)
@@ -46,12 +45,7 @@ struct MCPBridge: AsyncParsableCommand {
 
     func run() async throws {
         let client = DaemonClient()
-        let started: DaemonIdentity
-        do {
-            started = try await client.daemonIdentity(within: DaemonClient.pingLimit)
-        } catch {
-            throw CommandFailure("meerkat mcp: \(error)", status: ExitStatus.unavailable)
-        }
+        let started = try await withDaemon(client) { try await $0.daemonIdentity() }
         // Registered before the first message, so no answer can arrive unread.
         let output = client.mcpMessages()
 
@@ -65,10 +59,8 @@ struct MCPBridge: AsyncParsableCommand {
             do {
                 try await Self.relayInput(to: client)
                 finish.yield(.inputClosed)
-            } catch let failure as CommandFailure {
-                finish.yield(.failed(failure))
             } catch {
-                finish.yield(.failed(CommandFailure("\(error)", status: ExitStatus.unavailable)))
+                finish.yield(.failed(Self.failure(error)))
             }
         }
         Task {
@@ -77,17 +69,17 @@ struct MCPBridge: AsyncParsableCommand {
                 do {
                     // A daemon that stops answering ends the session like
                     // one that was replaced: the client would wait forever.
-                    let current = try await client.daemonIdentity(within: DaemonClient.pingLimit)
+                    let current = try await client.daemonIdentity()
                     if current != started {
                         finish.yield(
                             .failed(
                                 CommandFailure(
                                     "meerkatd restarted (pid \(started.pid) is now \(current.pid))",
-                                    status: ExitStatus.unavailable)))
+                                    status: .unavailable)))
                         return
                     }
                 } catch {
-                    finish.yield(.failed(CommandFailure("\(error)", status: ExitStatus.unavailable)))
+                    finish.yield(.failed(Self.failure(error)))
                     return
                 }
             }
@@ -103,6 +95,22 @@ struct MCPBridge: AsyncParsableCommand {
         }
         if case .failed(let failure) = outcome {
             throw CommandFailure("meerkat mcp: \(failure.message); the MCP session has ended", status: failure.status)
+        }
+    }
+
+    /// What ends the session, by whose it is: the client's input (the
+    /// bridge's own refusal) or a different build is a `failure`, since a
+    /// new bridge would meet them again; everything else is `unavailable`,
+    /// since a new bridge may get further. That includes meerkatd refusing a
+    /// message: it does so only for the session's state (backed up, or
+    /// closing as it shuts down), never for what the message says, which
+    /// MCP answers in band; and anything not the daemon's, such as stdin
+    /// failing.
+    static func failure(_ error: any Error) -> CommandFailure {
+        if let failure = error as? CommandFailure { return failure }
+        switch DaemonFailure(classifying: error) {
+        case .differentBuild?: return CommandFailure("\(error)")
+        case .refused?, .unavailable?, nil: return CommandFailure("\(error)", status: .unavailable)
         }
     }
 

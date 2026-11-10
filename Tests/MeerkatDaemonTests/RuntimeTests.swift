@@ -8,6 +8,14 @@ import notify
 
 @testable import MeerkatDaemon
 
+/// Bounds the daemon and the runtime each enforce on the same text.
+struct RuntimeLimitTests {
+    /// A name the runtime routes is one the daemon loads, and the reverse.
+    @Test func ruleNamesHaveOneBound() {
+        #expect(RuleID.maximumNameBytes == Int(maximumRuleNameBytes()))
+    }
+}
+
 /// `capabilities.fs`: what a rule may grant its file, and what it never can.
 struct FileGrantTests {
     @Test func pathsAreAbsoluteNormalizedOrHomeRelative() throws {
@@ -32,7 +40,7 @@ struct FileGrantTests {
             try rule("b.ts", "three", [:]),
         ]
         let protected = RuleEngine.ProtectedPaths(read: ["/state"], write: ["/rules", "/state"])
-        let permissions = RuleEngine.permissions(for: definitions, protected: protected)
+        let permissions = RuleSetLoader.permissions(for: definitions, protected: protected)
         #expect(
             permissions["a"]
                 == FilePermissions(

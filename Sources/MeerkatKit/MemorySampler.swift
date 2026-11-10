@@ -50,11 +50,4 @@ public enum MemorySampler {
         let toMB = { (bytes: UInt64) in Double(bytes) / 1_000_000.0 }
         return (toMB(usage.xsu_used), toMB(usage.xsu_total))
     }
-
-    /// Throws rather than report an idle machine.
-    public static func loadAverages() throws -> (Double, Double, Double) {
-        var loads = [Double](repeating: 0, count: 3)
-        guard getloadavg(&loads, 3) == 3 else { throw MeerkatError.loadAverageUnavailable }
-        return (loads[0], loads[1], loads[2])
-    }
 }

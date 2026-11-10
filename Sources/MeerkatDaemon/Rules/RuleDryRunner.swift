@@ -21,44 +21,38 @@ import Synchronization
 ///   shares no effect queue, breaker or rule log with the running rules, and
 ///   a handler that stalls stalls only this host.
 /// - Its file's code may read what its rules grant through Deno's APIs, and
-///   write nothing: `permissions` drops `fs.write`.
+///   write nothing: it is permitted without `fs.write` (`RuleSetLoader.permit`).
 /// - The text and everything compiled from it stay in the cache directory.
 ///   The rules directory, whose watcher reloads rules, is only read.
 final class RuleDryRunner: Sendable {
-    /// Events one run may take, from any source.
-    static let maximumEvents = 64
-    static let maximumSampleSeconds = 120.0
     static let maximumTextBytes = 1 << 20
     /// Captured effect requests and log text one run may return, which also
     /// bounds the reply. Beyond it, requests are left out and logs dropped.
     static let maximumCapturedBytes = 1 << 22
-    static let maximumLogBytes = 16_384
     /// Time for the run's handlers; checked between events, so the last
     /// handler can add its own timeout.
     static let invocationBudget: Duration = .seconds(180)
 
-    struct Failure: Error, CustomStringConvertible {
-        let description: String
-    }
-
     private let configuration: RuleEngine.Configuration
+    /// The engine's, so a draft compiles and loads, is refused, and sees
+    /// events, as it will when saved.
+    private let loader: RuleSetLoader
     private let hub: EventHub
     private let store: RuleStore
-    private let permissionStatus: EventDescriptor.Permission.StatusReader
-    /// The engine's, so a draft is refused, and sees events, as it will when
-    /// saved.
-    private let observation: ObservationScope
+    /// The engine's (`RuleEngine.authorizer`).
+    private let authorizer: EffectAuthorizer
     private let running = Mutex(false)
 
-    init(
-        configuration: RuleEngine.Configuration, hub: EventHub, store: RuleStore,
-        permissionStatus: @escaping EventDescriptor.Permission.StatusReader = { $0.status }
-    ) {
-        self.configuration = configuration
+    private var observation: ObservationScope { loader.observation }
+
+    /// Takes the engine's configuration, loader and authorizer, never its
+    /// executor.
+    init(engine: RuleEngine, hub: EventHub, store: RuleStore) {
+        configuration = engine.configuration
+        loader = engine.loader
+        authorizer = engine.authorizer
         self.hub = hub
         self.store = store
-        self.permissionStatus = permissionStatus
-        observation = ObservationScope(protected: configuration.protected, environment: hub.environment)
     }
 
     /// Whether a dry run holds the one slot.
@@ -71,20 +65,20 @@ final class RuleDryRunner: Sendable {
             defer { running = true }
             return !running
         }
-        guard free else { throw Failure(description: "a dry run is already running; try again when it finishes") }
+        guard free else { throw Refusal("a dry run is already running; try again when it finishes") }
         defer { running.withLock { $0 = false } }
         return try await body()
     }
 
-    private func tools() throws -> (runtime: HandlerRuntime, toolchain: TypeScriptToolchain) {
-        guard let runtime = configuration.runtime else { throw Failure(description: "no rule runtime is available") }
-        guard let toolchain = configuration.toolchain else {
-            throw Failure(description: "the TypeScript compiler was not found")
+    /// The tools, a missing one refused in words the caller can act on.
+    private func tools() throws -> RuleSetLoader.Tools {
+        do {
+            return try loader.tools()
+        } catch {
+            throw Refusal(error.description)
         }
-        return (runtime, toolchain)
     }
 
-    /// What a type-check found.
     struct Check: Encodable {
         /// The text compiled: it would run if saved under `file`.
         let compiles: Bool
@@ -96,8 +90,7 @@ final class RuleDryRunner: Sendable {
     func check(file: String, text: String) async throws -> Check {
         try await exclusively {
             try Self.validate(file: file, text: text)
-            let (runtime, toolchain) = try tools()
-            let compiled = try await compile(file: file, text: text, toolchain: toolchain, runtime: runtime)
+            let compiled = try await compile(file: file, text: text, with: try tools())
             return Check(
                 compiles: compiled.entries.contains(RuleCompiler.moduleId(file)), diagnostics: compiled.diagnostics)
         }
@@ -113,7 +106,7 @@ final class RuleDryRunner: Sendable {
             text = try String(
                 contentsOf: configuration.rulesDirectory.appendingPathComponent(file), encoding: .utf8)
         } catch {
-            throw Failure(description: "the rules directory has no \(file)")
+            throw Refusal("the rules directory has no \(file)")
         }
         var report = try await run(DryRunRequest(file: file, text: text, rule: rule, events: .examples))
         for run in report.runs.indices {
@@ -126,19 +119,17 @@ final class RuleDryRunner: Sendable {
         return report
     }
 
-    /// Runs `request`.
     func run(_ request: DryRunRequest) async throws -> DryRunReport {
         try await exclusively { try await perform(request) }
     }
 
     private func perform(_ request: DryRunRequest) async throws -> DryRunReport {
         try Self.validate(request)
-        let (runtime, toolchain) = try tools()
+        let tools = try tools()
 
         let clock = ContinuousClock()
         let compileStarted = clock.now
-        let compiled = try await compile(
-            file: request.file, text: request.text, toolchain: toolchain, runtime: runtime)
+        let compiled = try await compile(file: request.file, text: request.text, with: tools)
         var report = DryRunReport(
             outcome: .rejected, diagnostics: compiled.diagnostics,
             compileMilliseconds: (clock.now - compileStarted).milliseconds)
@@ -146,13 +137,10 @@ final class RuleDryRunner: Sendable {
         guard compiled.entries.contains(entry) else { return report }
 
         let recording = Recording(
-            simulator: EffectSimulator(
-                authorizer: EffectAuthorizer(
-                    permissionStatus: permissionStatus, protectedPaths: configuration.protected.write)
-            ) { [store] rule, key in
+            simulator: EffectSimulator(authorizer: authorizer) { [store] rule, key in
                 try store.value(rule: rule, key: key)
             })
-        let host = HandlerHost(transport: runtime.makeHost())
+        let host = HandlerHost(transport: tools.runtime.makeHost())
         let reader = Task {
             for await event in host.events { await recording.handle(event, from: host) }
         }
@@ -165,14 +153,13 @@ final class RuleDryRunner: Sendable {
         do {
             let loadStarted = clock.now
             try await host.start()
-            let definitions = try await Self.load(
-                compiled, entry: entry, file: request.file, into: host, catalog: hub.catalog,
-                observation: observation, deadline: configuration.loadDeadline, diagnostics: &report.diagnostics)
+            let definitions = try await load(
+                compiled, entry: entry, file: request.file, into: host, diagnostics: &report.diagnostics)
             report.loadMilliseconds = (clock.now - loadStarted).milliseconds
             if let definitions {
                 try await run(request, definitions: definitions, host: host, recording: recording, report: &report)
             }
-        } catch let failure as Failure {
+        } catch let failure as Refusal {
             await finish()
             throw failure
         } catch {
@@ -185,12 +172,12 @@ final class RuleDryRunner: Sendable {
     }
 
     private static func validate(file: String, text: String) throws {
-        guard file.hasSuffix(".ts"), !file.hasSuffix(".d.ts"), file.count > 3, !file.hasPrefix("."),
-            !file.contains("/"), !file.contains("\0")
-        else { throw Failure(description: "\(file) is not a rule file's name: expected a name like `my-rule.ts`") }
-        if let refusal = RuleID.refusal(file: file) { throw Failure(description: refusal) }
+        // What `RuleCompiler.ruleSources` would find at the top of the folder.
+        guard RuleCompiler.isRuleSource(file), RuleCompiler.isEntry(RuleCompiler.moduleId(file)), !file.contains("\0")
+        else { throw Refusal("\(file) is not a rule file's name: expected a name like `my-rule.ts`") }
+        if let refusal = RuleID.refusal(file: file) { throw Refusal(refusal) }
         guard text.utf8.count <= maximumTextBytes else {
-            throw Failure(description: "the text is over \(maximumTextBytes) bytes")
+            throw Refusal("the text is over \(maximumTextBytes) bytes")
         }
     }
 
@@ -198,27 +185,27 @@ final class RuleDryRunner: Sendable {
         try validate(file: request.file, text: request.text)
         switch request.events {
         case .given(let events):
-            guard events.count <= maximumEvents else {
-                throw Failure(description: "at most \(maximumEvents) events can run at once")
+            guard events.count <= DryRunRequest.maximumEvents else {
+                throw Refusal("at most \(DryRunRequest.maximumEvents) events can run at once")
             }
         case .examples:
             break
         case .sampled(let seconds, let maxEvents):
-            guard seconds > 0, seconds <= maximumSampleSeconds else {
-                throw Failure(
-                    description: "a sample takes more than 0 and at most \(Int(maximumSampleSeconds)) seconds")
+            guard seconds > 0, seconds <= DryRunRequest.maximumSampleSeconds else {
+                let longest = Int(DryRunRequest.maximumSampleSeconds)
+                throw Refusal("a sample takes more than 0 and at most \(longest) seconds")
             }
-            guard (1...maximumEvents).contains(maxEvents) else {
-                throw Failure(description: "a sample takes 1 to \(maximumEvents) events")
+            guard (1...DryRunRequest.maximumEvents).contains(maxEvents) else {
+                throw Refusal("a sample takes 1 to \(DryRunRequest.maximumEvents) events")
             }
         }
     }
 
     /// Compiles a copy of the rules directory with the unsaved text in place
     /// of the file, so imports both ways see what saving it would give.
-    private func compile(
-        file: String, text: String, toolchain: TypeScriptToolchain, runtime: HandlerRuntime
-    ) async throws -> RuleCompiler.Output {
+    private func compile(file: String, text: String, with tools: RuleSetLoader.Tools) async throws
+        -> RuleCompiler.Output
+    {
         let fileManager = FileManager.default
         let work = configuration.cacheDirectory.appendingPathComponent("dry-run-\(UUID().uuidString)")
         let copy = work.appendingPathComponent("rules")
@@ -230,40 +217,21 @@ final class RuleDryRunner: Sendable {
             try Data(contentsOf: configuration.rulesDirectory.appendingPathComponent(source)).write(to: target)
         }
         try text.write(to: copy.appendingPathComponent(file), atomically: true, encoding: .utf8)
-        return try await RuleCompiler(toolchain: toolchain).compile(
-            rulesDirectory: copy, workDirectory: work.appendingPathComponent("build"),
-            declarations: TypeScriptDeclarations.render(hub.catalog), runtimeDeclarations: runtime.declarations)
+        return try await loader.compile(copy, in: work.appendingPathComponent("build"), with: tools)
     }
 
-    /// Evaluates the file alone and decodes its rules; nil when it failed,
-    /// with why in `diagnostics`.
-    private static func load(
-        _ compiled: RuleCompiler.Output, entry: String, file: String, into host: HandlerHost, catalog: EventCatalog,
-        observation: ObservationScope, deadline: Duration, diagnostics: inout [RuleDiagnostic]
+    /// Evaluates the file alone and decodes its rules, its file scope held
+    /// against its grants now, since the run subscribes at once; nil when
+    /// the file or any of its rules failed, with why in `diagnostics`.
+    private func load(
+        _ compiled: RuleCompiler.Output, entry: String, file: String, into host: HandlerHost,
+        diagnostics: inout [RuleDiagnostic]
     ) async throws -> [RuleDefinition]? {
-        let results = try await host.load(
-            modules: compiled.modules, entries: [entry], rejected: compiled.rejected, entryDeadline: deadline)
-        guard let result = results.first(where: { $0.entry == entry }) else {
-            throw Failure(description: "the runtime did not report \(file)")
-        }
-        if let error = result.error {
-            diagnostics.append(RuleDiagnostic(tool: .loader, file: file, message: error.report, fixable: false))
-            return nil
-        }
-        var (definitions, failures) = result.definitions(file: file, catalog: catalog, observation: observation)
-        // The file scope as the engine decides it when the rule subscribes.
-        definitions.removeAll { definition in
-            do {
-                try observation.requireFileScope(of: definition, in: catalog)
-                return false
-            } catch {
-                failures.append(
-                    .init(file: file, name: definition.name, event: definition.event, reason: "\(error)"))
-                return true
-            }
-        }
-        diagnostics += failures.map(\.diagnostic)
-        return failures.isEmpty ? definitions : nil
+        let results = try await loader.load(
+            compiled, entries: [entry], rejected: compiled.rejected, into: host, fileScope: .atLoad)
+        guard let loaded = results.first else { throw Refusal("the runtime did not report \(file)") }
+        diagnostics += loaded.diagnostics
+        return loaded.error == nil && loaded.failures.isEmpty ? loaded.definitions : nil
     }
 
     private func run(
@@ -284,9 +252,8 @@ final class RuleDryRunner: Sendable {
         report.event = definition.event
         report.outcome = .ran
         await recording.begin(definition)
-        for (entry, permissions) in Self.permissions(for: definitions, protected: configuration.protected) {
-            await host.permit(entry: entry, permissions: permissions)
-        }
+        // What its rules grant it to read, never anything to write.
+        await loader.permit(definitions, in: host, writes: false)
         let events = try await events(for: request.events, definition: definition)
         let view = hub.catalog.kind(named: definition.event).flatMap { observation.view(of: $0, for: definition) }
 
@@ -302,17 +269,6 @@ final class RuleDryRunner: Sendable {
         }
     }
 
-    /// What the file's code may do through Deno's APIs: what its rules grant
-    /// it to read, never anything to write.
-    static func permissions(
-        for definitions: [RuleDefinition], protected: RuleEngine.ProtectedPaths
-    ) -> [String: FilePermissions] {
-        RuleEngine.permissions(for: definitions, protected: protected).mapValues { permissions in
-            FilePermissions(
-                read: permissions.read, write: [], denyRead: permissions.denyRead, denyWrite: permissions.denyWrite)
-        }
-    }
-
     private func invoke(
         _ definition: RuleDefinition, _ event: EventEnvelope, view: EventView?, host: HandlerHost,
         recording: Recording
@@ -324,15 +280,8 @@ final class RuleDryRunner: Sendable {
             return DryRunInvocation(
                 event: event, result: .skipped(reason: "outside what the rule may observe (its capabilities)"))
         }
-        switch definition.admission(of: envelope) {
-        case .ownOrigin:
-            return DryRunInvocation(event: envelope, result: .skipped(reason: "the daemon's own event (no includeOwn)"))
-        case .noMatch:
-            return DryRunInvocation(event: envelope, result: .skipped(reason: "match: not matched"))
-        case .regexAborted(let pattern, let reason):
-            return DryRunInvocation(event: envelope, result: .skipped(reason: "match regex \"\(pattern)\" \(reason)"))
-        case .admitted:
-            break
+        if let refusal = definition.admission(of: envelope).refusal {
+            return DryRunInvocation(event: envelope, result: .skipped(reason: refusal))
         }
         await host.drainEvents()
         await recording.startInvocation()
@@ -341,14 +290,23 @@ final class RuleDryRunner: Sendable {
         let outcome = await host.invoke(rule: definition.id, event: envelope, timeout: definition.timeout)
         let elapsed = clock.now - started
         await host.drainEvents()
+        if !(await host.isAlive) {
+            // A stopped host's events end, so the drain can return before
+            // they are read; what it sent before stopping (a fault naming
+            // this invocation) is handled by the time its exit is.
+            await recording.untilExited()
+        }
         let captured = await recording.endInvocation()
+        // A timeout is reported by its length, which the editor shows; the
+        // other failures in the words the rule's log would give them.
         let result: DryRunInvocation.Result
         switch outcome {
-        case .completed(nil): result = .completed
-        case .completed(let error?): result = .failed(message: error.report)
-        case .timedOut: result = .timedOut(seconds: definition.timeout.seconds)
+        case .timedOut, .overran: result = .timedOut(seconds: definition.timeout.seconds)
         case .interrupted(let reason): result = .interrupted(reason: reason)
         case .superseded: result = .interrupted(reason: "the dry run ended")
+        case .undeliverable(let reason): result = .skipped(reason: reason)
+        case .completed:
+            result = outcome.failure(timeout: definition.timeout).map { .failed(message: $0) } ?? .completed
         }
         return DryRunInvocation(
             event: envelope, result: result, effects: captured.effects, logs: captured.logs,
@@ -359,7 +317,7 @@ final class RuleDryRunner: Sendable {
 
     private func events(for source: DryRunRequest.Events, definition: RuleDefinition) async throws -> [EventEnvelope] {
         guard let kind = hub.catalog.kind(named: definition.event) else {
-            throw Failure(description: "\(definition.event) is not in the catalog")
+            throw Refusal("\(definition.event) is not in the catalog")
         }
         let now = Date().timeIntervalSince1970 * 1000
         func envelopes(_ events: [DryRunEvent]) -> [EventEnvelope] {
@@ -376,12 +334,12 @@ final class RuleDryRunner: Sendable {
             for (index, event) in events.enumerated() {
                 let problems = SchemaValidator.violations(
                     of: event.payload, against: kind.payloadSchema, at: "events[\(index)]")
-                guard problems.isEmpty else { throw Failure(description: problems.joined(separator: "; ")) }
+                guard problems.isEmpty else { throw Refusal(problems.joined(separator: "; ")) }
             }
             return envelopes(events)
         case .examples:
-            let examples = (try? kind.payloadExamples()) ?? []
-            return envelopes(examples.prefix(Self.maximumEvents).map { DryRunEvent(payload: $0) })
+            let examples = try kind.payloadExamples()
+            return envelopes(examples.prefix(DryRunRequest.maximumEvents).map { DryRunEvent(payload: $0) })
         case .sampled(let seconds, let maxEvents):
             return try await sample(definition, kind: kind, seconds: seconds, maxEvents: maxEvents)
         }
@@ -393,16 +351,17 @@ final class RuleDryRunner: Sendable {
     private func sample(
         _ definition: RuleDefinition, kind: AnyEventKind, seconds: Double, maxEvents: Int
     ) async throws -> [EventEnvelope] {
-        if let permission = kind.descriptor.permission,
-            let refusal = permission.refusal(for: definition.event, status: permissionStatus(permission))
+        if let need = kind.descriptor.permission,
+            let refusal = need.clientRefusal(
+                for: definition.event, status: authorizer.permissionStatus(need.permission))
         {
-            throw Failure(description: refusal)
+            throw Refusal(refusal)
         }
         let subscription: EventSubscription
         do {
             subscription = try hub.subscribe(definition.parameters, subscriber: .rule(file: definition.file))
         } catch {
-            throw Failure(description: "\(error)")
+            throw Refusal("\(error)")
         }
         defer { subscription.cancel() }
         let (collected, sourceEnded) = await subscription.collect(for: seconds, timedOut: false, sourceEnded: true) {
@@ -413,7 +372,7 @@ final class RuleDryRunner: Sendable {
         // A source that failed while sampling gave a partial sample, which
         // would read as a quiet one: the run fails and says why.
         if sourceEnded, hub.endReason(of: subscription) != nil {
-            throw Failure(description: "\(definition.event): \(hub.stopReason(of: subscription))")
+            throw Refusal("\(definition.event): \(hub.stopReason(of: subscription))")
         }
         return collected.events
     }
@@ -428,6 +387,8 @@ private actor Recording {
     private var fileLogs: [DryRunLog] = []
     private var inInvocation = false
     private var captured = 0
+    private var exited = false
+    private var exitWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(simulator: EffectSimulator) {
         self.simulator = simulator
@@ -452,6 +413,13 @@ private actor Recording {
         fileLogs
     }
 
+    /// Returns once the host's exit, and so everything it sent before it,
+    /// has been handled.
+    func untilExited() async {
+        if exited { return }
+        await withCheckedContinuation { exitWaiters.append($0) }
+    }
+
     func handle(_ event: HandlerHost.Event, from host: HandlerHost) async {
         switch event {
         case .effect(let call, _, _, let request):
@@ -468,11 +436,15 @@ private actor Recording {
             effects.append(effect)
             await host.respond(call: call, outcome: result.outcome)
         case .log(_, let level, let message):
-            record(DryRunLog(level: level, message: String(message.prefix(RuleDryRunner.maximumLogBytes))))
+            record(DryRunLog(level: level, message: message.prefix(utf8Bytes: HandlerHost.maximumLogLineBytes)))
         case .fault(let file, let rule, let reason):
+            // Inside the invocation that caused it: one the fault ended is
+            // over only once `exited`, which follows it, is handled.
             record(DryRunLog(level: .error, message: "\(rule ?? file) \(reason)"))
         case .exited:
-            break
+            exited = true
+            for waiter in exitWaiters { waiter.resume() }
+            exitWaiters = []
         case .drained(let done):
             done.resume()
         }
@@ -573,6 +545,7 @@ extension TypeSchema {
     var placeholder: JSONValue {
         switch self {
         case .string: .string("")
+        case .text(let bounds): .string(String(repeating: " ", count: bounds.minimum))
         case .number: .number(0)
         case .bounded(let bounds): .number(bounds.minimum ?? 0)
         case .boolean: .bool(false)

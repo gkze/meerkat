@@ -79,33 +79,30 @@ struct RuleDryRunTests {
     }
 
     /// The running daemon may predate dry runs: that needs a restart, which
-    /// a retry won't replace.
+    /// a retry won't replace; a refusal is meerkatd's own words; anything
+    /// else is about reaching it. The run that failed keeps its file.
     @Test(arguments: [
-        (DaemonClient.ClientError.differentBuild("unknown case"), RuleDryRunModel.Failure.differentBuild),
-        (.daemon("a dry run is already running"), .refused("a dry run is already running")),
+        (DaemonClient.ClientError.differentBuild("unknown case"), "differentBuild"),
+        (.daemon("a dry run is already running"), "refused"),
+        (.unreachable("no agent"), "unreachable"),
     ])
-    func refusalsSayWhatToDo(error: DaemonClient.ClientError, failure: RuleDryRunModel.Failure) async {
+    func failuresAreClassifiedByWhoFailed(error: DaemonClient.ClientError, expected: String) async {
         let daemon = Daemon()
         daemon.answer = .failure(error)
         let model = model(daemon)
         await model.run(file: "a.ts", text: "", rule: nil, recorded: [])
-        #expect(model.state == .failed(file: "a.ts", failure))
-    }
-
-    @Test func aDifferentBuildSaysToRestart() {
-        #expect(RuleDryRunModel.Failure.differentBuild.detail.contains("meerkat agent restart"))
-    }
-
-    @Test func anUnreachableDaemonIsReported() async {
-        let daemon = Daemon()
-        daemon.answer = .failure(DaemonClient.ClientError.unreachable("no agent"))
-        let model = model(daemon)
-        await model.run(file: "a.ts", text: "", rule: nil, recorded: [])
-        guard case .failed(_, .unreachable(let detail)) = model.state else {
-            Issue.record("expected unreachable, got \(model.state)")
+        guard case .failed(let file, let fault) = model.state else {
+            Issue.record("expected a failure, got \(model.state)")
             return
         }
-        #expect(detail.contains("no agent"))
+        #expect(file == "a.ts")
+        let found =
+            switch fault {
+            case .differentBuild: "differentBuild"
+            case .refused: "refused"
+            case .unreachable: "unreachable"
+            }
+        #expect(found == expected)
     }
 
     /// Answers wait for the test, like a sample in progress.

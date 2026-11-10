@@ -19,12 +19,13 @@ def _swiftpm_graph_test_impl(ctx: AnalysisContext) -> list[Provider]:
     for target in ctx.attrs.targets:
         if SwiftTargetInfo in target:
             info = target[SwiftTargetInfo]
-            graph[info.module_name] = {"deps": info.deps, "swift": info.swift_settings}
+            graph[info.module_name] = {"deps": info.deps, "linker": info.linker, "swift": info.swift_settings}
     expected = {"graph": graph, "minimum_macos": ctx.attrs.minimum_macos}
     return _test(ctx, "spm-graph", ctx.actions.write_json("swift-graph.json", expected))
 
 # Package.swift declares the Swift targets `targets` (a query) finds, with
-# the same dependencies and Swift settings, for `minimum_macos`.
+# the same dependencies, linker settings and Swift settings, for
+# `minimum_macos`.
 swiftpm_graph_test = rule(
     impl = _swiftpm_graph_test_impl,
     attrs = {"minimum_macos": attrs.string(), "targets": attrs.query(), "_checker": _CHECKER},
@@ -33,7 +34,8 @@ swiftpm_graph_test = rule(
 def _spm_pins_test_impl(ctx: AnalysisContext) -> list[Provider]:
     return _test(ctx, "spm-pins", ctx.actions.write_json("revisions.json", ctx.attrs.revisions))
 
-# Package.resolved pins each package at `revisions`' revision.
+# Package.resolved pins each package at `revisions`' revision, and every
+# exact version or revision Package.swift requires.
 spm_pins_test = rule(
     impl = _spm_pins_test_impl,
     attrs = {"revisions": attrs.dict(attrs.string(), attrs.string()), "_checker": _CHECKER},

@@ -1,5 +1,6 @@
 import Foundation
 import LanguageServerProtocol
+import MeerkatIPC
 import Testing
 
 @testable import MeerkatApp
@@ -106,14 +107,14 @@ struct RuleEditorTests {
     // MARK: - Names
 
     @Test func namesGetTheExtensionAndAreChecked() {
-        #expect(RuleEditorModel.fileName("battery", existing: []) == .success("battery.ts"))
-        #expect(RuleEditorModel.fileName("  low power.ts ", existing: []) == .success("low power.ts"))
-        #expect(RuleEditorModel.fileName("", existing: []) == .failure(.empty))
-        #expect(RuleEditorModel.fileName(".hidden", existing: []) == .failure(.notAFileName))
-        #expect(RuleEditorModel.fileName("a/b", existing: []) == .failure(.notAFileName))
-        #expect(RuleEditorModel.fileName(".ts", existing: []) == .failure(.notAFileName))
-        #expect(RuleEditorModel.fileName("types.d.ts", existing: []) == .failure(.declarationFile))
-        #expect(RuleEditorModel.fileName("Recorder", existing: ["recorder.ts"]) == .failure(.exists("recorder.ts")))
+        #expect(RuleFileSource.fileName("battery", existing: []) == .success("battery.ts"))
+        #expect(RuleFileSource.fileName("  low power.ts ", existing: []) == .success("low power.ts"))
+        #expect(RuleFileSource.fileName("", existing: []) == .failure(.empty))
+        #expect(RuleFileSource.fileName(".hidden", existing: []) == .failure(.notAFileName))
+        #expect(RuleFileSource.fileName("a/b", existing: []) == .failure(.notAFileName))
+        #expect(RuleFileSource.fileName(".ts", existing: []) == .failure(.notAFileName))
+        #expect(RuleFileSource.fileName("types.d.ts", existing: []) == .failure(.declarationFile))
+        #expect(RuleFileSource.fileName("Recorder", existing: ["recorder.ts"]) == .failure(.exists("recorder.ts")))
     }
 
     /// The export is a valid identifier and the rule's name a slug, whatever
@@ -126,7 +127,7 @@ struct RuleEditorTests {
         ("h²o.ts", "hO", "h-o"),
     ])
     func templatesNameTheirRule(file: String, identifier: String, name: String) {
-        let template = RuleEditorModel.template(for: file)
+        let template = RuleFileSource.template(for: file)
         #expect(template.contains("export const \(identifier) = rule({"))
         #expect(template.contains("name: \"\(name)\""))
         #expect(template.hasPrefix("// \(file): "))
@@ -135,7 +136,7 @@ struct RuleEditorTests {
     /// The confirmation's timer restarts when `Reload` changes, so a second
     /// save with the same result must still be a new confirmation.
     @Test func eachSaveIsItsOwnConfirmation() {
-        let status = FileStatus(text: "2 rules loaded", state: .running)
+        let status = FileStatus(text: "2 rules loaded", state: .loaded)
         let first = RuleEditor.Reload(file: "a.ts", status: status, savedAt: Date(timeIntervalSince1970: 1))
         let second = RuleEditor.Reload(file: "a.ts", status: status, savedAt: Date(timeIntervalSince1970: 2))
         #expect(first != second)
@@ -254,7 +255,7 @@ struct RuleEditorTests {
         let folder = try Folder()
         let model = folder.model()
         #expect(model.create("battery.ts"))
-        #expect(try folder.read("battery.ts") == RuleEditorModel.template(for: "battery.ts"))
+        #expect(try folder.read("battery.ts") == RuleFileSource.template(for: "battery.ts"))
         #expect(model.files == ["battery.ts", "recorder.ts"])
         #expect(model.file == "battery.ts")
         #expect(!model.create("recorder.ts"))
@@ -319,7 +320,8 @@ struct RuleEditorTests {
         model.open("recorder.ts")
         #expect(model.restoredDraft?.changedOnDisk == true)
         model.edit("edited more")
-        try await Task.sleep(for: RuleEditorModel.checkDelay * 3)
+        // The debounced write, not the draft already on disk.
+        try await waitUntil { (try? folder.drafts.load(for: url))?.text == "edited more" }
         #expect(try folder.drafts.load(for: url)?.base == "older")
     }
 
@@ -659,5 +661,24 @@ struct RuleEditorTests {
         #expect(hover.code == ["(method) record(request: RecordRequest): Promise<void>"])
         #expect(hover.prose == ["Measure the system."])
         #expect(HoverContent(markdown: "\n\n").isEmpty)
+    }
+}
+
+/// Typing indents as `meerkat rules fmt` formats: the editor's indent is the
+/// formatter policy's, read from the file the lint toolchain bundles.
+@MainActor
+struct RuleEditorIndentTests {
+    private struct FormatPolicy: Decodable {
+        let tabWidth: Int
+        let useTabs: Bool
+    }
+
+    @Test func theIndentIsTheFormatters() throws {
+        let path = try #require(
+            ProcessInfo.processInfo.environment["MEERKAT_FORMAT_POLICY"],
+            "set MEERKAT_FORMAT_POLICY, as buck2 test does")
+        let policy = try JSONDecoder().decode(FormatPolicy.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+        #expect(policy.tabWidth == RuleEditor.indentWidth)
+        #expect(!policy.useTabs)
     }
 }

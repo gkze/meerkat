@@ -27,8 +27,6 @@ actor RuleEngine {
         /// that could rewrite rules could widen its own grants).
         var protected = ProtectedPaths()
         var reloadDebounce: Duration = .milliseconds(250)
-        /// Deadline for one entry file's top-level code.
-        var loadDeadline: Duration = .seconds(5)
         /// `meerkat.json`, which lives in the rules directory and reloads
         /// beside the rules but never waits on their compile; nil reads none.
         var settings: DaemonSettings? = nil
@@ -110,15 +108,24 @@ actor RuleEngine {
     /// writes that predate the watcher) does not reload.
     private var loadedDigest: String?
 
+    /// How rules load, which the dry run shares.
+    nonisolated let loader: RuleSetLoader
+    /// The executor's, which the dry run simulates effects under, so a draft
+    /// is refused as the saved rule will be.
+    nonisolated let authorizer: EffectAuthorizer
     /// What decides whether a rule may observe its kind, and what it sees.
-    nonisolated let observation: ObservationScope
+    nonisolated var observation: ObservationScope { loader.observation }
 
     init(configuration: Configuration, hub: EventHub, store: RuleStore, executor: EffectExecutor) {
         self.configuration = configuration
         self.hub = hub
         self.store = store
         self.executor = executor
-        observation = ObservationScope(protected: configuration.protected, environment: hub.environment)
+        authorizer = executor.authorizer
+        loader = RuleSetLoader(
+            runtime: configuration.runtime, toolchain: configuration.toolchain, catalog: hub.catalog,
+            observation: ObservationScope(protected: configuration.protected, environment: hub.environment),
+            protected: configuration.protected)
     }
 
     // MARK: - Lifecycle
@@ -176,24 +183,20 @@ actor RuleEngine {
         await writeEditorSupport()
         startLint(generation: thisGeneration)
 
-        guard let runtime = configuration.runtime, let toolchain = configuration.toolchain else {
-            let (tool, missing): (RuleDiagnostic.Tool, String) =
-                configuration.runtime == nil
-                ? (.loader, "no rule runtime is available") : (.compiler, "the TypeScript compiler was not found")
-            replaceRules(
-                with: [], failures: [],
-                diagnostics: [.toolFailure(tool, message: "\(missing); rules cannot load")])
+        let tools: RuleSetLoader.Tools
+        do {
+            tools = try loader.tools()
+        } catch {
+            hostState = .unavailable
+            replaceRules(with: [], failures: [], diagnostics: [error.diagnostic])
             return
         }
 
         let output: RuleCompiler.Output
         do {
-            output = try await RuleCompiler(toolchain: toolchain).compile(
-                rulesDirectory: configuration.rulesDirectory,
-                workDirectory: configuration.cacheDirectory.appendingPathComponent("build-\(UUID().uuidString)"),
-                declarations: TypeScriptDeclarations.render(hub.catalog),
-                runtimeDeclarations: runtime.declarations
-            )
+            output = try await loader.compile(
+                configuration.rulesDirectory,
+                in: configuration.cacheDirectory.appendingPathComponent("build-\(UUID().uuidString)"), with: tools)
         } catch {
             guard thisGeneration == generation else { return }
             // Nothing compiled, so nothing runs: the host with the previous
@@ -219,7 +222,7 @@ actor RuleEngine {
         var failures = output.rejected.compactMap { id, reason -> RuleSummary? in
             // Only entry files are rules; rejected helper modules surface
             // through the entries that import them.
-            id.contains("/") ? nil : Self.failedFile(id + ".ts", reason: reason)
+            RuleCompiler.isEntry(id) ? Self.failedFile(RuleCompiler.entryFile(id), reason: reason) : nil
         }
         var loadDiagnostics = output.diagnostics
         var entries = output.entries
@@ -239,7 +242,7 @@ actor RuleEngine {
         // A file whose top-level code fails or overruns its deadline fails
         // alone, in its result; anything else that ends the host retries
         // with the crash backoff.
-        var results: [HandlerHost.LoadedEntry] = []
+        var results: [RuleSetLoader.LoadedFile] = []
         var loadedHost: HandlerHost?
         if !entries.isEmpty {
             do {
@@ -248,16 +251,15 @@ actor RuleEngine {
                 restartTask?.cancel()
                 restartTask = nil
                 await retireHost(reason: "rules reloaded")
-                let host = try await startHost()
+                let host = try await startHost(tools.runtime)
                 guard thisGeneration == generation else { return }
-                results = try await host.load(
-                    modules: output.modules, entries: entries, rejected: rejected,
-                    entryDeadline: configuration.loadDeadline)
+                results = try await loader.load(
+                    output, entries: entries, rejected: rejected, into: host, fileScope: .atSubscribe)
                 guard thisGeneration == generation else { return }
                 loadedHost = host
             } catch {
                 guard thisGeneration == generation else { return }
-                failures += entries.map { Self.failedFile($0 + ".ts", reason: "\(error)") }
+                failures += entries.map { Self.failedFile(RuleCompiler.entryFile($0), reason: "\(error)") }
                 entries = []
                 results = []
                 // The host could not start or stopped for no file's reason:
@@ -271,35 +273,17 @@ actor RuleEngine {
         }
 
         var definitions: [RuleDefinition] = []
-        var unreported = Set(entries)
-        for result in results {
-            // The host runs user code; accept one result per file the daemon
-            // asked it to load, and nothing else.
-            guard unreported.remove(result.entry) != nil else { continue }
-            let file = result.entry + ".ts"
-            if let error = result.error {
-                failures.append(Self.failedFile(file, reason: error.message))
-                loadDiagnostics.append(
-                    RuleDiagnostic(tool: .loader, file: file, message: error.report, fixable: false))
+        for loaded in results {
+            loadDiagnostics += loaded.diagnostics
+            if let error = loaded.error {
+                failures.append(Self.failedFile(loaded.file, reason: error.message))
                 continue
             }
-            let loaded = result.definitions(file: file, catalog: hub.catalog, observation: observation)
             definitions += loaded.definitions
-            for failure in loaded.failures {
-                failures.append(
-                    RuleSummary(
-                        id: RuleID.make(file: file, name: failure.name), file: file, event: failure.event,
-                        state: .failed, reason: failure.reason, invocations: 0, failures: 0,
-                        lastInvokedAt: nil, lastError: nil))
-                loadDiagnostics.append(failure.diagnostic)
-            }
+            failures += loaded.failures.map(\.summary)
         }
         if let loadedHost {
-            // Each file's code gets its rules' file grants before any handler
-            // runs; until now it had none.
-            for (entry, permissions) in Self.permissions(for: definitions, protected: configuration.protected) {
-                await loadedHost.permit(entry: entry, permissions: permissions)
-            }
+            await loader.permit(definitions, in: loadedHost, writes: true)
             guard thisGeneration == generation else { return }
             // Running only once loaded and permitted: until now, kept rules'
             // events were dropped instead of invoking into a half-loaded host.
@@ -319,20 +303,6 @@ actor RuleEngine {
         }
         replaceRules(with: definitions, failures: failures, diagnostics: loadDiagnostics)
         await replayMissedState()
-    }
-
-    /// The file is the unit Deno's permissions apply to (one worker per
-    /// file), so a file's code may do what any of its rules was granted.
-    static func permissions(for definitions: [RuleDefinition], protected: ProtectedPaths) -> [String: FilePermissions] {
-        var permissions: [String: FilePermissions] = [:]
-        for definition in definitions {
-            let entry = RuleCompiler.moduleId(definition.file)
-            var file = permissions[entry] ?? FilePermissions(denyRead: protected.read, denyWrite: protected.write)
-            for path in definition.grants.fsRead where !file.read.contains(path) { file.read.append(path) }
-            for path in definition.grants.fsWrite where !file.write.contains(path) { file.write.append(path) }
-            permissions[entry] = file
-        }
-        return permissions
     }
 
     /// Kept `state` rules that dropped events while the host was replaced
@@ -480,27 +450,25 @@ actor RuleEngine {
         // to the instance that ran, not to its successor.
         guard rules[id] === rule else { return false }
 
-        let failure: String?
         switch result {
-        case .completed(nil):
-            failure = nil
         case .superseded:
             // The event was lost with the retired host; a `state` rule gets
             // the current value again once the next host has loaded.
             rule.missedDuringRestart = true
-            failure = nil
         case .interrupted(let reason):
             // Another rule overran or the host crashed: not this rule's
             // fault, but the event was lost the same way.
             rule.missedDuringRestart = true
             log(rule: id, level: .warn, "interrupted: \(reason)")
-            failure = nil
-        case .completed(let error?):
-            failure = error.report
-        case .timedOut:
-            failure = "did not finish within \(rule.definition.timeout.formatted())"
+        case .undeliverable(let reason):
+            log(rule: id, level: .warn, "not delivered: \(reason)")
+        case .overran:
+            // Charged with the fault that names it (`recordFault`).
+            return !rule.isStopped
+        case .completed, .timedOut:
+            break
         }
-        guard let failure else { return true }
+        guard let failure = result.failure(timeout: rule.definition.timeout) else { return true }
         return recordFailure(rule, failure)
     }
 
@@ -562,11 +530,7 @@ actor RuleEngine {
 
     // MARK: - Host
 
-    private func startHost() async throws -> HandlerHost {
-        guard let runtime = configuration.runtime else {
-            hostState = .unavailable
-            throw HandlerHost.HostError.exited("no rule runtime is available")
-        }
+    private func startHost(_ runtime: HandlerRuntime) async throws -> HandlerHost {
         hostState = .starting
         let host = HandlerHost(transport: runtime.makeHost())
         self.host = host
@@ -711,6 +675,14 @@ actor RuleEngine {
         recent.append(now)
         faults[culprit] = recent
         log(rule: culprit, level: .error, "\(reason); the handler host restarts")
+        // A fault names a rule only when its handler's own code overran:
+        // that invocation's failure, counted here with the fault rather than
+        // where the invocation returns, so the two are never seen apart.
+        if let rule, let active = rules[rule], !active.isStopped,
+            let failure = HandlerHost.InvocationResult.overran.failure(timeout: active.definition.timeout)
+        {
+            recordFailure(active, failure)
+        }
         guard recent.count >= Self.faultLimit else { return }
         faults[culprit] = nil
         let repeated = "ended the handler host \(Self.faultLimit) times within \(Int(Self.faultWindow / 60)) minutes"
@@ -733,7 +705,8 @@ actor RuleEngine {
         case .error: logger.error("\(rule ?? "-", privacy: .public): \(message, privacy: .public)")
         }
         do {
-            try store.appendLog(rule: rule, level: level.rawValue, message: String(message.prefix(16_384)))
+            try store.appendLog(
+                rule: rule, level: level, message: message.prefix(utf8Bytes: HandlerHost.maximumLogLineBytes))
         } catch {
             logger.error("could not store a rule log line: \(error, privacy: .public)")
         }
@@ -754,7 +727,7 @@ actor RuleEngine {
             RuleDiagnostic.toolFailure(.loader, message: $0)
         }
         return RulesReport(
-            rules: (running + failed).sorted { $0.id < $1.id },
+            rulesDirectory: configuration.rulesDirectory.path, rules: (running + failed).sorted { $0.id < $1.id },
             diagnostics: diagnostics + settingsProblem + directoryProblems, compiledAt: compiledAt, lint: lint)
     }
 
@@ -856,7 +829,7 @@ actor RuleEngine {
         watcherProblem = nil
         let hub = self.hub
         let debounce = configuration.reloadDebounce
-        let supportDirectory = directory + "/.meerkat/"
+        let supportDirectory = directory + "/" + RulesDirectoryLayout.supportDirectory + "/"
         let settingsPaths = plan.settingsFiles
         watchTask = Task { [weak self] in
             for await event in subscription.events {
@@ -980,23 +953,17 @@ actor RuleEngine {
         watchedReloadRunning = false
     }
 
-    /// The rules directory's editor support: declarations and compiler
-    /// options (`RuleCompiler.writeEditorSupport`), then the lint and format
-    /// policy (`RuleLinter.writeConfiguration`), so an editor checks what the
-    /// daemon checks.
+    /// The rules directory's editor support (`EditorSupport`), so an
+    /// editor checks what the daemon checks.
     private func writeEditorSupport() async {
+        let support = EditorSupport(
+            declarations: loader.declarations,
+            runtimeDeclarations: loader.runtime?.declarations,
+            configurationSchema: configuration.settings?.schema, linter: configuration.linter)
         do {
-            try RuleCompiler.writeEditorSupport(
-                in: configuration.rulesDirectory, declarations: TypeScriptDeclarations.render(hub.catalog),
-                runtimeDeclarations: configuration.runtime?.declarations)
+            try await support.write(in: configuration.rulesDirectory)
         } catch {
-            logger.error("could not write the editor configuration: \(error, privacy: .public)")
-        }
-        configuration.settings?.writeSchema(rulesDirectory: configuration.rulesDirectory)
-        do {
-            try await configuration.linter?.writeConfiguration(in: configuration.rulesDirectory)
-        } catch {
-            logger.error("could not write the lint configuration: \(error, privacy: .public)")
+            logger.error("\(error, privacy: .public)")
         }
     }
 
@@ -1017,7 +984,8 @@ actor RuleEngine {
     /// SHA-256 of each top-level rule file, by file name.
     private func fileHashes() -> [String: String] {
         var hashes: [String: String] = [:]
-        for source in RuleCompiler.ruleSources(in: configuration.rulesDirectory) where !source.contains("/") {
+        for source in RuleCompiler.ruleSources(in: configuration.rulesDirectory)
+        where RuleCompiler.isEntry(RuleCompiler.moduleId(source)) {
             guard let data = try? Data(contentsOf: configuration.rulesDirectory.appendingPathComponent(source)) else {
                 continue
             }

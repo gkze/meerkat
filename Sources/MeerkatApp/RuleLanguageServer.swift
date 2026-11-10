@@ -1,7 +1,7 @@
 import Foundation
 import JSONRPC
 import LanguageServerProtocol
-import MeerkatIPC
+import MeerkatKit
 
 /// tsrs's language server (`tsrs --lsp --stdio`), run for the rules
 /// directory while the rule editor is open.
@@ -20,13 +20,18 @@ import MeerkatIPC
 /// Every message has a deadline (`Limits`): a server that is alive but
 /// doesn't answer is reported through `onExit` like one that exited, so the
 /// editor's restart policy applies to it too, and `stop()` ends the process
-/// whether or not it answers.
+/// whether or not it answers. So is one that fails a notification: a new
+/// server, which opens the file afresh, is the only way back in step. A
+/// failed request only goes unanswered.
 actor RuleLanguageServer {
     enum Failure: Error, CustomStringConvertible {
         case exited(status: Int32)
         case killed(signal: Int32)
         /// Alive, but it didn't answer `method` in time.
         case unresponsive(method: String, limit: Duration)
+        /// It didn't take the notification `method`, so it holds other text,
+        /// or other files, than the editor, which no later message corrects.
+        case missed(method: String, reason: String)
 
         var description: String {
             switch self {
@@ -34,6 +39,7 @@ actor RuleLanguageServer {
             case .killed(let signal): "tsrs's language server was killed (signal \(signal))"
             case .unresponsive(let method, let limit):
                 "tsrs's language server didn't answer \(method) within \(limit)"
+            case .missed(let method, let reason): "tsrs's language server missed \(method) (\(reason))"
             }
         }
     }
@@ -105,7 +111,20 @@ actor RuleLanguageServer {
             onExit(process.terminationReason == .exit ? .exited(status: status) : .killed(signal: status))
         }
         let writer = input.fileHandleForWriting
-        let channel = DataChannel(writeHandler: { try writer.write(contentsOf: $0) }, dataSequence: data)
+        // A failed write never reaches JSONRPC as an error: for a request
+        // it would fail the request's continuation a second time once the
+        // read side ends (JSONRPCSession fails every pending request then
+        // too), and a second resume is fatal. Ending the read side fails each
+        // pending request once, and the failure is reported like an exit.
+        let channel = DataChannel(
+            writeHandler: { message in
+                do {
+                    try writer.write(contentsOf: message)
+                } catch {
+                    continuation.finish()
+                    onExit(.missed(method: "a message", reason: "\(error)"))
+                }
+            }, dataSequence: data)
         try process.run()
 
         self.process = process
@@ -150,7 +169,7 @@ actor RuleLanguageServer {
     }
 
     func open(_ uri: DocumentUri, text: String, version: Int) async throws {
-        try await bounded("textDocument/didOpen") { connection in
+        try await notify("textDocument/didOpen") { connection in
             try await connection.textDocumentDidOpen(
                 DidOpenTextDocumentParams(
                     textDocument: TextDocumentItem(uri: uri, languageId: .typescript, version: version, text: text)))
@@ -160,7 +179,7 @@ actor RuleLanguageServer {
     /// The whole text as the new version: rule files are small, and a full
     /// replacement cannot drift from the editor's buffer.
     func change(_ uri: DocumentUri, text: String, version: Int) async throws {
-        try await bounded("textDocument/didChange") { connection in
+        try await notify("textDocument/didChange") { connection in
             try await connection.textDocumentDidChange(
                 DidChangeTextDocumentParams(
                     uri: uri, version: version,
@@ -169,7 +188,7 @@ actor RuleLanguageServer {
     }
 
     func saved(_ uri: DocumentUri) async throws {
-        try await bounded("textDocument/didSave") { connection in
+        try await notify("textDocument/didSave") { connection in
             try await connection.textDocumentDidSave(DidSaveTextDocumentParams(uri: uri))
         }
     }
@@ -177,14 +196,14 @@ actor RuleLanguageServer {
     /// Files that changed on disk, which tsrs doesn't watch itself: until
     /// told, it doesn't know a file added to the folder.
     func filesChanged(_ changes: [FileEvent]) async throws {
-        try await bounded("workspace/didChangeWatchedFiles") { connection in
+        try await notify("workspace/didChangeWatchedFiles") { connection in
             try await connection.sendNotification(
                 .workspaceDidChangeWatchedFiles(DidChangeWatchedFilesParams(changes: changes)))
         }
     }
 
     func close(_ uri: DocumentUri) async throws {
-        try await bounded("textDocument/didClose") { connection in
+        try await notify("textDocument/didClose") { connection in
             try await connection.textDocumentDidClose(
                 DidCloseTextDocumentParams(textDocument: TextDocumentIdentifier(uri: uri)))
         }
@@ -263,6 +282,17 @@ actor RuleLanguageServer {
         if ended == nil, process.isRunning { kill(process.processIdentifier, SIGKILL) }
     }
 
+    private func notify(
+        _ method: String, _ body: @escaping @Sendable (JSONRPCServerConnection) async throws -> Void
+    ) async throws {
+        do {
+            try await bounded(method, body)
+        } catch let error where !(error is DeadlineExceeded) {
+            onExit(.missed(method: method, reason: "\(error)"))
+            throw error
+        }
+    }
+
     /// `body` within `limit`; past it the server counts as gone, which
     /// `onExit` reports, and `stop()` ends it.
     private func bounded<T: Sendable>(
@@ -299,31 +329,5 @@ actor RuleLanguageServer {
         case .custom(_, _, let reply):
             await reply(.success(.null))
         }
-    }
-}
-
-extension NSString {
-    /// The LSP position (0-based line, UTF-16 character) of a text offset.
-    nonisolated func lspPosition(of offset: Int) -> Position {
-        var line = 0
-        var lineStart = 0
-        for index in 0..<min(offset, length) where character(at: index) == 0x0A {
-            line += 1
-            lineStart = index + 1
-        }
-        return Position(line: line, character: offset - lineStart)
-    }
-
-    /// The text offset of an LSP position, or nil past the end.
-    nonisolated func offset(ofLSP position: Position) -> Int? {
-        var line = 0
-        var index = 0
-        while line < position.line {
-            guard index < length else { return nil }
-            if character(at: index) == 0x0A { line += 1 }
-            index += 1
-        }
-        let offset = index + position.character
-        return offset <= length ? offset : nil
     }
 }

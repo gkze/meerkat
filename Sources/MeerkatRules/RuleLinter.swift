@@ -1,5 +1,4 @@
 import Foundation
-import MeerkatIPC
 import MeerkatKit
 
 /// Lints and formats a rules directory with the tools Meerkat.app ships:
@@ -25,9 +24,9 @@ public struct RuleLinter: Sendable {
     static let rootOxlintConfiguration = """
         {
           // Written once by meerkatd, then yours. It extends Meerkat's rule
-          // policy, which meerkatd rewrites into .meerkat/ on every reload.
-          "extends": ["./.meerkat/oxlintrc.json"],
-          "ignorePatterns": [".meerkat/**", "**/node_modules/**"]
+          // policy, which meerkatd rewrites into \(RulesDirectoryLayout.supportDirectory)/ on every reload.
+          "extends": ["./\(RulesDirectoryLayout.supportDirectory)/\(supportPolicy)"],
+          "ignorePatterns": ["\(supportPattern)", "**/node_modules/**"]
         }
 
         """
@@ -40,21 +39,21 @@ public struct RuleLinter: Sendable {
     /// output.
     public func writeConfiguration(in rulesDirectory: URL) async throws {
         let fileManager = FileManager.default
-        let support = rulesDirectory.appendingPathComponent(".meerkat")
+        let support = rulesDirectory.appendingPathComponent(RulesDirectoryLayout.supportDirectory)
         try fileManager.createDirectory(at: support, withIntermediateDirectories: true)
-        try RuleCompiler.writeIfChanged(
+        try EditorSupport.writeIfChanged(
             try String(contentsOf: toolchain.oxlintPolicy, encoding: .utf8),
-            to: support.appendingPathComponent("oxlintrc.json"))
+            to: support.appendingPathComponent(Self.supportPolicy))
 
         var created: [String] = []
         let oxlintrc = rulesDirectory.appendingPathComponent(".oxlintrc.json")
         if !fileManager.fileExists(atPath: oxlintrc.path) {
-            try RuleCompiler.writeIfChanged(Self.rootOxlintConfiguration, to: oxlintrc)
+            try EditorSupport.writeIfChanged(Self.rootOxlintConfiguration, to: oxlintrc)
             created.append(oxlintrc.lastPathComponent)
         }
         let oxfmtrc = rulesDirectory.appendingPathComponent(".oxfmtrc.json")
         if !fileManager.fileExists(atPath: oxfmtrc.path) {
-            try RuleCompiler.writeIfChanged(try rootOxfmtConfiguration(), to: oxfmtrc)
+            try EditorSupport.writeIfChanged(try rootOxfmtConfiguration(), to: oxfmtrc)
             created.append(oxfmtrc.lastPathComponent)
         }
         if !created.isEmpty {
@@ -68,7 +67,7 @@ public struct RuleLinter: Sendable {
         guard case .object(var options) = policy else {
             throw LintError.badPolicy(toolchain.oxfmtPolicy.path)
         }
-        options["ignorePatterns"] = .array([.string(".meerkat/**")])
+        options["ignorePatterns"] = .array([.string(Self.supportPattern)])
         return JSONValue.object(options).canonicalString + "\n"
     }
 
@@ -121,8 +120,12 @@ public struct RuleLinter: Sendable {
     /// A rules directory with no sources yet is clean, not an error: Oxlint
     /// otherwise exits 1 with "No files found to lint".
     private static let oxlintArguments = [
-        "--format=unix", "--no-error-on-unmatched-pattern", "--ignore-pattern", ".meerkat/**", ".",
+        "--format=unix", "--no-error-on-unmatched-pattern", "--ignore-pattern", supportPattern, ".",
     ]
+
+    private static let supportPattern = RulesDirectoryLayout.supportDirectory + "/**"
+    /// The policy's copy in the support directory, which the root file extends.
+    private static let supportPolicy = "oxlintrc.json"
 
     /// No inherited environment: the type-aware backend is the bundled
     /// tsrslint whatever the user's shell points `OXLINT_TSGOLINT_PATH` at.
@@ -215,7 +218,7 @@ enum LintError: Error, CustomStringConvertible {
 /// `bin/` (oxlint, oxfmt, tsrslint, meerkat-lint) and `policy/`
 /// (oxlintrc.json, oxfmtrc.json).
 public struct LintToolchain: Sendable, Equatable {
-    /// Where Meerkat.app keeps these tools, under `Contents/Resources`,
+    /// Where Meerkat.app keeps these tools, under `AppBundle.resources`,
     /// which the bundler fills.
     public static let bundledDirectory = "lint"
 
@@ -246,15 +249,13 @@ public struct LintToolchain: Sendable, Equatable {
     /// (`buck2 build //Tools/Bundler:lint-toolchain --out .build/lint-toolchain`).
     public static func locate(
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        executable: URL = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
+        executable: URL = .currentExecutable
     ) -> LintToolchain? {
         if let override = environment["MEERKAT_LINT_TOOLCHAIN"] {
             return LintToolchain(directory: URL(fileURLWithPath: override))
         }
         let resolved = executable.resolvingSymlinksInPath()
-        // Contents/MacOS/<tool> -> Contents/Resources/lint/
-        let bundled = resolved.deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Resources").appendingPathComponent(Self.bundledDirectory)
+        let bundled = AppBundle.resource(Self.bundledDirectory, besideExecutable: resolved)
         if let toolchain = LintToolchain(directory: bundled) { return toolchain }
         var directory = resolved.deletingLastPathComponent()
         for _ in 0..<8 {

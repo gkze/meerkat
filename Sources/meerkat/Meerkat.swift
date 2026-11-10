@@ -23,12 +23,9 @@ struct Meerkat: AsyncParsableCommand {
             For coding agents: `meerkat skills` has instructions on using Meerkat, and `meerkat mcp` serves \
             it over MCP.
 
-            Commands that print data print JSON with --json, or always. Exit statuses: 0 success; 1 \
-            failure, including a check that found problems, whose findings are its output; 64 usage error; \
-            66 a file or folder named does not exist; 69 the daemon, or a tool the app ships, is not \
-            available; 75 `agent install` registered the agent but no daemon answered yet, which trying \
-            again can fix. With --json, a failure other than a check's findings writes one JSON object to \
-            stderr, {"error": {"status": N, "message": "..."}}, after any notes in text.
+            Commands that print data print JSON with --json, or always. Exit statuses: \(ExitStatus.summary) \
+            With --json, a failure other than a check's findings writes one JSON object to stderr, \
+            {"error": {"status": N, "message": "..."}}, after any notes in text.
             """,
         subcommands: [
             Sample.self, Analyze.self, Compare.self,
@@ -58,11 +55,7 @@ func openExistingStore(_ path: String) throws -> SampleStore {
     guard FileManager.default.fileExists(atPath: expanded) else {
         throw CommandFailure("no database at \(expanded)", status: ExitStatus.noInput)
     }
-    do {
-        return try SampleStore(readingFrom: expanded)
-    } catch {
-        throw CommandFailure("\(error)")
-    }
+    return try SampleStore(readingFrom: expanded)
 }
 
 /// Order of metrics in every summary table.
@@ -70,24 +63,24 @@ let metricOrder = SampleMetric.allCases.map(\.rawValue)
 
 // MARK: - sample
 
-struct Sample: ParsableCommand, JSONOutput {
+struct Sample: AsyncParsableCommand, JSONOutput {
     static let configuration = CommandConfiguration(
         abstract: "Take one or more samples.",
         discussion:
-            "Prints one sample as JSON, or a summary when --repeat is above 1. Exits non-zero after the run if any sample could not be written to --db or retention failed. A sample that can't be taken ends the run: retention still runs, and the summary covers the samples taken."
+            "Prints one sample as JSON, or a summary when --repeat is above 1. Exits non-zero after the run if any sample could not be written to --db or retention failed. A sample that can't be taken ends the run, and the summary covers the samples taken."
     )
 
     @Option(help: "CPU, I/O and churn window in seconds.")
-    var window = 10.0
+    var window = SystemSampler.Options().window
 
     @Option(help: "Processes to report.")
-    var top = 10
+    var top = SystemSampler.Options().top
 
     @Option(name: .customLong("churn"), help: "Also count FSEvents change activity under this path, over the window.")
     var churnPath: String?
 
     @Option(help: "Path components per churn bucket.")
-    var churnDepth = 5
+    var churnDepth = SystemSampler.Options().churnDepth
 
     @Option(name: .customLong("repeat"), help: "Take N samples and print a summary.")
     var repeatCount = 1
@@ -127,13 +120,12 @@ struct Sample: ParsableCommand, JSONOutput {
         guard !(json && table) else { throw ValidationError("use --json or --table, not both") }
     }
 
-    func run() throws {
+    func run() async throws {
         let store = try dbPath.map(Self.openOrCreateStore)
 
-        let encoder = JSONEncoder()
-        if pretty { encoder.outputFormatting = [.prettyPrinted, .sortedKeys] }
+        let encoder = JSONEncoder.meerkat(pretty: pretty)
 
-        let (collected, problems) = record(into: store, sampling: takeSample) { index, sample in
+        let (collected, problems) = await record(into: store, sampling: takeSample) { index, sample in
             if repeatCount > 1 {
                 stderrLine("sample \(index + 1)/\(repeatCount) taken")
             } else if quiet {
@@ -158,22 +150,22 @@ struct Sample: ParsableCommand, JSONOutput {
         if !problems.isEmpty { throw CommandFailure(problems.joined(separator: "\n")) }
     }
 
-    /// Takes the samples, writing each to `store` and passing it to `show`,
-    /// then applies `--retain`. A failed write does not stop the run (the
-    /// other samples are still worth having); a failed sample does, but
-    /// retention still runs. Either way the run ends with every problem, in
+    /// Takes the samples, recording each in `store` with `--retain`
+    /// (`SampleStore.record`) and passing it to `show`. A failed write does
+    /// not stop the run (the other samples are still worth having); a
+    /// failed sample does. Either way the run ends with every problem, in
     /// order, so a recorder that only watches the exit status notices, and
     /// none is lost to a later one.
     func record(
-        into store: SampleStore?, sampling: () throws -> SystemSample,
+        into store: SampleStore?, sampling: () async throws -> SystemSample,
         show: (_ index: Int, SystemSample) throws -> Void
-    ) -> (samples: [SystemSample], problems: [String]) {
+    ) async -> (samples: [SystemSample], problems: [String]) {
         var problems: [String] = []
         var collected: [SystemSample] = []
         for index in 0..<repeatCount {
             let sample: SystemSample
             do {
-                sample = try sampling()
+                sample = try await sampling()
             } catch {
                 problems.append("\(error)")
                 break
@@ -182,7 +174,7 @@ struct Sample: ParsableCommand, JSONOutput {
 
             if let store {
                 do {
-                    try store.insert(label: label, sample: sample)
+                    try store.record(sample, label: label, retain: retain)
                 } catch let error as LimitsNotAppliedError {
                     // Committed: written once, not to be written again.
                     problems.append("\(error)")
@@ -196,46 +188,26 @@ struct Sample: ParsableCommand, JSONOutput {
                 problems.append("could not encode sample: \(error)")
             }
         }
-
-        // Retention replaces the old tail-and-mv rewrite of the JSONL file.
-        if let store, let retain {
-            do {
-                try store.retainNewest(retain, label: label)
-            } catch {
-                problems.append("retention failed: \(error)")
-            }
-        }
         return (collected, problems)
     }
 
     private static func openOrCreateStore(_ path: String) throws -> SampleStore {
-        let expanded = (path as NSString).expandingTildeInPath
-        let directory = (expanded as NSString).deletingLastPathComponent
-        if !directory.isEmpty {
-            try? FileManager.default.createDirectory(
-                atPath: directory, withIntermediateDirectories: true
-            )
-        }
-        do {
-            return try SampleStore(path: expanded, limits: recordingLimits(in: DaemonPaths.standard().rulesDirectory))
-        } catch {
-            throw CommandFailure("\(error)")
-        }
+        try SampleStore(
+            path: (path as NSString).expandingTildeInPath,
+            limits: recordingLimits(file: DaemonPaths.standard().configurationFile))
     }
 
     /// The budget `meerkat.json` sets, which every insert applies. It is
     /// what deletes samples, so a file that can't be read stops the write
     /// rather than falling back to the defaults.
-    static func recordingLimits(in rulesDirectory: URL) throws -> SampleStore.Limits {
-        let file = rulesDirectory.appendingPathComponent(MeerkatConfiguration.fileName)
+    static func recordingLimits(file: URL) throws -> SampleStore.Limits {
         guard FileManager.default.fileExists(atPath: file.path) else { return .standard }
-        let samples = try MeerkatConfiguration.decode(Data(contentsOf: file)).samples
-        return SampleStore.Limits(maxAgeDays: samples.maxAgeDays, maxMegabytes: samples.maxMegabytes)
+        return SampleStore.Limits(try MeerkatConfiguration.decode(Data(contentsOf: file)).samples)
     }
 
-    private func takeSample() throws -> SystemSample {
+    private func takeSample() async throws -> SystemSample {
         do {
-            return try SystemSampler.sample(
+            return try await SystemSampler.sample(
                 SystemSampler.Options(
                     window: window, top: top, systemOnly: systemOnly,
                     churnPath: churnPath, churnDepth: churnDepth
@@ -258,13 +230,12 @@ struct Sample: ParsableCommand, JSONOutput {
         }
         print("\npid      cpu%   rMB/s  wMB/s    footprint  name")
         for p in s.processes {
-            let w = max(p.windowSeconds, 0.001)
             print(
                 padField("\(p.pid)", 7) + padField(String(format: "%.1f", p.cpuPct), 7, right: true)
-                    + column(p.diskReadMB.map { $0 / w }, "%.1f", width: 7)
-                    + column(p.diskWriteMB.map { $0 / w }, "%.1f", width: 7)
+                    + column(p.diskReadMBps, "%.1f", width: 7)
+                    + column(p.diskWriteMBps, "%.1f", width: 7)
                     + column(p.footprintMB, "%.0fMB", width: 12)
-                    + "  " + terminalSafe((p.name as NSString).lastPathComponent))
+                    + "  " + terminalSafe(p.name))
         }
         if let c = s.churn {
             print(
@@ -306,8 +277,8 @@ struct Compare: ParsableCommand, JSONOutput {
         abstract: "Per-label medians and ranges, with the delta between two labels.",
         discussion: """
             With exactly two labels, also lists the metrics whose ranges overlap, which this many samples \
-            can't separate, and those too noisy within a label to judge. Exits 1 when the store has no \
-            samples, and 66 when there is no store.
+            can't separate, and those too noisy within a label to judge. Exits \(ExitStatus.failure.code) when the store has no \
+            samples, and \(ExitStatus.noInput.code) when there is no store.
             """
     )
 
@@ -317,14 +288,7 @@ struct Compare: ParsableCommand, JSONOutput {
     @Flag(help: "Print JSON.") var json = false
 
     func run() throws {
-        let records: [StoredMetrics]
-        do {
-            records = try openExistingStore(db).allMetrics()
-        } catch let failure as CommandFailure {
-            throw failure
-        } catch {
-            throw CommandFailure("\(error)")
-        }
+        let records = try openExistingStore(db).allMetrics()
         let comparison = SampleComparison(records)
         guard !comparison.labels.isEmpty else {
             throw CommandFailure("no samples in \((db as NSString).expandingTildeInPath)")
@@ -385,7 +349,7 @@ struct Compare: ParsableCommand, JSONOutput {
 struct Analyze: ParsableCommand, JSONOutput {
     static let configuration = CommandConfiguration(
         abstract: "Per-label and per-process summary of a store.",
-        discussion: "Exits 66 when there is no store."
+        discussion: "Exits \(ExitStatus.noInput.code) when there is no store."
     )
 
     @Argument(help: "SQLite store written with --db.")
@@ -412,15 +376,8 @@ struct Analyze: ParsableCommand, JSONOutput {
     }
 
     func run() throws {
-        let analysis: Analysis
-        do {
-            let store = try openExistingStore(db)
-            analysis = Self.analysis(labels: try store.labelMetrics(), usage: try store.processUsage())
-        } catch let failure as CommandFailure {
-            throw failure
-        } catch {
-            throw CommandFailure("\(error)")
-        }
+        let store = try openExistingStore(db)
+        let analysis = Self.analysis(labels: try store.labelMetrics(), usage: try store.processUsage())
         if json { return try printJSON(analysis, pretty: true) }
 
         print("records: \(analysis.records) in \((db as NSString).expandingTildeInPath)")
@@ -459,19 +416,17 @@ struct Analyze: ParsableCommand, JSONOutput {
         }
     }
 
+    /// Processes are grouped by their short name, which the sampler gives
+    /// every row (`ProcessCounters.name`), so one program's instances and
+    /// runs are one line.
     static func analysis(labels: [SampleStore.LabelMetrics], usage: [SampleStore.ProcessUsage]) -> Analysis {
-        // Names arrive either as a short name or, when proc_name fails for another
-        // user's process, as a full executable path; group by basename so one
-        // process does not appear twice.
         var grouped: [String: (values: [Double], peak: Double, samples: Set<Int>)] = [:]
         for row in usage {
-            let stripped = row.name.hasSuffix("/") ? String(row.name.dropLast()) : row.name
-            let base = stripped.split(separator: "/").last.map(String.init) ?? stripped
-            var entry = grouped[base] ?? (values: [], peak: 0, samples: [])
+            var entry = grouped[row.name] ?? (values: [], peak: 0, samples: [])
             entry.values.append(row.cpuPct)
             entry.peak = max(entry.peak, row.cpuPct)
             entry.samples.insert(row.sampleID)
-            grouped[base] = entry
+            grouped[row.name] = entry
         }
         let processes = grouped.map { name, entry in
             Analysis.Process(

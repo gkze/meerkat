@@ -7,10 +7,9 @@ use oxc::ast::AstKind;
 use oxc::ast::ast::{BlockStatement, Statement};
 use oxc::span::GetSpan;
 
-use crate::source::{Context, Edit, Finding, LINE_WIDTH, has_line_break, line_end, line_indent, line_start, width};
+use crate::source::{Context, Edit, Finding, has_line_break, line_end, line_indent, line_start};
 
 const MESSAGE: &str = "Compact single-statement control block.";
-const INDENT: &str = "  ";
 
 pub fn check(context: &Context<'_, '_>) -> Vec<Finding> {
     let mut findings = Vec::new();
@@ -120,15 +119,19 @@ fn replacement(context: &Context<'_, '_>, block: &BlockStatement<'_>, parent: As
     }
 
     let prefix_line_start = line_start(&prefix, prefix.len());
-    let inline_width = width(&prefix[prefix_line_start..]) + width(&inline) + width(line_suffix);
-    if !has_line_break(&prefix[relative_header..]) && !has_line_break(statement_text) && inline_width <= LINE_WIDTH {
+    let layout = context.layout;
+    let inline_width = layout.width(&prefix[prefix_line_start..]) + layout.width(&inline) + layout.width(line_suffix);
+    if !has_line_break(&prefix[relative_header..])
+        && !has_line_break(statement_text)
+        && inline_width <= layout.line_width
+    {
         return Some(Replacement { prefix: " ".to_owned(), start: replacement_start, suffix, text: inline });
     }
 
     let separator = if prefix.len() == prefix_line_start { "" } else { "\n" };
-    let indent = format!("{}{INDENT}", line_indent(&prefix, relative_header));
+    let indent = format!("{}{}", line_indent(&prefix, relative_header), layout.indent());
     let last_line = &terminated[line_start(statement_text, statement_text.len())..];
-    if width(&indent) + width(last_line) + width(line_suffix) > LINE_WIDTH {
+    if layout.width(&indent) + layout.width(last_line) + layout.width(line_suffix) > layout.line_width {
         return None;
     }
     let continuation = format!("{separator}{indent}");

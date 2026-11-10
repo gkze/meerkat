@@ -3,12 +3,11 @@
 //! static library meerkatd links, or checks that the checked-in copy is
 //! current.
 //!
-//!     meerkat-runtime-bindgen [--check] [LIBRARY]
+//!     meerkat-runtime-bindgen [--check] LIBRARY
 //!
-//! Buck's targets pass LIBRARY (`//Sources/meerkat-runtime:meerkat_runtime[staticlib]`);
-//! it defaults to `.build/cargo/release/libmeerkat_runtime.a`, where Package.swift
-//! links it for a `SwiftPM` build. The outputs are `OUTPUTS` below: a C header
-//! and a Swift file, in `Sources/meerkat-runtime`.
+//! Buck's targets pass LIBRARY (`//Sources/meerkat-runtime:meerkat_runtime[staticlib]`).
+//! The outputs are `OUTPUTS` below: a C header and a Swift file, in
+//! `Sources/meerkat-runtime`.
 //! Exit status: 0 written or current, 1 stale (`--check`), 2 failed.
 
 use std::path::{Path, PathBuf};
@@ -24,6 +23,8 @@ const OUTPUTS: [(&str, &str); 2] = [
     ("MeerkatRuntimeBindings.swift", "Sources/meerkat-runtime/MeerkatRuntimeBindings/MeerkatRuntimeBindings.swift"),
 ];
 
+const USAGE: &str = "usage: meerkat-runtime-bindgen [--check] LIBRARY";
+
 fn repository() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
 }
@@ -36,12 +37,15 @@ fn main() -> ExitCode {
             "--check" => check = true,
             _ if library.is_none() && !argument.starts_with('-') => library = Some(PathBuf::from(argument)),
             _ => {
-                eprintln!("usage: meerkat-runtime-bindgen [--check] [LIBRARY]");
+                eprintln!("{USAGE}");
                 return ExitCode::from(2);
             }
         }
     }
-    let library = library.unwrap_or_else(|| repository().join(".build/cargo/release/libmeerkat_runtime.a"));
+    let Some(library) = library else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
     match run(&library, check) {
         Ok(stale) if stale.is_empty() => ExitCode::SUCCESS,
         Ok(stale) => {

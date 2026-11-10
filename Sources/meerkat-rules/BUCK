@@ -1,4 +1,5 @@
-load("//buck2/rules:check.bzl", "command", "command_test")
+load("//buck2/rules:check.bzl", "GENERATED", "command", "command_test")
+load("//buck2/third_party/js:defs.bzl", "js_tool")
 
 # The rule toolchain's checks (`bun run check` runs them too): the type
 # checker the daemon compiles with (tsrs), Oxlint (type-aware, on tsrslint) with the meerkat/* rules, and
@@ -8,7 +9,7 @@ load("//buck2/rules:check.bzl", "command", "command_test")
 
 _RULE_CODE = ["Sources/meerkat-rules", "Sources/meerkat-runtime/js", "Sources/meerkat-runtime/types"]
 
-_OXFMT = "$(location //buck2/third_party/js:oxfmt[oxfmt-aarch64-apple-darwin])"
+_OXFMT = js_tool("oxfmt")
 
 # What Oxfmt formats beside the rule code. Tools/Bundler/AppIcon.icon/icon.json
 # is Icon Composer's, which rewrites it on every save.
@@ -26,15 +27,15 @@ _SRCS = glob(["**/*.ts", "tsconfig.json"])
 
 command_test(
     name = "tsrs",
-    command = ["$(location //buck2/third_party/js:tsrs)/tsrs", "-p", "Sources/meerkat-rules"],
+    command = [js_tool("tsrs"), "-p", "Sources/meerkat-rules"],
     srcs = _SRCS,
     labels = ["lint"],
 )
 
 command_test(
     name = "oxlint",
-    command = ["$(location //buck2/third_party/js:oxlint[oxlint-aarch64-apple-darwin])"] + _RULE_CODE,
-    env = {"OXLINT_TSGOLINT_PATH": "$(location //buck2/third_party/js:tsrslint[tsrslint])"},
+    command = [js_tool("oxlint")] + _RULE_CODE,
+    env = {"OXLINT_TSGOLINT_PATH": js_tool("tsrslint")},
     srcs = _SRCS,
     labels = ["lint"],
 )
@@ -51,6 +52,34 @@ command_test(
     command = [_OXFMT, "--check"] + _RULE_CODE + _FORMATTED,
     srcs = _SRCS,
     labels = ["format"],
+)
+
+# Oxfmt walks the directories the checks above give it, so .oxfmtrc.json's
+# ignorePatterns must name every generated file in them (GENERATED): those
+# are their generators' to format.
+command_test(
+    name = "oxfmt-ignores",
+    command = [
+        "/bin/sh",
+        "-c",
+        '''
+        status=0
+        for path; do
+            if ! grep -qF "\\"$path\\"" .oxfmtrc.json; then
+                echo "$path is generated; add it to .oxfmtrc.json's ignorePatterns" >&2
+                status=1
+            fi
+        done
+        exit $status
+        ''',
+        "oxfmt-ignores",
+    ] + [
+        path
+        for path in GENERATED
+        for directory in _RULE_CODE + _FORMATTED
+        if path == directory or path.startswith(directory + "/")
+    ],
+    labels = ["lint"],
 )
 
 # Rewrites formatting only.
@@ -81,8 +110,8 @@ command(
         OXLINT_TSGOLINT_PATH=$tsrslint "$oxlint" "$@"; "$meerkat_lint" "$@"
         """ % " ".join(_FORMATTED),
         "fix",
-        "$(location //buck2/third_party/js:oxlint[oxlint-aarch64-apple-darwin])",
-        "$(location //buck2/third_party/js:tsrslint[tsrslint])",
+        js_tool("oxlint"),
+        js_tool("tsrslint"),
         "$(exe //Sources/meerkat-lint:meerkat-lint)",
         _OXFMT,
     ] + _RULE_CODE,

@@ -33,6 +33,8 @@ before you finish:
 | The CLI, its output or exit statuses | `buck2 test //Tests/CLITests:CLITests` |
 | The daemon, rules, effects or MCP | `buck2 test //Tests/MeerkatDaemonTests:MeerkatDaemonTests` |
 | MeerkatKit, MeerkatStore or the sources | `buck2 test //Tests/MeerkatKitTests:MeerkatKitTests` |
+| MeerkatIPC: the daemon client, its protocol and paths | `buck2 test //Tests/MeerkatIPCTests:MeerkatIPCTests` |
+| MeerkatAgent: registering the LaunchAgent | `buck2 test //Tests/MeerkatAgentTests:MeerkatAgentTests` |
 | The app | `buck2 test //Tests/MeerkatAppTests:MeerkatAppTests`, then the real app |
 | An agent skill (`AgentSkills.swift`) | CLITests and MeerkatDaemonTests: they parse every command and tool it names |
 | A catalog or `meerkat.json`'s schema | `buck2 run //:fix`, then MeerkatDaemonTests, which compare the generated files |
@@ -46,15 +48,18 @@ sees, and say so if you couldn't.
 ## Generated files
 
 Change the authority, not the output. A check fails when one is stale. `buck2 run
-//:fix` regenerates them all.
+//:fix` regenerates them all. `GENERATED` in `buck2/rules/check.bzl` names each
+file with the target that rewrites it. No `over_files` check or fixer reads them
+(`:hygiene` and `:gitleaks` do); `//:generated_files_test` fails when it and this
+table list different files.
 
 | File | From | Stale when |
 |---|---|---|
 | `Sources/meerkat-rules/meerkat.d.ts` | the Swift event and effect catalogs | `DeclarationTests` (MeerkatDaemonTests) |
 | `Sources/meerkat-rules/meerkat.schema.json` | the configuration's types (`MeerkatConfiguration.schema`) | `ConfigurationTests` (MeerkatDaemonTests) |
 | `Sources/meerkat-rules/deno.d.ts` | Deno's libraries the runtime composes, at the pinned crates | `//Sources/meerkat-runtime:declarations_test` |
-| `Sources/meerkat-runtime/MeerkatRuntimeBindings/`, `CMeerkatRuntime/include/meerkat_runtime.h` | the Rust crate, through UniFFI | `//Sources/meerkat-runtime/bindgen:bindings_current` |
-| `buck2/third_party/rust/BUCK`, `Cargo.lock` | `Cargo.toml` and `fixups/`, through Reindeer | `//buck2/third_party/rust/check:buckify_test` |
+| `Sources/meerkat-runtime/MeerkatRuntimeBindings/MeerkatRuntimeBindings.swift`, `Sources/meerkat-runtime/CMeerkatRuntime/include/meerkat_runtime.h` | the Rust crate, through UniFFI | `//Sources/meerkat-runtime/bindgen:bindings_current` |
+| `buck2/third_party/rust/BUCK`, `buck2/third_party/rust/Cargo.lock` | `Cargo.toml` and `fixups/`, through Reindeer | `//buck2/third_party/rust/check:buckify_test` |
 | `buck2/third_party/swift/modules.bzl` | each Swift package's manifest at its pin in `buck2/third_party/swift/BUCK` | `//buck2/third_party/swift:manifest_test` |
 | `Tools/Notices/bundled_crates.bzl` | the Cargo.lock files `LOCKFILES` in `Tools/Notices/BUCK` pins | `//Tools/Notices:notices` |
 | `docs/images/meerkat-icon.png` | `Tools/Bundler/AppIcon.icon`, through actool at `[swift] developer_dir` | `//Tools/Bundler:icon_test` |

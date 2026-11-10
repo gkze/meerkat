@@ -1,6 +1,7 @@
 load("//buck2/rules:bundle.bzl", "bundle_command", "directory")
-load("//buck2/rules:check.bzl", "XCODE_ENV", "command", "command_test")
+load("//buck2/rules:check.bzl", "XCODE_ENV", "checked_in_copy")
 load("//buck2/rules:meerkat.bzl", "meerkat_swift_binary")
+load("//buck2/third_party/js:defs.bzl", "js_tool_target")
 load(":parts.bzl", "PARTS")
 
 # Assembles, signs and installs Meerkat.app from the parts below.
@@ -9,6 +10,7 @@ meerkat_swift_binary(
     srcs = ["Bundler.swift"],
     deps = [
         "//Sources/MeerkatIPC:MeerkatIPC",
+        "//Sources/MeerkatKit:MeerkatKit",
         "//Sources/MeerkatRules:MeerkatRules",
         "//Tools/ReleaseVersion:ReleaseVersion",
         "//Tools/ToolProcess:ToolProcess",
@@ -32,9 +34,9 @@ directory(
     name = "lint-toolchain",
     entries = {
         "bin/meerkat-lint": "//Sources/meerkat-lint:meerkat-lint",
-        "bin/oxfmt": "//buck2/third_party/js:oxfmt[oxfmt-aarch64-apple-darwin]",
-        "bin/oxlint": "//buck2/third_party/js:oxlint[oxlint-aarch64-apple-darwin]",
-        "bin/tsrslint": "//buck2/third_party/js:tsrslint[tsrslint]",
+        "bin/oxfmt": js_tool_target("oxfmt"),
+        "bin/oxlint": js_tool_target("oxlint"),
+        "bin/tsrslint": js_tool_target("tsrslint"),
         "policy/oxfmtrc.json": "//Sources/meerkat-lint:oxfmtrc",
         "policy/oxlintrc.json": "//Sources/meerkat-lint:oxlintrc",
     },
@@ -70,7 +72,7 @@ bundle_command(
 # beside the installed one (no daemon, CLI or agent).
 bundle_command(
     name = "preview",
-    app = "//Sources/MeerkatApp:MeerkatApp",
+    app = PARTS["app"],
     mode = "debug",
     preview = True,
     **_COMMON
@@ -82,13 +84,13 @@ bundle_command(
 # when it compiles nothing, so a missing AppIcon.icns is the failure, with its
 # report. A genrule's sources are links, which actool refuses, so it compiles
 # a copy. Its icns is the same bytes on every run (Assets.car is not), so the
-# check compares bytes. `xcode_build` is in the environment, as for every Swift
-# action, so a new Xcode renders it again.
+# check compares bytes. XCODE_ENV keys it on the Xcode's build, as every Swift
+# action is, so a new Xcode renders it again.
 genrule(
     name = "readme-icon",
     srcs = glob(["AppIcon.icon/**"]),
     out = "meerkat-icon.png",
-    env = XCODE_ENV | {"MEERKAT_XCODE_BUILD": read_root_config("swift", "xcode_build")},
+    env = XCODE_ENV,
     cmd = """
     cp -RL "$SRCDIR/AppIcon.icon" "$TMP/AppIcon.icon" &&
     /usr/bin/xcrun actool "$TMP/AppIcon.icon" --compile "$TMP" \
@@ -101,22 +103,8 @@ genrule(
     """.format(read_root_config("meerkat", "minimum_macos")),
 )
 
-# `buck2 run` it (or //:fix) to rewrite docs/images/meerkat-icon.png;
-# :icon_test fails while it is stale.
-command(
-    name = "regenerate",
-    command = ["/bin/cp", "-f", "$(location :readme-icon)", "docs/images/meerkat-icon.png"],
-    visibility = ["PUBLIC"],
-)
-
-command_test(
-    name = "icon_test",
-    command = [
-        "/bin/sh",
-        "-c",
-        'cmp -s "$1" "$2" || { echo "docs/images/meerkat-icon.png is stale; regenerate with: buck2 run //Tools/Bundler:regenerate" >&2; exit 1; }',
-        "icon_test",
-        "$(location :readme-icon)",
-        "$(location //:meerkat-icon.png)",
-    ],
+checked_in_copy(
+    test = "icon_test",
+    generated = "$(location :readme-icon)",
+    path = "docs/images/meerkat-icon.png",
 )

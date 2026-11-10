@@ -54,7 +54,7 @@ final class EndingSources: Sendable {
 enum FailingEvent: EventKind {
     struct Parameters: EventParameters {
         var channel: String
-        static var schema: TypeSchema { .object(ObjectSchema([.field("channel", String.self)])) }
+        static var objectSchema: ObjectSchema { ObjectSchema([.field("channel", String.self)]) }
         static var examples: [Self] { [Self(channel: "a")] }
     }
 
@@ -82,8 +82,8 @@ enum WatchedFolders: EventKind {
     struct Parameters: EventParameters {
         var paths: [String]
         var latency: Double
-        static var schema: TypeSchema {
-            .object(ObjectSchema([.init("paths", .array(.string)), .init("latency", .number)]))
+        static var objectSchema: ObjectSchema {
+            ObjectSchema([.init("paths", .array(.string)), .init("latency", .number)])
         }
         static var examples: [Self] { [Self(paths: ["/tmp"], latency: 1)] }
     }
@@ -131,12 +131,11 @@ struct SourceEndTests {
             let configuration = RuleEngine.Configuration(
                 rulesDirectory: rules, cacheDirectory: cache, toolchain: try typeScriptToolchain(),
                 runtime: DenoRuntime.handlerRuntime, reloadDebounce: .milliseconds(50))
-            let executor = EffectExecutor(
-                store: store, ownProcesses: hub.environment.ownProcesses,
-                notifier: OwnProcessProtectionTests.NoNotifier(),
-                sampleDatabasePath: root.appendingPathComponent("samples.db").path)
-            engine = RuleEngine(configuration: configuration, hub: hub, store: store, executor: executor)
-            runner = RuleDryRunner(configuration: configuration, hub: hub, store: store)
+            let wired = ruleEngine(
+                configuration, hub: hub, store: store, notifier: SilentNotifier(),
+                sampleDatabase: root.appendingPathComponent("samples.db"))
+            engine = wired.engine
+            runner = wired.runner
         }
 
         func cleanup() async {

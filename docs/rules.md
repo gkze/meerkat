@@ -28,7 +28,9 @@ flowchart LR
 
 `params` configure the source and `match` filters payload fields. Both are
 typed per event and evaluated in Swift, so events that do not match never
-reach JavaScript. Handlers react after the fact: nothing an unprivileged
+reach JavaScript. Each parameter's range and default are in its
+documentation in `meerkat.d.ts`; a value outside the range is a load error
+that names the field. Handlers react after the fact: nothing an unprivileged
 process can observe lets it block the event.
 
 ## Files, exports and ids
@@ -40,7 +42,8 @@ process can observe lets it block the event.
 - Keep every rule in one file (`index.ts` can `export * from "./lib/audio"`)
   or spread them over many, each with any number of exports.
 - A rule's id is `<file>#<name>`, where the file is the top-level file that
-  exports it.
+  exports it. A name holds no `#` and is at most 256 bytes; a rule whose name
+  does not fit fails to load.
 - A file that creates rules but exports none fails to load, and unexported
   rules are logged as warnings. `export * as audio` exports an object, not
   rules, so those rules do not run.
@@ -153,9 +156,10 @@ A few events need a privacy permission:
 | `network.wifi` (the network name only) | Location         |
 
 Each also needs its observation grant: the permission is the daemon's, the
-grant is the rule's. Nothing is requested until a rule subscribes to one of these. The
-subscription then fails and names the Settings pane where Meerkat can be
-enabled; after granting it, run `meerkat rules reload`. The grant belongs to
+grant is the rule's. Nothing is requested until a rule subscribes to one of
+these. `network.wifi` runs without Location and leaves the network name out;
+the others fail and name the Settings pane where Meerkat can be enabled.
+After granting it, run `meerkat rules reload`. The grant belongs to
 the signed app bundle, so it survives rebuilds signed by the same team.
 `meerkat events list` marks these events.
 

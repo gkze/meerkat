@@ -10,8 +10,8 @@ use serde_json::{Value, json};
 
 use crate::host::{Delivery, Host};
 use crate::protocol::{
-    DaemonToHost, EffectOutcome, EntryResult, FaultKind, FilePermissions, HandlerError, HostLogLevel, HostModule,
-    HostToDaemon,
+    DaemonToHost, EffectOutcome, EntryResult, FaultKind, FilePermissions, HandlerError, HostEntry, HostLogLevel,
+    HostModule, HostToDaemon, MAXIMUM_RULE_NAME, MAXIMUM_TEXT,
 };
 
 enum Event {
@@ -36,9 +36,11 @@ struct Harness {
     events: Receiver<Event>,
 }
 
-/// The part of the daemon's effect table these tests use: the shapes
-/// `runtime.js` turns into context methods (the daemon sends the whole
-/// catalog, `EffectCatalog.runtimeTable`).
+/// Effect table rows in each shape runtime.js turns into a context method:
+/// fields by position or whole, a value, an optional one or none, and a
+/// method that also holds another. Test input, not a copy of the daemon's
+/// table (`EffectCatalog.runtimeTable`), which the daemon's end-to-end tests
+/// run against this runtime.
 const EFFECTS: &str = r#"[
   {"kind":"state.get","method":["state","get"],"arguments":["key"],"result":"optional"},
   {"kind":"state.set","method":["state","set"],"arguments":["key","value"],"result":"none"},
@@ -59,7 +61,7 @@ struct Log {
 const WAIT: Duration = Duration::from_secs(20);
 
 const OUT_OF_MEMORY: FaultKind = FaultKind::OutOfMemory;
-const HEAP_EXHAUSTED: &str = "passed its JavaScript heap limit of 256 MB";
+const HEAP_EXHAUSTED: &str = "passed its JavaScript heap limit of 256 MiB";
 
 impl Harness {
     fn start() -> Harness {
@@ -81,7 +83,12 @@ impl Harness {
 
     /// `load`, plus the log messages sent while the files loaded.
     fn load_logged(&self, modules: &[(&str, &str)], deadline: f64) -> (Vec<EntryResult>, Vec<Log>) {
-        let entries = modules.iter().map(|(id, _)| *id).filter(|id| !id.contains('/')).map(str::to_owned).collect();
+        let entries = modules
+            .iter()
+            .map(|(id, _)| *id)
+            .filter(|id| !id.contains('/'))
+            .map(|id| HostEntry { module: id.to_owned(), file: format!("{id}.ts") })
+            .collect();
         let modules = modules.iter().map(|(id, code)| HostModule { id: (*id).into(), code: (*code).into() }).collect();
         self.send(DaemonToHost::Load {
             modules,
@@ -212,6 +219,26 @@ fn rules(result: &EntryResult) -> Value {
 /// The entry's error message, or "" when it loaded.
 fn load_error(results: &[EntryResult], entry: &str) -> String {
     result(results, entry).error.as_ref().map(|error| error.message.clone()).unwrap_or_default()
+}
+
+/// A handler body making each attempt in turn: `call` awaited, then the
+/// attempt logged with "ok", or with what the file's `why` makes of the
+/// error.
+fn attempts_body(attempts: &[(impl AsRef<str>, String)]) -> String {
+    let mut body = String::new();
+    for (what, call) in attempts {
+        let what = what.as_ref();
+        let _ = writeln!(
+            body,
+            "try {{ await {call}; console.log({what:?}, 'ok'); }} catch (e) {{ console.log({what:?}, why(e)); }}"
+        );
+    }
+    body
+}
+
+/// The lines `attempts_body` logs when each attempt ends as `outcome` says.
+fn expected_lines(attempts: &[(impl AsRef<str>, String)], outcome: impl Fn(&str) -> &'static str) -> Vec<String> {
+    attempts.iter().map(|(what, _)| format!("{} {}", what.as_ref(), outcome(what.as_ref()))).collect()
 }
 
 fn granting(read: &[&str], write: &[&str]) -> FilePermissions {
@@ -450,6 +477,8 @@ fn a_handler_error_and_an_unknown_rule_are_reported() {
         import { rule } from "meerkat";
         export const fail = rule({ name: "fail", on: "timer", handle() { throw new TypeError("nope"); } });
         export const hashed = rule({ name: "y.ts#c", on: "timer", handle() {} });
+        export const long = rule({ name: "n".repeat(257), on: "timer", handle() {} });
+        export const longest = rule({ name: "n".repeat(256), on: "timer", handle() {} });
     "#,
         )],
         5.0,
@@ -462,6 +491,13 @@ fn a_handler_error_and_an_unknown_rule_are_reported() {
     // (`fail.ts#y.ts` and `c`); the daemon fails it, and it is not routed.
     harness.invoke(3, "fail.ts#y.ts#c", json!({}), 5.0);
     assert_eq!(harness.error_until_done(3), "no rule fail.ts#y.ts#c is loaded");
+    // A name past `MAXIMUM_RULE_NAME` would let a log or fault naming the
+    // rule pass the message limit; the daemon fails it, and it is not routed.
+    let long = format!("fail.ts#{}", "n".repeat(MAXIMUM_RULE_NAME + 1));
+    harness.invoke(4, &long, json!({}), 5.0);
+    assert_eq!(harness.error_until_done(4), format!("no rule {long} is loaded"));
+    harness.invoke(5, &format!("fail.ts#{}", "n".repeat(MAXIMUM_RULE_NAME)), json!({}), 5.0);
+    harness.logs_until_done(5);
 }
 
 #[test]
@@ -924,7 +960,7 @@ fn oversized_output_fails_or_is_cut_for_its_file_alone() {
     assert_eq!(load_error(&results, "loud"), "");
     harness.invoke(1, "loud.ts#l", json!({}), 5.0);
     let message = harness.error_until_done(1);
-    assert!(message.len() < 128 << 10 && message.ends_with("[cut]"), "{} bytes", message.len());
+    assert!(message.len() <= MAXIMUM_TEXT && message.ends_with("[cut]"), "{} bytes", message.len());
 }
 
 /// Deno checks the path a call names, after resolving `..` but not
@@ -1012,7 +1048,7 @@ fn an_oversized_error_that_ends_the_event_loop_is_cut() {
         5.0,
     );
     let message = load_error(&results, "pending");
-    assert!(message.len() < 128 << 10 && message.ends_with("[cut]"), "{} bytes", message.len());
+    assert!(message.len() <= MAXIMUM_TEXT && message.ends_with("[cut]"), "{} bytes", message.len());
     harness.invoke(1, "fine.ts#ok", json!({}), 5.0);
     harness.logs_until_done(1);
 
@@ -1024,7 +1060,7 @@ fn an_oversized_error_that_ends_the_event_loop_is_cut() {
     let (seen, _) = harness.terminated();
     let (file, rule, _, kind, reason) = fault(&seen);
     assert_eq!((file, rule, kind), ("later.ts", None, FaultKind::Failed));
-    assert!(reason.len() < 128 << 10 && reason.ends_with("[cut]"), "{} bytes", reason.len());
+    assert!(reason.len() <= MAXIMUM_TEXT && reason.ends_with("[cut]"), "{} bytes", reason.len());
 }
 
 /// Web Locks are one table for the whole process, so they would let one
@@ -1153,13 +1189,7 @@ fn protected_paths_are_held_to_their_real_paths() {
         ("data volume", format!("Deno.writeTextFile({:?}, '')", on_data_volume(&rules.join("evil.ts")))),
         ("case", format!("Deno.rename({:?}, {:?})", home.join("MEERKAT"), home.join("old"))),
     ];
-    let mut body = String::new();
-    for (what, call) in &attempts {
-        let _ = writeln!(
-            body,
-            "try {{ await {call}; console.log({what:?}, 'ok'); }} catch (e) {{ console.log({what:?}, why(e)); }}"
-        );
-    }
+    let body = attempts_body(&attempts);
     // node:fs reports the refusal as Node does, by its code.
     let code = format!(
         r#"import {{ rule }} from "meerkat";
@@ -1181,13 +1211,9 @@ fn protected_paths_are_held_to_their_real_paths() {
     harness.permit("guard", permit);
     harness.invoke(1, "guard.ts#w", json!({}), 20.0);
     let seen = harness.logs_until_done(1);
-    let expected: Vec<String> = attempts
-        .iter()
-        .map(|(what, _)| {
-            let outcome = if ["inside grant", "rename in grant", "read"].contains(what) { "ok" } else { "denied" };
-            format!("{what} {outcome}")
-        })
-        .collect();
+    let expected = expected_lines(&attempts, |what| {
+        if ["inside grant", "rename in grant", "read"].contains(&what) { "ok" } else { "denied" }
+    });
     assert_eq!(seen, expected);
     assert_eq!(std::fs::read_to_string(rules.join("meerkat.json")).unwrap(), "{}");
     let mut left: Vec<_> = std::fs::read_dir(&rules).unwrap().map(|entry| entry.unwrap().file_name()).collect();
@@ -1229,13 +1255,7 @@ fn protected_paths_are_held_along_every_link() {
         ("new file's case", format!("Deno.writeTextFile({:?}, '')", home.join("prefs/X.PLIST"))),
         ("beside new file", format!("Deno.writeTextFile({:?}, '')", home.join("prefs/y.plist"))),
     ];
-    let mut body = String::new();
-    for (what, call) in &attempts {
-        let _ = writeln!(
-            body,
-            "try {{ await {call}; console.log({what:?}, 'ok'); }} catch (e) {{ console.log({what:?}, why(e)); }}"
-        );
-    }
+    let body = attempts_body(&attempts);
     // Refused by protected.rs, or for the new file's case by Deno's own deny
     // list, which compares without case too (protected.rs's folding alone is
     // held to that case by `protected_paths_cover_the_shared_cases`).
@@ -1257,13 +1277,7 @@ fn protected_paths_are_held_along_every_link() {
         .collect();
     harness.permit("links", permit);
     harness.invoke(1, "links.ts#w", json!({}), 20.0);
-    let expected: Vec<String> = attempts
-        .iter()
-        .map(|(what, _)| {
-            let outcome = if what.starts_with("beside") { "ok" } else { "denied" };
-            format!("{what} {outcome}")
-        })
-        .collect();
+    let expected = expected_lines(&attempts, |what| if what.starts_with("beside") { "ok" } else { "denied" });
     assert_eq!(harness.logs_until_done(1), expected);
     assert_eq!(std::fs::read_to_string(dotfiles.join("meerkat.json")).unwrap(), "{}");
     assert!(std::fs::read_link(stowed.join("rules")).is_ok() && real.is_dir());
@@ -1356,13 +1370,7 @@ fn protected_reads_are_held_to_their_real_paths() {
         ("above", format!("Array.fromAsync(Deno.readDir({home:?}))")),
         ("data volume", format!("Deno.readTextFile({:?})", on_data_volume(&state.join("secret")))),
     ];
-    let mut body = String::new();
-    for (what, call) in &attempts {
-        let _ = writeln!(
-            body,
-            "try {{ await {call}; console.log({what:?}, 'ok'); }} catch (e) {{ console.log({what:?}, why(e)); }}"
-        );
-    }
+    let body = attempts_body(&attempts);
     let code = format!(
         r#"import {{ rule }} from "meerkat";
         import fs from "node:fs";
@@ -1383,13 +1391,11 @@ fn protected_reads_are_held_to_their_real_paths() {
     harness.permit("reads", permit);
     harness.invoke(1, "reads.ts#r", json!({}), 20.0);
     let seen = harness.logs_until_done(1);
-    let expected: Vec<String> = attempts
-        .iter()
-        .map(|(what, _)| {
-            let outcome = if ["node exists", "grant", "above"].contains(what) { "ok" } else { "denied" };
-            format!("{what} {outcome}")
-        })
-        .collect();
+    let expected =
+        expected_lines(
+            &attempts,
+            |what| if ["node exists", "grant", "above"].contains(&what) { "ok" } else { "denied" },
+        );
     assert_eq!(seen, expected);
     assert!(!granted.join("copy").exists());
 }
@@ -1481,13 +1487,7 @@ fn a_file_opened_to_read_keeps_its_mode_owner_and_times() {
         ("link utime", format!("(await Deno.open({:?})).utime(0, 0)", home.join("to-settings"))),
         ("written fchmod", format!("fs.fchmodSync(fs.openSync({:?}, 'w'), 0o600)", home.join("written"))),
     ];
-    let mut body = String::new();
-    for (what, call) in &attempts {
-        let _ = writeln!(
-            body,
-            "try {{ await {call}; console.log({what:?}, 'ok'); }} catch (e) {{ console.log({what:?}, why(e)); }}"
-        );
-    }
+    let body = attempts_body(&attempts);
     let code = format!(
         r#"import {{ rule }} from "meerkat";
         import fs from "node:fs";
@@ -1506,10 +1506,7 @@ fn a_file_opened_to_read_keeps_its_mode_owner_and_times() {
     harness.permit("descriptors", permit);
     harness.invoke(1, "descriptors.ts#d", json!({}), 20.0);
     let seen = harness.logs_until_done(1);
-    let expected: Vec<String> = attempts
-        .iter()
-        .map(|(what, _)| format!("{what} {}", if *what == "written fchmod" { "ok" } else { "denied" }))
-        .collect();
+    let expected = expected_lines(&attempts, |what| if what == "written fchmod" { "ok" } else { "denied" });
     assert_eq!(seen, expected);
     assert_eq!([&rules, &settings, &plain].map(|path| state(path)), before);
 }
@@ -1707,13 +1704,7 @@ fn apis_writing_around_the_guard_are_refused_by_every_route() {
     attempts.extend(cp_attempts(&directory, &into));
     attempts.push(("path".into(), "join(\"a\", \"b\") === \"a/b\" || fail()".into()));
     attempts.push(("fs".into(), format!("fs.writeFileSync({:?}, \"\")", granted.join("plain"))));
-    let mut body = String::new();
-    for (what, call) in &attempts {
-        let _ = writeln!(
-            body,
-            "try {{ await {call}; console.log({what:?}, 'ok'); }} catch (e) {{ console.log({what:?}, why(e)); }}"
-        );
-    }
+    let body = attempts_body(&attempts);
     let code = format!(
         r#"import {{ rule }} from "meerkat";
         import {{ DatabaseSync as StaticDb }} from "node:sqlite";
@@ -1756,19 +1747,13 @@ fn apis_writing_around_the_guard_are_refused_by_every_route() {
     harness.permit("routes", permit);
     harness.invoke(1, "routes.ts#r", json!({}), 30.0);
     let seen = harness.logs_until_done(1);
-    let expected: Vec<String> = attempts
-        .iter()
-        .map(|(what, _)| {
-            let outcome = match what.as_str() {
-                "path" | "fs" => "ok",
-                // A Unix socket needs Deno's net permission, which no rule gets.
-                "socket static" | "socket builtin" => "NotCapable",
-                "sqlite internal" | "wasi internal" => "absent",
-                _ => "refused",
-            };
-            format!("{what} {outcome}")
-        })
-        .collect();
+    let expected = expected_lines(&attempts, |what| match what {
+        "path" | "fs" => "ok",
+        // A Unix socket needs Deno's net permission, which no rule gets.
+        "socket static" | "socket builtin" => "NotCapable",
+        "sqlite internal" | "wasi internal" => "absent",
+        _ => "refused",
+    });
     assert_eq!(seen, expected);
     assert_eq!(std::fs::read_dir(&rules).unwrap().count(), 0, "the rules folder is untouched");
     assert!(granted.join("plain").exists());
@@ -1804,4 +1789,117 @@ fn node_apis_needing_services_throw_instead_of_ending_the_process() {
     assert_eq!(harness.logs_until_done(1), ["require threw", "constrainedMemory threw", "certificates threw"]);
     harness.invoke(2, "services.ts#after", json!({}), 5.0);
     harness.logs_until_done(2);
+}
+
+/// What the daemon sends is checked where it enters the host: a deadline or
+/// timeout that is no duration, or an event or effect value that is not
+/// JSON, fails what it came with instead of running with a zero deadline or
+/// stopping the file's dispatcher.
+#[test]
+fn values_the_daemon_sends_are_checked_where_they_enter() {
+    let code = r#"
+        import { rule } from "meerkat";
+        export const r = rule({ name: "r", on: "timer", async handle(event, ctx) {
+          try { await ctx.state.get("k"); } catch (e) { ctx.warn(e.message); }
+        } });
+    "#;
+    let refused = Harness::start().load(&[("late", code)], f64::NAN);
+    assert_eq!(load_error(&refused, "late"), "the daemon sent a load deadline of NaN s");
+
+    let harness = Harness::start();
+    harness.load(&[("checked", code)], 5.0);
+    harness.invoke(1, "checked.ts#r", json!({}), -1.0);
+    assert_eq!(harness.error_until_done(1), "the daemon sent a timeout of -1 s");
+    harness.send(DaemonToHost::Invoke {
+        invocation: 2,
+        rule: "checked.ts#r".into(),
+        event: "{".into(),
+        timeout_seconds: 5.0,
+    });
+    assert!(harness.error_until_done(2).starts_with("the event is not JSON"));
+    harness.invoke(3, "checked.ts#r", json!({}), 5.0);
+    let call = harness.next("effect", |message| match message {
+        HostToDaemon::Effect { call, .. } => Some(call),
+        _ => None,
+    });
+    harness.send(DaemonToHost::EffectResult { call, result: EffectOutcome::Success { value: "{".into() } });
+    let seen = harness.logs_until_done(3);
+    assert!(seen.len() == 1 && seen[0].starts_with("the effect's value is not JSON"), "{seen:?}");
+}
+
+/// runtime.js names four levels, and keeps Deno's console levels past warn
+/// as errors; a level it does not name can only come from code reaching the
+/// op, and is kept as an error too.
+#[test]
+fn a_log_level_the_runtime_does_not_name_is_an_error() {
+    assert_eq!(HostLogLevel::parse("info"), HostLogLevel::Info);
+    assert_eq!(HostLogLevel::parse("trace"), HostLogLevel::Error);
+}
+
+/// An invoke checked before a halt and routed after it gets no answer
+/// either: the halt is decided under the lock the routing takes.
+#[test]
+fn an_invoke_halted_between_its_check_and_its_routing_is_settled_by_termination() {
+    let code = r#"
+        import { rule } from "meerkat";
+        export const r = rule({ name: "r", on: "timer", async handle() {} });
+    "#;
+    let harness = Harness::start();
+    harness.load(&[("late", code)], 5.0);
+    harness.host.halt_before_next_dispatch();
+    harness.invoke(1, "late.ts#r", json!({}), 5.0);
+    harness.host.stop("reloaded");
+    let (seen, reason) = harness.terminated();
+    assert!(!seen.iter().any(|message| matches!(message, HostToDaemon::InvocationDone { .. })), "{seen:?}");
+    assert_eq!(reason, "reloaded");
+}
+
+/// An invoke the control thread reaches after `stop` halted the host gets
+/// no answer: the daemon settles it on `terminated`, as it does every
+/// pending invocation, rather than hearing it failed and charging the rule.
+#[test]
+fn an_invoke_after_the_halt_is_settled_by_termination() {
+    let code = r#"
+        import { rule } from "meerkat";
+        export const r = rule({ name: "r", on: "timer", async handle() {} });
+    "#;
+    let harness = Harness::start();
+    harness.load(&[("late", code)], 5.0);
+    harness.host.halt();
+    harness.invoke(1, "late.ts#r", json!({}), 5.0);
+    harness.host.stop("reloaded");
+    let (seen, reason) = harness.terminated();
+    assert!(!seen.iter().any(|message| matches!(message, HostToDaemon::InvocationDone { .. })), "{seen:?}");
+    assert_eq!(reason, "reloaded");
+}
+
+/// The daemon names each entry's file, and the host uses that name in rule
+/// ids, faults and logs rather than deriving its own.
+#[test]
+fn the_daemon_names_each_file() {
+    let harness = Harness::start();
+    harness.send(DaemonToHost::Load {
+        modules: vec![HostModule {
+            id: "named".into(),
+            code: r#"
+                import { rule } from "meerkat";
+                console.log("loading");
+                export const r = rule({ name: "r", on: "timer", async handle() { console.log("ran"); } });
+            "#
+            .into(),
+        }],
+        entries: vec![HostEntry { module: "named".into(), file: "given.ts".into() }],
+        rejected: Default::default(),
+        entry_deadline_seconds: 5.0,
+        effects: EFFECTS.into(),
+    });
+    let log = harness.next_log();
+    assert_eq!((log.rule.as_deref(), log.message.as_str()), (Some("given.ts"), "loading"));
+    let results = harness.next("loaded", |message| match message {
+        HostToDaemon::Loaded { results } => Some(results),
+        _ => None,
+    });
+    assert_eq!(results[0].error, None, "{results:?}");
+    harness.invoke(1, "given.ts#r", json!({}), 5.0);
+    assert_eq!(harness.logs_until_done(1), ["ran"]);
 }

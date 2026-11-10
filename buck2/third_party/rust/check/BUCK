@@ -1,15 +1,17 @@
 load("//buck2/rules:check.bzl", "command", "command_test")
+load("//buck2/rules:toolchains.bzl", "rustup", "rustup_env")
 load("//buck2/third_party/tools:defs.bzl", "tool")
+
+_RELEASE = read_root_config("rust", "release")
 
 # reindeer (`[reindeer] rev` in .buckconfig) on PATH, generating
 # buck2/third_party/rust/BUCK from Cargo.toml, Cargo.lock and fixups/. It runs
 # cargo from PATH; rustup's, as the builds' (`[rust] release`).
-_REINDEER = [
-    "/bin/sh",
+_REINDEER = rustup(_RELEASE, "/bin/sh") + [
     "-c",
     "command -v reindeer >/dev/null || { echo 'reindeer is not on PATH' >&2; exit 1; }; " +
-    "RUSTUP_AUTO_INSTALL=0 RUSTUP_TOOLCHAIN=$0 exec reindeer --third-party-dir buck2/third_party/rust \"$@\"",
-    read_root_config("rust", "release"),
+    "exec reindeer --third-party-dir buck2/third_party/rust \"$@\"",
+    "reindeer",
 ]
 
 # Fails when buck2/third_party/rust/BUCK is not what reindeer generates, or
@@ -50,22 +52,17 @@ _CARGO_DENY = [
     "check",
 ]
 
-_RUSTUP_ENV = {
-    "RUSTUP_AUTO_INSTALL": "0",
-    "RUSTUP_TOOLCHAIN": read_root_config("rust", "release"),
-}
-
 command_test(
     name = "deny_test",
     command = _CARGO_DENY + ["licenses", "bans", "sources"],
-    env = _RUSTUP_ENV,
+    env = rustup_env(_RELEASE),
     labels = ["lint", "network", "portable"],
 )
 
 command_test(
     name = "advisories_test",
     command = _CARGO_DENY + ["advisories"],
-    env = _RUSTUP_ENV,
+    env = rustup_env(_RELEASE),
     labels = ["lint", "network", "portable"],
 )
 

@@ -1,14 +1,52 @@
 import ArgumentParser
 import Foundation
+import MeerkatIPC
+import MeerkatKit
 
-/// Exit statuses with a meaning of their own, from sysexits(3). Everything
-/// else that fails is 1; ArgumentParser makes a usage error 64.
-enum ExitStatus {
+/// Every status `meerkat` exits with, from sysexits(3) where one has the
+/// meaning, and what each means: `meerkat --help` lists them from here.
+enum ExitStatus: CaseIterable {
+    case success
+    /// Anything else that failed, including a check that found problems,
+    /// whose findings are its output.
+    case failure
+    /// ArgumentParser's, for arguments that don't parse or validate.
+    case usage
     /// A file or folder named on the command line does not exist.
-    static let noInput: Int32 = 66
+    case noInput
     /// What the command needs is not there: the daemon, or the tools the
     /// app ships.
-    static let unavailable: Int32 = 69
+    case unavailable
+    /// `agent install` registered the agent but no daemon answered yet.
+    case registeredButSilent
+
+    var code: Int32 {
+        switch self {
+        case .success: EXIT_SUCCESS
+        case .failure: EXIT_FAILURE
+        case .usage: ExitCode.validationFailure.rawValue
+        case .noInput: 66
+        case .unavailable: DaemonService.unavailableExit
+        case .registeredButSilent: DaemonService.registeredButSilentExit
+        }
+    }
+
+    var meaning: String {
+        switch self {
+        case .success: "success"
+        case .failure: "failure, including a check that found problems, whose findings are its output"
+        case .usage: "usage error"
+        case .noInput: "a file or folder named does not exist"
+        case .unavailable: "the daemon, or a tool the app ships, is not available"
+        case .registeredButSilent:
+            "`agent install` registered the agent but no daemon answered yet, which trying again can fix"
+        }
+    }
+
+    /// "0 success; 1 failure, ...; 75 ...": the list the root help gives.
+    static var summary: String {
+        allCases.map { "\($0.code) \($0.meaning)" }.joined(separator: "; ") + "."
+    }
 }
 
 /// Why a command failed and the status it exits with. Commands throw this
@@ -20,9 +58,9 @@ enum ExitStatus {
 /// stdout, and it exits 1 with nothing more to say (`ExitCode.failure`).
 struct CommandFailure: Error, CustomStringConvertible {
     let message: String
-    let status: Int32
+    let status: ExitStatus
 
-    init(_ message: String, status: Int32 = EXIT_FAILURE) {
+    init(_ message: String, status: ExitStatus = .failure) {
         self.message = message
         self.status = status
     }
@@ -114,7 +152,7 @@ extension Meerkat {
     /// `ExitCode` comes from a command that has already said what failed.
     static func outcome(of error: any Error) -> (status: Int32, message: String?) {
         switch error {
-        case let failure as CommandFailure: (failure.status, failure.message)
+        case let failure as CommandFailure: (failure.status.code, failure.message)
         case let exit as ExitCode: (exit.rawValue, nil)
         default: (exitCode(for: error).rawValue, message(for: error))
         }
@@ -127,9 +165,7 @@ extension Meerkat {
 
     /// `FailureReport` as the one line `--json` writes.
     static func failureLine(_ message: String, status: Int32) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let report = FailureReport(error: .init(status: status, message: message))
-        return (try? encoder.encode(report)).map { String(decoding: $0, as: UTF8.self) } ?? message
+        return (try? JSONEncoder.meerkat().encode(report)).map { String(decoding: $0, as: UTF8.self) } ?? message
     }
 }

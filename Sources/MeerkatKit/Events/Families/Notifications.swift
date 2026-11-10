@@ -35,23 +35,12 @@ public struct NotificationNamesParameters: EventParameters {
         self.init(names: try container.decode([String].self, forKey: .names))
     }
 
-    public func validate() throws {
-        guard (1...Self.maximumNames).contains(names.count) else {
-            throw EventError.invalidParameters(
-                "\"names\" must list 1–\(Self.maximumNames) distinct names, got \(names.count)")
-        }
-        guard !names.contains(where: \.isEmpty) else {
-            throw EventError.invalidParameters("\"names\" must not contain an empty name")
-        }
-    }
-
-    public static var schema: TypeSchema {
-        .object(
-            ObjectSchema([
-                .field(
-                    "names", [String].self,
-                    doc: "Notification names to observe, 1–\(maximumNames); duplicates are ignored.")
-            ]))
+    public static var objectSchema: ObjectSchema {
+        ObjectSchema([
+            ObjectSchema.Field(
+                "names", .array(.text(.name(1024)), ItemBounds(1, maximumNames, distinct: true)),
+                doc: "Notification names to observe; duplicates are ignored.")
+        ])
     }
 
     public static var examples: [Self] {

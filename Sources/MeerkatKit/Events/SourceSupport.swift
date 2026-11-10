@@ -229,11 +229,12 @@ final class ClosureSource: EventSource {
     func stop() { stopBody() }
 }
 
-/// Emits a state value only when it differs from the last one emitted, and
-/// reads plus emits under one lock, so a slow initial read cannot publish a
-/// value older than one a concurrent change already published.
-final class StateReporter<Payload: EventPayload & Equatable>: Sendable {
-    private let last = Mutex<Payload?>(nil)
+/// Reads and emits a push `state` source's values under one lock, so a slow
+/// initial read cannot publish a value older than one a concurrent change
+/// already published. Its first read is the start's: what it finds is the
+/// current value (`Emitter.current`), and finding nothing marks nothing.
+final class StateReporter<Payload: EventPayload>: Sendable {
+    private let started = Mutex(false)
     private let emit: Emitter<Payload>
 
     init(_ emit: Emitter<Payload>) { self.emit = emit }
@@ -241,10 +242,11 @@ final class StateReporter<Payload: EventPayload & Equatable>: Sendable {
     /// `read` runs under the lock; nil means "no value available", which
     /// emits nothing.
     func report(_ read: () -> Payload?) {
-        last.withLock { last in
-            guard let value = read(), value != last else { return }
-            last = value
-            emit(value)
+        started.withLock { started in
+            let first = !started
+            started = true
+            guard let value = read() else { return }
+            if first { emit.current(value) } else { emit.changed(value) }
         }
     }
 }
@@ -386,23 +388,6 @@ final class RunLoopThread: Sendable {
         }
         CFRunLoopWakeUp(box.value)
         done.wait()
-    }
-}
-
-// MARK: - Parameter helpers
-
-/// Validates a polling interval against the range an event supports.
-func requireInterval(_ value: Double, name: String = "interval", in range: ClosedRange<Double>) throws {
-    guard value.isFinite, range.contains(value) else {
-        throw EventError.invalidParameters(
-            "\"\(name)\" must be between \(range.lowerBound) and \(range.upperBound) seconds, got \(value)")
-    }
-}
-
-/// Validates a count against the range a parameter supports.
-func requireCount(_ value: Int, name: String, in range: ClosedRange<Int>) throws {
-    guard range.contains(value) else {
-        throw EventError.invalidParameters("\"\(name)\" must be \(range.lowerBound)–\(range.upperBound)")
     }
 }
 

@@ -8,7 +8,8 @@ import Foundation
 /// generated from the effect catalog (`EffectDeclarations`). `Sources/meerkat-rules/meerkat.d.ts` in the repository is
 /// this output; a test fails when it is stale.
 public enum TypeScriptDeclarations {
-    public static func render(_ catalog: EventCatalog = .standard, effects: EffectCatalog = .standard) -> String {
+    public static func render(_ catalog: EventCatalog = .standard) -> String {
+        let effects = EffectCatalog.standard
         var named: [(String, ObjectSchema)] = []
         var seen: [String: ObjectSchema] = [:]
         func collect(_ schema: TypeSchema) {
@@ -25,18 +26,18 @@ public enum TypeScriptDeclarations {
                 named.append((name, object))
             case .object(let object):
                 for field in object.fields { collect(field.schema) }
-            case .array(let element), .record(let element):
+            case .array(let element, _), .record(let element):
                 collect(element)
-            case .string, .number, .bounded, .boolean, .enumeration, .json:
+            case .string, .text, .number, .bounded, .boolean, .enumeration, .json:
                 break
             }
         }
         for kind in catalog.kinds {
             collect(kind.payloadSchema)
-            collect(kind.parametersSchema)
+            collect(.object(kind.parametersSchema))
         }
         for effect in effects.effects {
-            collect(effect.request)
+            collect(effect.requestType)
             switch effect.result {
             case .none: break
             case .value(let schema), .optional(let schema, _): collect(schema)
@@ -63,7 +64,7 @@ public enum TypeScriptDeclarations {
         lines.append("  /** Payload delivered to `handle` for each event kind. */")
         lines.append("  export interface Events {")
         for kind in catalog.kinds {
-            lines += docLines(describe(kind.descriptor, effects), indent: "    ")
+            lines += docLines(describe(kind.descriptor), indent: "    ")
             lines.append("    \(quoted(kind.name)): \(type(kind.payloadSchema, indent: "    "));")
         }
         lines.append("  }")
@@ -72,7 +73,7 @@ public enum TypeScriptDeclarations {
         lines.append("  /** The `params` each event kind accepts. */")
         lines.append("  export interface EventParameters {")
         for kind in catalog.kinds {
-            lines.append("    \(quoted(kind.name)): \(type(kind.parametersSchema, indent: "    "));")
+            lines.append("    \(quoted(kind.name)): \(type(.object(kind.parametersSchema), indent: "    "));")
         }
         lines.append("  }")
         lines.append("")
@@ -82,7 +83,7 @@ public enum TypeScriptDeclarations {
         for kind in catalog.kinds {
             let d = kind.descriptor
             lines.append(
-                "    \(quoted(kind.name)): { mechanism: \(quoted(d.mechanism.rawValue)); semantics: \(quoted(d.semantics.rawValue)); loss: \(quoted(d.loss.rawValue)); stability: \(quoted(d.stability.rawValue)); permission: \(d.permission.map { quoted($0.rawValue) } ?? "null"); observation: \(quoted(d.observation.rawValue)) };"
+                "    \(quoted(kind.name)): { mechanism: \(quoted(d.mechanism.rawValue)); semantics: \(quoted(d.semantics.rawValue)); loss: \(quoted(d.loss.rawValue)); stability: \(quoted(d.stability.rawValue)); permission: \(d.permission.map { "{ permission: \(quoted($0.permission.rawValue)); without: \(quoted($0.without.rawValue)) }" } ?? "null"); observation: \(quoted(d.observation.rawValue)) };"
             )
         }
         lines.append("  }")
@@ -101,7 +102,7 @@ public enum TypeScriptDeclarations {
         lines.append("   */")
         lines.append("  export interface EventObservation {")
         for kind in catalog.kinds {
-            let requirement = kind.descriptor.observationGrant.flatMap { effects.grant($0.key) }
+            let requirement = kind.descriptor.observationGrant?.grant
             lines.append("    \(quoted(kind.name)): \(requirement.map(EffectDeclarations.condition) ?? "{}");")
         }
         lines.append("  }")
@@ -112,7 +113,7 @@ public enum TypeScriptDeclarations {
                 $0.isEmpty ? "" : "  " + $0
             })
         lines.append("")
-        lines += EffectDeclarations.lines(effects).map { $0.isEmpty ? "" : "  " + $0 }
+        lines += EffectDeclarations.lines().map { $0.isEmpty ? "" : "  " + $0 }
         lines.append("}")
         lines.append("")
         return lines.joined(separator: "\n")
@@ -126,7 +127,7 @@ public enum TypeScriptDeclarations {
             return "{ "
                 + object.fields.map { "\($0.name)\($0.optional ? "?" : ""): \(inlineType($0.schema))" }
                 .joined(separator: "; ") + " }"
-        case .array(let element):
+        case .array(let element, _):
             let inner = inlineType(element)
             return element.needsParentheses ? "(\(inner))[]" : "\(inner)[]"
         case .record(let element):
@@ -139,12 +140,12 @@ public enum TypeScriptDeclarations {
     /// One TypeScript type expression for a schema, with field documentation.
     public static func type(_ schema: TypeSchema, indent: String = "") -> String {
         switch schema {
-        case .string: return "string"
+        case .string, .text: return "string"
         case .number, .bounded: return "number"
         case .boolean: return "boolean"
         case .json: return "JSONValue"
         case .enumeration(let cases): return cases.map(quoted).joined(separator: " | ")
-        case .array(let element):
+        case .array(let element, _):
             let inner = type(element, indent: indent)
             return element.needsParentheses ? "(\(inner))[]" : "\(inner)[]"
         case .record(let element): return "Record<string, \(type(element, indent: indent))>"
@@ -155,9 +156,9 @@ public enum TypeScriptDeclarations {
         }
     }
 
-    private static func fieldLines(_ object: ObjectSchema, indent: String) -> [String] {
+    static func fieldLines(_ object: ObjectSchema, indent: String) -> [String] {
         object.fields.flatMap { field -> [String] in
-            docLines(field.doc, indent: indent)
+            docLines(field.documentation, indent: indent)
                 + ["\(indent)\(field.name)\(field.optional ? "?" : ""): \(type(field.schema, indent: indent));"]
         }
     }
@@ -167,13 +168,14 @@ public enum TypeScriptDeclarations {
         return ["\(indent)/** \(doc.replacingOccurrences(of: "*/", with: "*\\/")) */"]
     }
 
-    private static func describe(_ descriptor: EventDescriptor, _ effects: EffectCatalog) -> String {
+    private static func describe(_ descriptor: EventDescriptor) -> String {
         var notes =
             "\(descriptor.mechanism.rawValue), \(descriptor.semantics.rawValue), loss: \(descriptor.loss.rawValue)"
         if descriptor.stability == .undocumented { notes += ", undocumented Apple interface" }
-        if let permission = descriptor.permission { notes += ", needs the \(permission.rawValue) permission" }
+        if let permission = descriptor.permission { notes += ", \(permission.note)" }
         if let grant = descriptor.observationGrant {
-            notes += ", rules need `capabilities: { \(effects.grantText(grant.key, entry: grant.entry)) }`"
+            notes +=
+                ", rules need `capabilities: { \(EffectCatalog.standard.grantText(grant.key, entry: grant.entry)) }`"
             if descriptor.observation == .paths { notes += " covering what `params` watch" }
         }
         return "\(descriptor.summary) (\(notes); \(descriptor.source))"

@@ -22,40 +22,6 @@ final class RuleDryRunModel {
         var id: Self { self }
     }
 
-    enum Failure: Equatable {
-        /// The running meerkatd is a different build, so it doesn't know
-        /// the request.
-        case differentBuild
-        /// meerkatd's own answer, such as a run already in progress.
-        case refused(String)
-        case unreachable(String)
-
-        init(_ error: any Error) {
-            switch error as? DaemonClient.ClientError {
-            case .differentBuild?: self = .differentBuild
-            case .daemon(let message)?: self = .refused(message)
-            default: self = .unreachable("\(error)")
-            }
-        }
-
-        var title: String {
-            switch self {
-            case .differentBuild: "meerkatd is a different build"
-            case .refused: "meerkatd refused the dry run"
-            case .unreachable: "Couldn't reach meerkatd"
-            }
-        }
-
-        var detail: String {
-            switch self {
-            case .differentBuild:
-                "The running meerkatd is a different build from this app. Restart it from this build with "
-                    + "`meerkat agent restart`, then run again."
-            case .refused(let message), .unreachable(let message): message
-            }
-        }
-    }
-
     /// A run under way. `sampleSeconds` is set while meerkatd collects live
     /// events; the handlers run after that.
     struct Running: Equatable {
@@ -75,7 +41,7 @@ final class RuleDryRunModel {
         case idle
         case running(Running)
         case finished(Finished)
-        case failed(file: String, Failure)
+        case failed(file: String, DaemonFault)
 
         /// The file the run was for.
         var file: String? {
@@ -88,11 +54,12 @@ final class RuleDryRunModel {
         }
     }
 
-    static let sampleChoices: [Double] = [10, 30, 120]
-    /// A sample stops at this many events, whatever its length. meerkatd's
-    /// limit for a run is `recordedLimit`.
+    /// Up to meerkatd's longest sample.
+    static let sampleChoices: [Double] = [10, 30, DryRunRequest.maximumSampleSeconds]
+    /// A sample stops at this many events, whatever its length.
     static let sampleEvents = 16
-    static let recordedLimit = 64
+    /// The most events meerkatd runs at once, from any source.
+    static let recordedLimit = DryRunRequest.maximumEvents
 
     var source = Source.live
     var sampleSeconds = 30.0
@@ -137,7 +104,7 @@ final class RuleDryRunModel {
             let report = try await send(DryRunRequest(file: file, text: text, rule: rule, events: events))
             state = .finished(Finished(file: file, text: text, report: report))
         } catch {
-            state = .failed(file: file, Failure(error))
+            state = .failed(file: file, DaemonFault(error))
         }
     }
 
@@ -201,6 +168,11 @@ extension DryRunInvocation.Result {
         }
     }
 
+    var status: Status {
+        if isFailure { return .critical }
+        return isSkipped ? .neutral : .normal
+    }
+
     /// Why it ended as it did, unless it simply finished.
     var detail: String? {
         switch self {
@@ -223,11 +195,16 @@ extension DryRunEffect {
         }
     }
 
+    var status: Status {
+        if case .refused = outcome { return .critical }
+        return .neutral
+    }
+
     /// What the handler got, when it's more than a placeholder.
     var outcomeDetail: String? {
         switch outcome {
         case .simulated: nil
-        case .read(let result): result.compactText
+        case .read(let result): result.canonicalString
         case .refused(let message): message
         }
     }

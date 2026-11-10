@@ -2,10 +2,10 @@ load("//Tools/Bundler:parts.bzl", "PARTS")
 load("//buck2/rules:check.bzl", "command")
 load("//buck2/rules:notices.bzl", "third_party_notices")
 load("//buck2/rules:rust.bzl", "meerkat_rust_crate")
-load("//Sources/meerkat-runtime:deno.bzl", "DENO_LIBRARIES")
+load("//Sources/meerkat-runtime:deno.bzl", "DENO_LIBRARIES", "DENO_LICENSE", "DENO_RUNTIME_VERSION", "DENO_VERSION")
 load("//buck2/third_party/rust/fixups/v8:defs.bzl", "V8_VERSION")
 load(":bundled_crates.bzl", "BUNDLED_CRATES")
-load(":defs.bzl", "fetched_texts")
+load(":defs.bzl", "chromium_component", "fetched_texts", "github_component")
 
 # THIRD_PARTY_NOTICES, the notices Meerkat.app carries in Contents/Resources:
 # :notices generates the file from what the bundle's parts depend on and each
@@ -51,27 +51,27 @@ _IN_V8 = "Compiled into the prebuilt V8 library."
 PREBUILT = [
     dict(
         name = "Deno",
-        version = "2.9.8",
+        version = DENO_VERSION,
         license = "MIT",
-        source = "https://github.com/denoland/deno/tree/v2.9.8",
+        source = "https://github.com/denoland/deno/tree/v" + DENO_VERSION,
         note = "The runtime is built from the deno_* crates under Rust crates; this is the project's license file.",
-        tracks = "deno_runtime@0.268.0",
+        tracks = "deno_runtime@" + DENO_RUNTIME_VERSION,
         files = {
-            "LICENSE.md": ("https://raw.githubusercontent.com/denoland/deno/v2.9.8/LICENSE.md", "f62497fffecc0852960c8d3e6934b9db86d16396e9b604072e923892cae3a588"),
+            "LICENSE.md": ("https://raw.githubusercontent.com/denoland/deno/v{}/LICENSE.md".format(DENO_VERSION), DENO_LICENSE),
         },
     ),
-    dict(
+    github_component(
         name = "V8",
-        version = "ac1e23989121",
+        repository = "denoland/v8",
+        revision = "ac1e23989121713ca642f6650b34deff7b686896",
         license = "BSD-3-Clause",
-        source = "https://github.com/denoland/v8/tree/ac1e23989121713ca642f6650b34deff7b686896",
         note = "Linked as the prebuilt library rusty_v8 {} publishes.".format(V8_VERSION),
         tracks = "v8@" + V8_VERSION,
         files = {
-            "LICENSE": ("https://raw.githubusercontent.com/denoland/v8/ac1e23989121713ca642f6650b34deff7b686896/LICENSE", "6ab33af8774a0f396ee3aeeb761e3229057682d6f9fa7f572e390c2cb3a6e509"),
-            "LICENSE.fdlibm": ("https://raw.githubusercontent.com/denoland/v8/ac1e23989121713ca642f6650b34deff7b686896/LICENSE.fdlibm", "e7115e18444dae09d17f361ddc365fb1d342640fe500796209c63f7c80dfae10"),
-            "LICENSE.strongtalk": ("https://raw.githubusercontent.com/denoland/v8/ac1e23989121713ca642f6650b34deff7b686896/LICENSE.strongtalk", "6a585a9f466654abc8fc0829d56b1bc987e3a073d31faa03bba37d33640a23cd"),
-            "LICENSE.v8": ("https://raw.githubusercontent.com/denoland/v8/ac1e23989121713ca642f6650b34deff7b686896/LICENSE.v8", "4af93c12062c58058378de2397dc1c92bbff9ddfb1d583a01c84127557ce97ca"),
+            "LICENSE": "6ab33af8774a0f396ee3aeeb761e3229057682d6f9fa7f572e390c2cb3a6e509",
+            "LICENSE.fdlibm": "e7115e18444dae09d17f361ddc365fb1d342640fe500796209c63f7c80dfae10",
+            "LICENSE.strongtalk": "6a585a9f466654abc8fc0829d56b1bc987e3a073d31faa03bba37d33640a23cd",
+            "LICENSE.v8": "4af93c12062c58058378de2397dc1c92bbff9ddfb1d583a01c84127557ce97ca",
         },
     ),
     dict(
@@ -84,118 +84,118 @@ PREBUILT = [
             "LICENSE": ("https://raw.githubusercontent.com/denoland/rusty_v8/v{}/LICENSE".format(V8_VERSION), "1c6356fb751d45f0c53093ebf8a7f5e580e802f51999178e19d60f3ec39e147d"),
         },
     ),
-    dict(
+    github_component(
         name = "maschwenk/tsrs",
-        version = "ae78b8e2af02",
+        repository = "maschwenk/tsrs",
+        revision = "ae78b8e2af02573e3102700347dd92d824039fa1",
         license = "Apache-2.0",
-        source = "https://github.com/maschwenk/tsrs/tree/ae78b8e2af02573e3102700347dd92d824039fa1",
         note = "A fork of tsrs, compiled into tsrslint: its tsrs_* crates come from it (tsrslint's Cargo.lock).",
         files = {
-            "LICENSE": ("https://raw.githubusercontent.com/maschwenk/tsrs/ae78b8e2af02573e3102700347dd92d824039fa1/LICENSE", "a7d00bfd54525bc694b6e32f64c7ebcf5e6b7ae3657be5cc12767bce74654a47"),
-            "NOTICE": ("https://raw.githubusercontent.com/maschwenk/tsrs/ae78b8e2af02573e3102700347dd92d824039fa1/NOTICE", "1a4f42d83bf205aaf1b474e1a8c133cc5365003a188ba5f257d8aa4741355118"),
+            "LICENSE": "a7d00bfd54525bc694b6e32f64c7ebcf5e6b7ae3657be5cc12767bce74654a47",
+            "NOTICE": "1a4f42d83bf205aaf1b474e1a8c133cc5365003a188ba5f257d8aa4741355118",
         },
     ),
-    dict(
+    chromium_component(
         name = "ICU",
-        version = "ee5f27adc28b",
+        path = "chromium/deps/icu",
+        revision = "ee5f27adc28bd3f15b2c293f726d14d2e336cbd5",
         license = "Unicode-3.0",
-        source = "https://chromium.googlesource.com/chromium/deps/icu/+/ee5f27adc28bd3f15b2c293f726d14d2e336cbd5",
         note = _IN_V8,
         files = {
-            "LICENSE": ("https://chromium.googlesource.com/chromium/deps/icu/+/ee5f27adc28bd3f15b2c293f726d14d2e336cbd5/LICENSE?format=TEXT", "c5a4698576c4195d3b5869d409cb3d4be7fca00201a5f15ecb5b03aae07b2e2e"),
+            "LICENSE": "c5a4698576c4195d3b5869d409cb3d4be7fca00201a5f15ecb5b03aae07b2e2e",
         },
     ),
-    dict(
+    chromium_component(
         name = "Abseil",
-        version = "d16e32215c3a",
+        path = "chromium/src/third_party/abseil-cpp",
+        revision = "d16e32215c3ab90ba57c2e904a5344d85c7353e4",
         license = "Apache-2.0",
-        source = "https://chromium.googlesource.com/chromium/src/third_party/abseil-cpp/+/d16e32215c3ab90ba57c2e904a5344d85c7353e4",
         note = _IN_V8,
         files = {
-            "LICENSE": ("https://chromium.googlesource.com/chromium/src/third_party/abseil-cpp/+/d16e32215c3ab90ba57c2e904a5344d85c7353e4/LICENSE?format=TEXT", "cb63961fac969b523344c5c40ec27ef60d7e8c7b34d2ef63548eb19f35a261e4"),
+            "LICENSE": "cb63961fac969b523344c5c40ec27ef60d7e8c7b34d2ef63548eb19f35a261e4",
         },
     ),
-    dict(
+    chromium_component(
         name = "simdutf",
-        version = "f7356eed293f",
+        path = "chromium/src/third_party/simdutf",
+        revision = "f7356eed293f8208c40b3c1b344a50bd70971983",
         license = "MIT",
-        source = "https://chromium.googlesource.com/chromium/src/third_party/simdutf/+/f7356eed293f8208c40b3c1b344a50bd70971983",
         note = _IN_V8,
         files = {
-            "LICENSE": ("https://chromium.googlesource.com/chromium/src/third_party/simdutf/+/f7356eed293f8208c40b3c1b344a50bd70971983/LICENSE?format=TEXT", "978d0d3cf8b2907e241ef30912ed5b277b4c37aa7d51f35d96485293621723d4"),
+            "LICENSE": "978d0d3cf8b2907e241ef30912ed5b277b4c37aa7d51f35d96485293621723d4",
         },
     ),
-    dict(
+    github_component(
         name = "Highway",
-        version = "2607d3b5b011",
+        repository = "google/highway",
+        revision = "2607d3b5b0113992fe84d3848859eae13b3b52c1",
         license = "Apache-2.0 OR BSD-3-Clause",
-        source = "https://github.com/google/highway/tree/2607d3b5b0113992fe84d3848859eae13b3b52c1",
         note = _IN_V8,
         files = {
-            "LICENSE": ("https://raw.githubusercontent.com/google/highway/2607d3b5b0113992fe84d3848859eae13b3b52c1/LICENSE", "e340270d4f64384569a91d546acb5b094d69ce47f0c015db77abb74dc6f815af"),
+            "LICENSE": "e340270d4f64384569a91d546acb5b094d69ce47f0c015db77abb74dc6f815af",
         },
     ),
-    dict(
+    github_component(
         name = "fast_float",
-        version = "05087a303dad",
+        repository = "fastfloat/fast_float",
+        revision = "05087a303dad9c98768b33c829d398223a649bc6",
         license = "Apache-2.0 OR BSL-1.0 OR MIT",
-        source = "https://github.com/fastfloat/fast_float/tree/05087a303dad9c98768b33c829d398223a649bc6",
         note = _IN_V8,
         files = {
-            "LICENSE-APACHE": ("https://raw.githubusercontent.com/fastfloat/fast_float/05087a303dad9c98768b33c829d398223a649bc6/LICENSE-APACHE", "097a889aa954d04e088b790b10a4014d6189561d0a6013935a73ce3d4ddaaf06"),
-            "LICENSE-BOOST": ("https://raw.githubusercontent.com/fastfloat/fast_float/05087a303dad9c98768b33c829d398223a649bc6/LICENSE-BOOST", "8d8291caf1cee26d23acf3eb67c9f9a2d58f1c681b16a4fbe8cbfb9e3c0b5a9b"),
-            "LICENSE-MIT": ("https://raw.githubusercontent.com/fastfloat/fast_float/05087a303dad9c98768b33c829d398223a649bc6/LICENSE-MIT", "e562f3f974ced7e69dd1db77b820b36bcf8f30377f1aa105723fba449c53c4e6"),
+            "LICENSE-APACHE": "097a889aa954d04e088b790b10a4014d6189561d0a6013935a73ce3d4ddaaf06",
+            "LICENSE-BOOST": "8d8291caf1cee26d23acf3eb67c9f9a2d58f1c681b16a4fbe8cbfb9e3c0b5a9b",
+            "LICENSE-MIT": "e562f3f974ced7e69dd1db77b820b36bcf8f30377f1aa105723fba449c53c4e6",
         },
     ),
-    dict(
+    github_component(
         name = "Dragonbox",
-        version = "beeeef91cf6f",
+        repository = "jk-jeon/dragonbox",
+        revision = "beeeef91cf6fef89a4d4ba5e95d47ca64ccb3a44",
         license = "Apache-2.0 WITH LLVM-exception OR BSL-1.0",
-        source = "https://github.com/jk-jeon/dragonbox/tree/beeeef91cf6fef89a4d4ba5e95d47ca64ccb3a44",
         note = _IN_V8,
         files = {
-            "LICENSE-Apache2-LLVM": ("https://raw.githubusercontent.com/jk-jeon/dragonbox/beeeef91cf6fef89a4d4ba5e95d47ca64ccb3a44/LICENSE-Apache2-LLVM", "9e45e856bedccee9f67254082ca11851d954de2fed7448c4bed19ad9aab99a91"),
-            "LICENSE-Boost": ("https://raw.githubusercontent.com/jk-jeon/dragonbox/beeeef91cf6fef89a4d4ba5e95d47ca64ccb3a44/LICENSE-Boost", "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566"),
+            "LICENSE-Apache2-LLVM": "9e45e856bedccee9f67254082ca11851d954de2fed7448c4bed19ad9aab99a91",
+            "LICENSE-Boost": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
         },
     ),
-    dict(
+    github_component(
         name = "FP16",
-        version = "3d2de1816307",
+        repository = "Maratyszcza/FP16",
+        revision = "3d2de1816307bac63c16a297e8c4dc501b4076df",
         license = "MIT",
-        source = "https://github.com/Maratyszcza/FP16/tree/3d2de1816307bac63c16a297e8c4dc501b4076df",
         note = _IN_V8,
         files = {
-            "LICENSE": ("https://raw.githubusercontent.com/Maratyszcza/FP16/3d2de1816307bac63c16a297e8c4dc501b4076df/LICENSE", "17e4f539024be2749ee729d1e2f01d24cef12ece8c9bf18e91a4349be29c80bf"),
+            "LICENSE": "17e4f539024be2749ee729d1e2f01d24cef12ece8c9bf18e91a4349be29c80bf",
         },
     ),
-    dict(
+    chromium_component(
         name = "libc++",
-        version = "5abc7f839700",
+        path = "external/github.com/llvm/llvm-project/libcxx",
+        revision = "5abc7f839700f0f17338434e1c1c6a8c87c00c11",
         license = "Apache-2.0 WITH LLVM-exception",
-        source = "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxx/+/5abc7f839700f0f17338434e1c1c6a8c87c00c11",
         note = _IN_V8,
         files = {
-            "LICENSE.TXT": ("https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxx/+/5abc7f839700f0f17338434e1c1c6a8c87c00c11/LICENSE.TXT?format=TEXT", "2df883eed85d488ef641ac22f3ce8afb495508b6f87c38847af95ddbf94aea70"),
+            "LICENSE.TXT": "2df883eed85d488ef641ac22f3ce8afb495508b6f87c38847af95ddbf94aea70",
         },
     ),
-    dict(
+    chromium_component(
         name = "libc++abi",
-        version = "8f11bb1d4438",
+        path = "external/github.com/llvm/llvm-project/libcxxabi",
+        revision = "8f11bb1d4438d0239d0dfc1bd9456a9f31629dda",
         license = "Apache-2.0 WITH LLVM-exception",
-        source = "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxxabi/+/8f11bb1d4438d0239d0dfc1bd9456a9f31629dda",
         note = _IN_V8,
         files = {
-            "LICENSE.TXT": ("https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libcxxabi/+/8f11bb1d4438d0239d0dfc1bd9456a9f31629dda/LICENSE.TXT?format=TEXT", "8d3456e92a31955fdaea9c32634e2e2d5abf87e32e862ca28f40b979e68ea612"),
+            "LICENSE.TXT": "8d3456e92a31955fdaea9c32634e2e2d5abf87e32e862ca28f40b979e68ea612",
         },
     ),
-    dict(
+    chromium_component(
         name = "LLVM libc",
-        version = "9309c117ebae",
+        path = "external/github.com/llvm/llvm-project/libc",
+        revision = "9309c117ebae84dd2f9df1ef99de4782162527d5",
         license = "Apache-2.0 WITH LLVM-exception",
-        source = "https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libc/+/9309c117ebae84dd2f9df1ef99de4782162527d5",
         note = _IN_V8,
         files = {
-            "LICENSE.TXT": ("https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libc/+/9309c117ebae84dd2f9df1ef99de4782162527d5/LICENSE.TXT?format=TEXT", "0cced642a3b6d411a42ad6e8ebd7942b4768a530c6e063fa41455a3600a82887"),
+            "LICENSE.TXT": "0cced642a3b6d411a42ad6e8ebd7942b4768a530c6e063fa41455a3600a82887",
         },
     ),
     dict(

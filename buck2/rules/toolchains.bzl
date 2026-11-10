@@ -1,5 +1,5 @@
 # The Rust and C toolchains (buck2/toolchains), with what Buck cannot hash
-# in their command lines.
+# in their command lines, and the environment every Xcode tool runs in.
 #
 # Both come from the host: rustup's Rust and Xcode's clang, outside Buck's
 # view. Buck keys an action on its command line, environment and inputs, so
@@ -16,11 +16,31 @@ load("@prelude//cxx:cxx_toolchain_types.bzl", "LinkerType")
 load("@prelude//rust:rust_toolchain.bzl", "PanicRuntime", "RustToolchainInfo")
 load("@prelude//toolchains:cxx.bzl", "CxxToolsInfo")
 
-def rustup(release: str, tool: str) -> list[str]:
-    """`tool` (rustc, rustfmt, cargo, ...) from rustup's `release`. Without
+def env_command(env: dict[str, str], command: list) -> list:
+    """`command` run through `/usr/bin/env` with `env`, for what has no
+    environment of its own (a toolchain's tool, a RunInfo)."""
+    return ["/usr/bin/env"] + ["{}={}".format(name, value) for name, value in env.items()] + command
+
+# The edition of every first-party crate (the toolchain's default) and of
+# rustfmt over them.
+RUST_EDITION = "2024"
+
+def rustup_env(release: str) -> dict[str, str]:
+    """The environment that runs rustup's `release`. Without
     RUSTUP_AUTO_INSTALL=0, rustup downloads a release it lacks from inside
     whichever actions first run it, all at once."""
-    return ["/usr/bin/env", "RUSTUP_TOOLCHAIN=" + release, "RUSTUP_AUTO_INSTALL=0", tool]
+    return {"RUSTUP_TOOLCHAIN": release, "RUSTUP_AUTO_INSTALL": "0"}
+
+def rustup(release: str, tool: str) -> list[str]:
+    """`tool` (rustc, rustfmt, cargo, ...) from rustup's `release`."""
+    return env_command(rustup_env(release), [tool])
+
+def xcode_env(developer_dir: str, xcode_build: str) -> dict[str, str]:
+    """The environment every Xcode tool runs in. The xcrun shims in /usr/bin
+    take the Xcode from DEVELOPER_DIR, else from `xcode-select`;
+    `developer_dir` is the one. MEERKAT_XCODE_BUILD is that Xcode's build,
+    which puts it in the key of every action that runs one of its tools."""
+    return {"DEVELOPER_DIR": developer_dir, "MEERKAT_XCODE_BUILD": xcode_build}
 
 def _rustup_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
     def tool(name):
@@ -58,17 +78,10 @@ rustup_toolchain = rule(
 )
 
 def _xcode_clang_tools_impl(ctx: AnalysisContext) -> list[Provider]:
+    env = xcode_env(ctx.attrs.developer_dir, ctx.attrs.xcode_build)
+
     def tool(path):
-        # The xcrun shims in /usr/bin pick the developer directory from
-        # DEVELOPER_DIR, else from `xcode-select`; Swift's `[swift]
-        # developer_dir` is the one. MEERKAT_XCODE_BUILD is its build, as
-        # in Swift actions, for the key.
-        return cmd_args(
-            "/usr/bin/env",
-            "DEVELOPER_DIR=" + ctx.attrs.developer_dir,
-            "MEERKAT_XCODE_BUILD=" + ctx.attrs.xcode_build,
-            path,
-        )
+        return cmd_args(env_command(env, [path]))
 
     return [
         DefaultInfo(),

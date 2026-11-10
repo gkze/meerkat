@@ -24,7 +24,7 @@ struct ObservationScope: Sendable {
     var fileScope: @Sendable () -> FileScope = { .standard }
     /// Who owns a running process; nil when no such process runs.
     var owner: @Sendable (ProcessIdentity) -> uid_t? = { identity in
-        ProcessTable.record(pid: identity.pid).flatMap { $0.identity == identity ? $0.uid : nil }
+        ProcessTable.record(of: identity)?.uid
     }
 
     /// Throws when `grants` do not cover observing `kind` with `parameters`,
@@ -32,28 +32,26 @@ struct ObservationScope: Sendable {
     /// `requireFileScope`.
     func require(_ kind: AnyEventKind, parameters: NormalizedParameters, grants: CapabilityGrants) throws {
         let descriptor = kind.descriptor
-        func missing(_ entry: String?) -> RuleDefinitionError {
-            let grant = descriptor.observationGrant.map { $0.key } ?? ""
-            return RuleDefinitionError(
-                "\"on\": observing \(descriptor.name) needs capabilities: { \(EffectCatalog.standard.grantText(grant, entry: entry)) }"
+        guard let needed = descriptor.observationGrant else { return }
+        // The least grant the kind needs, from the descriptor, so what is
+        // checked is what the catalog says; a path is the rule's to name,
+        // and is checked below.
+        if let entry = needed.entry, !grants.allows(needed.key, subject: entry, shape: needed.grant.shape) {
+            throw RuleDefinitionError(
+                "\"on\": observing \(descriptor.name) needs capabilities: { \(EffectCatalog.standard.grantText(needed.key, entry: entry)) }"
             )
         }
         switch descriptor.observation {
-        case .open:
+        case .open, .named:
             return
-        case .named:
-            guard grants.allows("observe", subject: descriptor.name, shape: .allowList(.eventKind)) else {
-                throw missing(descriptor.name)
-            }
         case .processes:
-            guard Self.observes(.own, grants) else { throw missing("own") }
             // A process named in `params` is decided now when it is running;
             // one that is not cannot start again under the same start time.
             guard !Self.observes(.all, grants), let process = parameters.observedProcess,
                 let owner = owner(process), owner != user
             else { return }
             throw RuleDefinitionError(
-                "\"params\": pid \(process.pid) is another user's process: observing it needs capabilities: { \(EffectCatalog.standard.grantText("process.observe", entry: "all")) }"
+                "\"params\": pid \(process.pid) is another user's process: observing it needs capabilities: { \(EffectCatalog.standard.grantText(needed.key, entry: GrantDescriptor.ProcessLevel.all.rawValue)) }"
             )
         case .paths:
             guard let observed = parameters.observedPaths else {
@@ -89,15 +87,11 @@ struct ObservationScope: Sendable {
         try requireFileScope(kind, parameters: definition.parameters, grants: definition.grants)
     }
 
-    /// The levels of `process.observe` this decides by.
-    private enum ProcessLevel: String {
-        case own, all
-    }
-
     /// Whether `grants` reach `level`, in the order the grant's shape gives
-    /// its levels (`EffectCatalog`), so that order is decided in one place.
-    private static func observes(_ level: ProcessLevel, _ grants: CapabilityGrants) -> Bool {
-        guard let grant = EffectCatalog.standard.grant("process.observe") else { return false }
+    /// its levels (`GrantDescriptor.processObserve`), so that order is
+    /// decided in one place.
+    private static func observes(_ level: GrantDescriptor.ProcessLevel, _ grants: CapabilityGrants) -> Bool {
+        let grant = GrantDescriptor.processObserve
         return grants.allows(grant.key, subject: level.rawValue, shape: grant.shape)
     }
 
@@ -122,9 +116,10 @@ struct ObservationScope: Sendable {
             return !excluded.contains { real == $0 || real.hasPrefix($0 + "/") }
         }
         for path in paths {
-            guard grants.allows("fs.read", subject: path, shape: .pathList) else {
+            let read = GrantDescriptor.fsRead
+            guard grants.allows(read.key, subject: path, shape: read.shape) else {
                 throw RuleDefinitionError(
-                    "\"on\": watching \(path) with \(kind) needs capabilities: { \(EffectCatalog.standard.grantText("fs.read", entry: path)) }"
+                    "\"on\": watching \(path) with \(kind) needs capabilities: { \(EffectCatalog.standard.grantText(read.key, entry: path)) }"
                 )
             }
             // As FSEvents watches it: symlinks resolved.

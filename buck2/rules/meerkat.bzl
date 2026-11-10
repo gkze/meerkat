@@ -26,10 +26,17 @@ def _checks(name: str, srcs: list, lint_config: str = ".swiftlint.yml"):
         swift_format_test(name = name + "-format", srcs = srcs)
         swiftlint_test(name = name + "-lint", srcs = srcs, config = lint_config)
 
+# What generated sources build without: ExistentialAny, which UniFFI's
+# generator does not write (Package.swift's generatedModules).
+_GENERATED_SETTINGS = _SETTINGS | {
+    "upcoming_features": [feature for feature in _SETTINGS["upcoming_features"] if feature != "ExistentialAny"],
+}
+
 def meerkat_swift_library(name: str, srcs = None, generated = False, **kwargs):
-    """`generated` sources (checked in, written by a generator) are not
-    formatted or linted."""
-    swift_library(name = name, srcs = _srcs(srcs), visibility = ["PUBLIC"], **(_SETTINGS | kwargs))
+    """`generated` sources (checked in, written by a generator) build
+    without ExistentialAny and are not formatted or linted."""
+    settings = _GENERATED_SETTINGS if generated else _SETTINGS
+    swift_library(name = name, srcs = _srcs(srcs), visibility = ["PUBLIC"], **(settings | kwargs))
     if not generated:
         _checks(name, _srcs(srcs))
 

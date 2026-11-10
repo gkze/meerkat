@@ -114,6 +114,17 @@ extension RuleDefinition {
         case ownOrigin
         case noMatch
         case regexAborted(pattern: String, reason: String)
+
+        /// Why the event was not admitted, as the rule's log and a dry run
+        /// say it; nil when it was.
+        var refusal: String? {
+            switch self {
+            case .admitted: nil
+            case .ownOrigin: "the daemon's own event (no includeOwn)"
+            case .noMatch: "match: not matched"
+            case .regexAborted(let pattern, let reason): "match regex \"\(pattern)\" \(reason)"
+            }
+        }
     }
 
     func admission(of envelope: EventEnvelope) -> Admission {
@@ -127,12 +138,10 @@ extension RuleDefinition {
     }
 }
 
-/// Filters, rate-limits and serializes one rule's events.
-///
-/// Order: the rule's view, origin, `match`, then rate. Invocations of one
-/// rule never overlap,
-/// which keeps a handler's view of its own state sequential; events that
-/// arrive while a handler runs wait in the source's event ring.
+/// Filters, rate-limits and serializes one rule's events. Invocations of
+/// one rule never overlap, which keeps a handler's view of its own state
+/// sequential; events that arrive while a handler runs wait in the source's
+/// event ring.
 private struct Dispatcher: Sendable {
     let definition: RuleDefinition
     let view: EventView?
@@ -159,13 +168,14 @@ private struct Dispatcher: Sendable {
     }
 
     private func admits(_ envelope: EventEnvelope) async -> Bool {
-        switch definition.admission(of: envelope) {
+        let admission = definition.admission(of: envelope)
+        switch admission {
         case .admitted:
             return true
         case .ownOrigin, .noMatch:
             return false
-        case .regexAborted(let pattern, let reason):
-            await warn("match regex \"\(pattern)\" \(reason); the event was treated as not matching")
+        case .regexAborted:
+            await warn("\(admission.refusal ?? ""); the event was treated as not matching")
             return false
         }
     }

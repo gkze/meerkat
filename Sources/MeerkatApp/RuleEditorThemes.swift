@@ -2,8 +2,9 @@ import AppKit
 import CodeEditSourceEditor
 import SwiftUI
 
-/// The rule editor's color themes, chosen in Settings or the View menu. Most have a light and a dark variant and follow the
-/// app's appearance; Dracula and Nord are dark in both.
+/// The rule editor's color themes, chosen in Settings or the View menu.
+/// Most have a light and a dark variant and follow the app's appearance;
+/// the rest are dark in both (`isDarkOnly`).
 enum RuleEditorTheme: String, CaseIterable, Identifiable {
     case system, catppuccin, dracula, github, gruvbox, nord, one, solarized, tokyoNight
 
@@ -24,6 +25,13 @@ enum RuleEditorTheme: String, CaseIterable, Identifiable {
         case .one: "One"
         case .solarized: "Solarized"
         case .tokyoNight: "Tokyo Night"
+        }
+    }
+
+    var isDarkOnly: Bool {
+        switch self {
+        case .dracula, .nord: true
+        case .system, .catppuccin, .github, .gruvbox, .one, .solarized, .tokyoNight: false
         }
     }
 

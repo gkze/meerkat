@@ -21,6 +21,9 @@ protocol Notifier: Sendable {
 /// and refuse other users' processes; exec runs an allow-listed executable
 /// with an argv array and no shell; http only reaches allow-listed origins,
 /// including after redirects. macOS controls go through `SystemControls`.
+/// What each effect is checked for comes from its descriptor
+/// (`EffectDescriptor.Traits`), through the `EffectAuthorizer` the daemon
+/// builds once and gives the dry run too.
 final class EffectExecutor: Sendable {
     private let store: RuleStore
     private let ownProcesses: OwnProcesses
@@ -28,22 +31,21 @@ final class EffectExecutor: Sendable {
     private let sampleDatabasePath: String
     /// The sample store's budget as `meerkat.json` sets it now.
     private let sampleLimits: @Sendable () -> SampleStore.Limits
-    private let authorizer: EffectAuthorizer
+    /// What admits a request: the dry run simulates effects under it too.
+    let authorizer: EffectAuthorizer
     private let controls: any SystemControls
     /// Power assertions by rule id, then by the rule's own id for them.
     /// Released when the rule stops (`releaseHeld`).
     private let assertions = Mutex<[String: [String: UInt32]]>([:])
 
-    static let outputLimit = 1 << 20
     static let shortcutsExecutable = "/usr/bin/shortcuts"
 
     init(
         store: RuleStore, ownProcesses: OwnProcesses, notifier: any Notifier, sampleDatabasePath: String,
-        sampleLimits: @escaping @Sendable () -> SampleStore.Limits = { .standard }, protectedPaths: [String] = [],
-        controls: any SystemControls = MacSystemControls(),
-        permissionStatus: @escaping EventDescriptor.Permission.StatusReader = { $0.status }
+        authorizer: EffectAuthorizer, sampleLimits: @escaping @Sendable () -> SampleStore.Limits = { .standard },
+        controls: any SystemControls = MacSystemControls()
     ) {
-        authorizer = EffectAuthorizer(permissionStatus: permissionStatus, protectedPaths: protectedPaths)
+        self.authorizer = authorizer
         self.controls = controls
         self.sampleLimits = sampleLimits
         self.store = store
@@ -56,22 +58,40 @@ final class EffectExecutor: Sendable {
         do {
             let request = try EffectRequest(raw)
             let authorizer = self.authorizer
-            if let act = pathEffect(request.action) {
+            let value: JSONValue
+            switch (body(request.action, rule: rule), request.descriptor.traits.path?.isProtected == true) {
+            case (.synchronous(let act), true):
                 // Checked and done with rules' renames held off, so no rule's
                 // code swaps a folder on the path between the two.
-                let value = try await DenoRuntime.holdingRuleRenames {
+                value = try await DenoRuntime.holdingRuleRenames {
                     try authorizer.decide(request, for: rule)
                     return try act()
                 }
-                return .success(value: value.canonicalString)
+            case (.asynchronous, true):
+                // Only a synchronous body can run under the hold.
+                throw EffectError.failed("\(request.kind) acts on a path but cannot run with renames held off")
+            case (.synchronous(let act), false):
+                try await admit(request, for: rule)
+                value = try act()
+            case (.asynchronous(let act), false):
+                try await admit(request, for: rule)
+                value = try await act()
             }
-            try authorizer.decide(request, for: rule)
-            return .success(value: try await execute(request.action, rule: rule).canonicalString)
+            return .success(value: value.canonicalString)
         } catch let error as EffectError {
             return .failure(message: error.description)
         } catch {
             return .failure(message: "\(error)")
         }
+    }
+
+    /// The authorizer's decision, then the Automation permission the
+    /// descriptor names, asked only of a request the rule may make. The
+    /// catalog keeps that permission off effects on protected paths, which
+    /// run under the rename hold and cannot wait for it.
+    private func admit(_ request: EffectRequest, for rule: RuleDefinition) async throws {
+        try authorizer.decide(request, for: rule)
+        if let target = request.descriptor.automation { try await controls.requireAutomation(of: target) }
     }
 
     /// Releases what rules hold beyond an invocation (power assertions) for
@@ -85,111 +105,136 @@ final class EffectExecutor: Sendable {
         for assertion in released { controls.allowSleep(assertion) }
     }
 
-    private func execute(_ action: EffectRequest.Action, rule: RuleDefinition) async throws -> JSONValue {
+    /// What performing an action does; an effect on a protected path is
+    /// synchronous (`perform`).
+    private enum Body {
+        case synchronous(@Sendable () throws -> JSONValue)
+        case asynchronous(() async throws -> JSONValue)
+    }
+
+    /// One switch over every action, so each says how it runs.
+    private func body(_ action: EffectRequest.Action, rule: RuleDefinition) -> Body {
+        let controls = self.controls
+        /// An action whose value is null.
+        func effect(_ act: @escaping () async throws -> Void) -> Body {
+            .asynchronous {
+                try await act()
+                return .null
+            }
+        }
         switch action {
         case .stateGet(let key):
-            return EffectDescriptor.Result.found(try store.value(rule: rule.id, key: key))
+            return .asynchronous { EffectDescriptor.Result.found(try self.store.value(rule: rule.id, key: key)) }
         case .stateSet(let key, let value):
-            try store.setValue(value, rule: rule.id, key: key)
-            return .null
+            return effect { try self.store.setValue(value, rule: rule.id, key: key) }
         case .stateDelete(let key):
-            try store.deleteValue(rule: rule.id, key: key)
-            return .null
+            return effect { try self.store.deleteValue(rule: rule.id, key: key) }
         case .notify(let spec):
-            try await notifier.post(NotificationPlan(rule: rule, spec: spec))
-            return .null
+            return effect { try await self.notifier.post(NotificationPlan(rule: rule, spec: spec)) }
         case .withdrawNotification(let id):
-            try await notifier.withdraw(identifier: NotificationPlan.identifier(ruleId: rule.id, id: id))
-            return .null
+            return effect {
+                try await self.notifier.withdraw(identifier: NotificationPlan.identifier(ruleId: rule.id, id: id))
+            }
         case .signal(let target, let signal):
-            try verifyOwnProcess(target)
-            // An exit the signal causes is the daemon's doing; nothing else
-            // about the process is (`OwnProcesses.expectExit`). It is expected
-            // before the signal is sent, since the exit can be observed
-            // before `kill` returns, and withdrawn on failure only if this
-            // call added it.
-            let expected = signal.terminates && ownProcesses.expectExit(target)
-            guard kill(target.pid, signal.number) == 0 else {
-                if expected { ownProcesses.withdrawExpectedExit(target) }
-                throw EffectError.failed(
-                    "kill(\(target.pid), \(signal.rawValue)) failed: \(String(cString: strerror(errno)))")
+            return effect {
+                try self.verifyOwnProcess(target)
+                // An exit the signal causes is the daemon's doing; nothing
+                // else about the process is (`OwnProcesses.expectExit`). It is
+                // expected before the signal is sent, since the exit can be
+                // observed before `kill` returns, and withdrawn on failure
+                // only if this call added it.
+                let expected = signal.terminates && self.ownProcesses.expectExit(target)
+                guard kill(target.pid, signal.number) == 0 else {
+                    if expected { self.ownProcesses.withdrawExpectedExit(target) }
+                    throw EffectError.failed(
+                        "kill(\(target.pid), \(signal.rawValue)) failed: \(String(cString: strerror(errno)))")
+                }
             }
-            return .null
         case .priority(let target, let priority):
-            try verifyOwnProcess(target)
-            let value = priority == .background ? PRIO_DARWIN_BG : 0
-            guard setpriority(PRIO_DARWIN_PROCESS, id_t(target.pid), value) == 0 else {
-                throw EffectError.failed("setpriority(\(target.pid)) failed: \(String(cString: strerror(errno)))")
+            return effect {
+                try self.verifyOwnProcess(target)
+                let value = priority == .background ? PRIO_DARWIN_BG : 0
+                guard setpriority(PRIO_DARWIN_PROCESS, id_t(target.pid), value) == 0 else {
+                    throw EffectError.failed("setpriority(\(target.pid)) failed: \(String(cString: strerror(errno)))")
+                }
             }
-            return .null
         case .nice(let target, let nice):
-            try verifyOwnProcess(target)
-            guard setpriority(PRIO_PROCESS, id_t(target.pid), nice) == 0 else {
-                throw EffectError.failed(
-                    "setpriority(\(target.pid), \(nice)) failed: \(String(cString: strerror(errno))); only lowering priority is allowed"
-                )
+            return effect {
+                try self.verifyOwnProcess(target)
+                guard setpriority(PRIO_PROCESS, id_t(target.pid), nice) == 0 else {
+                    throw EffectError.failed(
+                        "setpriority(\(target.pid), \(nice)) failed: \(String(cString: strerror(errno))); only lowering priority is allowed"
+                    )
+                }
             }
-            return .null
         case .exec(let spec):
-            return try JSONValue(encoding: await run(spec))
+            return .asynchronous { try JSONValue(encoding: await self.run(spec)) }
         case .http(let spec):
-            return try await fetch(spec, allowed: rule.grants.httpOrigins)
+            return .asynchronous { try await self.fetch(spec, allowed: rule.grants.httpOrigins) }
         case .record(let spec):
-            try await record(spec)
-            return .null
+            return effect { try await self.record(spec) }
         case .preventSleep(let spec):
-            let assertion = try controls.preventSleep(
-                name: "Meerkat rule \(rule.id)", reason: spec.reason, display: spec.display, timeout: spec.timeout)
-            let replaced = assertions.withLock { held in
-                held[rule.id, default: [:]].updateValue(assertion, forKey: spec.id)
+            return effect {
+                let assertion = try controls.preventSleep(
+                    name: "Meerkat rule \(rule.id)", reason: spec.reason, display: spec.display,
+                    timeout: spec.timeout)
+                let replaced = self.assertions.withLock { held in
+                    held[rule.id, default: [:]].updateValue(assertion, forKey: spec.id)
+                }
+                if let replaced { controls.allowSleep(replaced) }
             }
-            if let replaced { controls.allowSleep(replaced) }
         case .allowSleep(let id):
-            let released = assertions.withLock { $0[rule.id]?.removeValue(forKey: id) }
-            if let released { controls.allowSleep(released) }
+            return effect {
+                let released = self.assertions.withLock { $0[rule.id]?.removeValue(forKey: id) }
+                if let released { controls.allowSleep(released) }
+            }
         case .audioDefaultDevice(let uid, let scope):
-            try controls.setDefaultAudioDevice(uid: uid, scope: scope)
+            return effect { try controls.setDefaultAudioDevice(uid: uid, scope: scope) }
         case .audioVolume(let volume, let scope, let device):
-            try controls.setVolume(volume, scope: scope, device: device)
+            return effect { try controls.setVolume(volume, scope: scope, device: device) }
         case .audioMute(let muted, let scope, let device):
-            try controls.setMute(muted, scope: scope, device: device)
+            return effect { try controls.setMute(muted, scope: scope, device: device) }
         case .openApplication(let bundleId, let activate):
-            try await controls.openApplication(bundleId: bundleId, activate: activate)
+            return effect { try await controls.openApplication(bundleId: bundleId, activate: activate) }
         case .controlApplication(let bundleId, let action):
-            try await controls.control(bundleId: bundleId, action: action)
+            return effect { try await controls.control(bundleId: bundleId, action: action) }
         case .openURL(let url):
-            try await controls.open(url)
+            return effect { try await controls.open(url) }
         case .ejectVolume(let path):
-            try await controls.ejectVolume(path: path)
-        case .trash, .setTags:
-            return try pathEffect(action)?() ?? .null
+            return effect { try await controls.ejectVolume(path: path) }
+        case .trash(let path):
+            return .synchronous { try JSONValue(encoding: TrashResult(trashedPath: try controls.trash(path: path))) }
+        case .setTags(let path, let tags):
+            return .synchronous {
+                try controls.setTags(path: path, tags: tags)
+                return .null
+            }
         case .readDefault(let domain, let key):
-            return EffectDescriptor.Result.found(try controls.readDefault(domain: domain, key: key))
+            return .asynchronous { EffectDescriptor.Result.found(try controls.readDefault(domain: domain, key: key)) }
         case .writeDefault(let domain, let key, let value):
-            try controls.writeDefault(domain: domain, key: key, value: value)
+            return effect { try controls.writeDefault(domain: domain, key: key, value: value) }
         case .deleteDefault(let domain, let key):
-            try controls.deleteDefault(domain: domain, key: key)
+            return effect { try controls.deleteDefault(domain: domain, key: key) }
         case .runShortcut(let spec):
-            return try JSONValue(encoding: await runShortcut(spec))
+            return .asynchronous { try JSONValue(encoding: await self.runShortcut(spec)) }
         case .wifiPower(let on):
-            try controls.setWiFiPower(on)
+            return effect { try controls.setWiFiPower(on) }
         case .readClipboard:
-            return EffectDescriptor.Result.found(await controls.readClipboard().map(JSONValue.string))
+            return .asynchronous { EffectDescriptor.Result.found(await controls.readClipboard().map(JSONValue.string)) }
         case .writeClipboard(let text):
-            await controls.writeClipboard(text)
+            return effect { await controls.writeClipboard(text) }
         case .listWindows(let bundleId):
-            return try JSONValue(encoding: controls.windows(bundleId: bundleId))
+            return .asynchronous { try JSONValue(encoding: controls.windows(bundleId: bundleId)) }
         case .setWindow(let change):
-            try controls.setWindow(change)
+            return effect { try controls.setWindow(change) }
         case .darkMode(let on):
-            try await controls.setDarkMode(on)
+            return effect { try await controls.setDarkMode(on) }
         }
-        return .null
     }
 
     /// `shortcuts run`, with the input and output through files: the command
     /// reads input and writes output only by path.
-    private func runShortcut(_ spec: ShortcutSpec) async throws -> ChildProcess.Result {
+    private func runShortcut(_ spec: ShortcutSpec) async throws -> ExecResult {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
             "meerkat-shortcut-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -204,14 +249,14 @@ final class EffectExecutor: Sendable {
         var result = try await run(
             ExecSpec(path: Self.shortcutsExecutable, arguments: arguments, timeout: spec.timeout, stdin: nil))
         if let data = FileManager.default.contents(atPath: output.path) {
-            result.stdout = String(decoding: data.prefix(Self.outputLimit), as: UTF8.self)
+            result.stdout = String(decoding: data.prefix(ExecResult.outputLimit), as: UTF8.self)
         }
         return result
     }
 
     /// The target must still be the same process, and ours to act on.
     private func verifyOwnProcess(_ target: ProcessIdentity) throws {
-        guard let record = ProcessTable.record(pid: target.pid), record.identity == target else {
+        guard let record = ProcessTable.record(of: target) else {
             throw EffectError.failed("process \(target.pid) started at \(target.startedAt) is no longer running")
         }
         guard record.uid == getuid() else {
@@ -247,27 +292,9 @@ final class EffectExecutor: Sendable {
         return false
     }
 
-    /// What an effect that acts on a path does, for `perform` to run with
-    /// rules' renames held off; nil for other effects. The path is one rule
-    /// code may also rename, inside its grants.
-    private func pathEffect(_ action: EffectRequest.Action) -> (@Sendable () throws -> JSONValue)? {
-        let controls = self.controls
-        switch action {
-        case .trash(let path):
-            return { .object(["trashedPath": .string(try controls.trash(path: path))]) }
-        case .setTags(let path, let tags):
-            return {
-                try controls.setTags(path: path, tags: tags)
-                return .null
-            }
-        default:
-            return nil
-        }
-    }
-
     // MARK: - exec
 
-    private func run(_ spec: ExecSpec) async throws -> ChildProcess.Result {
+    private func run(_ spec: ExecSpec) async throws -> ExecResult {
         // A fixed, minimal environment: rules declare executables by absolute
         // path, so nothing here should depend on the daemon's environment.
         let environment = [
@@ -282,7 +309,7 @@ final class EffectExecutor: Sendable {
         do {
             return try await ChildProcess.run(
                 path: spec.path, arguments: spec.arguments, environment: environment, stdin: spec.stdin,
-                timeout: spec.timeout, outputLimit: Self.outputLimit
+                timeout: spec.timeout, outputLimit: ExecResult.outputLimit
             ) { pid in
                 guard let identity = ProcessTable.record(pid: pid)?.identity else { return }
                 ownProcesses.insert(identity)
@@ -317,22 +344,20 @@ final class EffectExecutor: Sendable {
             // buffering all of it.
             for try await byte in bytes {
                 data.append(byte)
-                if data.count >= Self.outputLimit { break }
+                if data.count >= ExecResult.outputLimit { break }
             }
         } catch {
             throw EffectError.failed(
                 "http \(spec.method.rawValue) \(spec.url.absoluteString): \(error.localizedDescription)")
         }
         guard let http = response as? HTTPURLResponse else { throw EffectError.failed("http: not an HTTP response") }
-        var headers: [String: JSONValue] = [:]
+        var headers: [String: String] = [:]
         for (name, value) in http.allHeaderFields {
-            if let name = name as? String, let value = value as? String { headers[name.lowercased()] = .string(value) }
+            if let name = name as? String, let value = value as? String { headers[name.lowercased()] = value }
         }
-        return .object([
-            "status": .number(Double(http.statusCode)),
-            "headers": .object(headers),
-            "body": .string(String(decoding: data, as: UTF8.self)),
-        ])
+        return try JSONValue(
+            encoding: HTTPResponse(
+                status: http.statusCode, headers: headers, body: String(decoding: data, as: UTF8.self)))
     }
 
     private final class RedirectGuard: NSObject, URLSessionTaskDelegate, Sendable {
@@ -354,46 +379,37 @@ final class EffectExecutor: Sendable {
         let path = sampleDatabasePath
         // Read per write, so a change to meerkat.json applies to the next one.
         let limits = sampleLimits()
-        // The sampler sleeps through its window; that belongs on a dispatch
-        // thread, not on one of the few Swift concurrency threads every actor
-        // in the daemon shares.
+        let sample = try await SystemSampler.sample(
+            SystemSampler.Options(window: spec.window, top: spec.top, systemOnly: spec.systemOnly))
+        // A write can wait up to the store's busy timeout behind another
+        // writer (the CLI); that wait belongs on a dispatch thread too.
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
             DispatchQueue.global(qos: .utility).async {
-                do {
-                    let sample = try SystemSampler.sample(
-                        SystemSampler.Options(
-                            window: spec.window, top: spec.top, systemOnly: spec.systemOnly
-                        ))
-                    let directory = (path as NSString).deletingLastPathComponent
-                    try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
-                    let store = try SampleStore(path: path, limits: limits)
-                    // A sample that was committed still gets its retention;
-                    // the limits failure is the effect's error afterwards.
-                    var unapplied: LimitsNotAppliedError?
-                    do {
-                        try store.insert(label: spec.label, sample: sample)
-                    } catch let error as LimitsNotAppliedError {
-                        unapplied = error
-                    }
-                    if let retain = spec.retain { try store.retainNewest(retain, label: spec.label) }
-                    if let unapplied { throw unapplied }
-                    continuation.resume()
-                } catch {
-                    continuation.resume(throwing: error)
-                }
+                continuation.resume(
+                    with: Result {
+                        try SampleStore(path: path, limits: limits).record(
+                            sample, label: spec.label, retain: spec.retain)
+                    })
             }
         }
     }
 }
 
 /// Decides whether a rule may have an effect: its grant from the effect
-/// catalog (docs/design/effects.md) and the privacy permission it needs. It
-/// performs nothing, so the executor and a dry run ask the same question.
+/// catalog (docs/design/effects.md), the privacy permission it needs, and the
+/// checks its descriptor declares (`EffectDescriptor.Traits`). It performs
+/// nothing, so the executor and a dry run ask the same question; the daemon
+/// builds one and gives it to both.
 struct EffectAuthorizer: Sendable {
-    var permissionStatus: EventDescriptor.Permission.StatusReader = { $0.status }
+    let permissionStatus: EventDescriptor.Permission.StatusReader
     /// What no effect may change, whatever the rule's grants: the same
     /// paths Deno's APIs are denied (`RuleEngine.ProtectedPaths.write`).
-    var protectedPaths: [String] = []
+    let protectedPaths: [String]
+
+    init(permissionStatus: @escaping EventDescriptor.Permission.StatusReader, protectedPaths: [String]) {
+        self.permissionStatus = permissionStatus
+        self.protectedPaths = protectedPaths
+    }
 
     /// Decodes a rule's request and decides it. What this refuses is what
     /// both perform and a dry run refuse.
@@ -406,11 +422,13 @@ struct EffectAuthorizer: Sendable {
     /// `admit` for a request already decoded.
     func decide(_ request: EffectRequest, for rule: RuleDefinition) throws {
         try authorize(request, grants: rule.grants)
-        // The measurement takes `window`, so a window as long as the
-        // handler's timeout can only time the invocation out.
-        if case .record(let spec) = request.action, Duration.seconds(spec.window) >= rule.timeout {
-            throw EffectError.invalid(
-                "store.record: windowSeconds (\(spec.window)) must be less than the rule's timeoutSeconds")
+        if let field = request.descriptor.traits.lastsWithinTimeout {
+            let seconds = try Self.declared(field, of: request, \.numberValue)
+            guard Duration.seconds(seconds) < rule.timeout else {
+                throw EffectError.invalid(
+                    "\(request.kind): \(field) (\(NumberBounds.format(seconds))) must be less than the rule's timeoutSeconds"
+                )
+            }
         }
     }
 
@@ -426,8 +444,9 @@ struct EffectAuthorizer: Sendable {
             }
         case .listed(let key, _):
             let grant = EffectCatalog.standard.grant(key)
+            let entry = effect.traits.path?.form == .entry
             guard let grant, let subject = request.subject,
-                grants.allows(key, subject: subject, shape: grant.shape, entry: request.actsOnEntry)
+                grants.allows(key, subject: subject, shape: grant.shape, entry: entry)
             else {
                 throw EffectError.notGranted(
                     EffectCatalog.standard.grantText(key, entry: Self.entry(for: request, in: grant)))
@@ -435,7 +454,7 @@ struct EffectAuthorizer: Sendable {
         }
         if let permission = effect.permission, permissionStatus(permission) != .granted {
             throw EffectError.failed(
-                "\(request.kind) needs the \(permission.rawValue) permission: allow meerkatd in \(permission.settingsPane)"
+                "\(request.kind) needs \(permission.named): allow meerkatd in \(permission.settingsPane)"
             )
         }
     }
@@ -444,24 +463,35 @@ struct EffectAuthorizer: Sendable {
     /// could widen its own grants, so no grant allows it. Reading is fine.
     ///
     /// The path is taken in the form the effect acts on (the link itself for
-    /// `trash`, what it leads to for `setTags`), and compared with each
-    /// protected path in every form it has (`CapabilityGrants.forms`): a
-    /// protected folder reached through symlinks is still above or inside
-    /// whatever is moved, and so is each link on its way.
+    /// an `entry` path, what it leads to for a `target` one), and compared
+    /// with each protected path in every form it has
+    /// (`CapabilityGrants.forms`): a protected folder reached through
+    /// symlinks is still above or inside whatever is moved, and so is each
+    /// link on its way.
     private func refuseProtected(_ request: EffectRequest) throws {
-        switch request.action {
-        case .writeDefault(let domain, _, _), .deleteDefault(let domain, _):
-            guard !DaemonPaths.isOwnDomain(domain) else {
-                throw EffectError.invalid("\(request.kind): no rule may change Meerkat's own defaults domain")
-            }
-        case .trash(let path), .setTags(let path, _):
-            let target = request.actsOnEntry ? CapabilityGrants.entry(path) : CapabilityGrants.resolved(path)
+        let traits = request.descriptor.traits
+        if let field = traits.changesDefaultsDomain,
+            DaemonPaths.isOwnDomain(try Self.declared(field, of: request, \.stringValue))
+        {
+            throw EffectError.invalid("\(request.kind): no rule may change Meerkat's own defaults domain")
+        }
+        if let declared = traits.path, declared.isProtected {
+            guard let path = request.path else { throw EffectError.invalid("\(request.kind): has no path to check") }
+            let target = declared.form == .entry ? CapabilityGrants.entry(path) : CapabilityGrants.resolved(path)
             guard CapabilityGrants.protectedPath(touchedBy: target, in: protectedPaths) == nil else {
                 throw EffectError.invalid("\(request.kind): \(path) holds Meerkat's rules, state or app")
             }
-        default:
-            break
         }
+    }
+
+    /// The field a trait's check reads. The catalog keeps each one present
+    /// (`EffectCatalog`); a request without it is refused, never let through
+    /// unchecked.
+    private static func declared<T>(_ field: String, of request: EffectRequest, _ read: (JSONValue) -> T?) throws -> T {
+        guard let value = request.fields[field].flatMap(read) else {
+            throw EffectError.invalid("\(request.kind): has no \(field) to check")
+        }
+        return value
     }
 
     /// The list entry that would allow the request, for the refusal message.

@@ -142,7 +142,7 @@ struct NotificationSourceTests {
         weak var released: (any EventSource)?
         try {
             let source = try eventKind.makeSource(eventKind.normalized(.null), environment: SourceEnvironment()) {
-                _, _ in
+                _ in
             }
             try source.start()
             source.stop()
@@ -172,13 +172,17 @@ struct NotificationSourceTests {
 
     @Test func notificationNamesAreDeduplicatedSortedAndValidated() throws {
         let kind = try #require(hub.catalog.kind(named: "darwin.notification"))
-        let normalized = try kind.normalize(.object(["names": .array([.string("b"), .string("a"), .string("b")])]))
+        let normalized = try kind.normalized(.object(["names": .array([.string("b"), .string("a"), .string("b")])]))
+            .json
         #expect(normalized == .object(["names": .array([.string("a"), .string("b")])]))
-        #expect(throws: EventError.self) { try kind.normalize(.object(["names": .array([])])) }
-        #expect(throws: EventError.self) { try kind.normalize(.object(["names": .array([.string("")])])) }
-        #expect(throws: EventError.self) { try kind.normalize(.object([:])) }
+        #expect(throws: EventError.self) { try kind.normalized(.object(["names": .array([])])).json }
+        #expect(throws: EventError.self) { try kind.normalized(.object(["names": .array([.string("")])])).json }
+        #expect(throws: EventError.self) { try kind.normalized(.object([:])).json }
         let tooMany = (0...NotificationNamesParameters.maximumNames).map { JSONValue.string("n\($0)") }
-        #expect(throws: EventError.self) { try kind.normalize(.object(["names": .array(tooMany)])) }
+        #expect(throws: EventError.self) { try kind.normalized(.object(["names": .array(tooMany)])).json }
+        // The limit counts names, not how often one is listed.
+        let repeated = (1...NotificationNamesParameters.maximumNames).map { JSONValue.string("n\($0)") } + ["n1"]
+        #expect(try kind.normalized(.object(["names": .array(repeated)])).json["names"]?.arrayValue?.count == 64)
     }
 
     @Test func thermalLevelsFollowTheMacOSHeader() {
@@ -200,20 +204,30 @@ struct NotificationSourceTests {
         #expect(converted == ["ok": .number(1.5), "date": .number(2000), "data": .string("AQI=")])
     }
 
-    @Test func notificationStateSourceEmitsOnlyChanges() throws {
+    /// The current value first, then each value a notification reports,
+    /// marked as what it is: the hub, not the source, leaves out a repeat.
+    /// A notification without a value reports nothing.
+    @Test func notificationStateSourceMarksTheCurrentValueThenChanges() throws {
         let center = NotificationCenter()
         let name = Notification.Name("meerkat.test.state")
-        let emitted = Mutex<[JSONValue]>([])
+        let emitted = Mutex<[Emission]>([])
         let source = notificationStateSource(
             center: center, names: [name],
-            emit: Emitter<DisplaySleepPayload> { payload, _ in emitted.withLock { $0.append(payload) } },
+            emit: Emitter<DisplaySleepPayload>(sink: { emission in emitted.withLock { $0.append(emission) } }),
             current: { DisplaySleepPayload(asleep: false) },
             changed: { ($0.object as? Bool).map(DisplaySleepPayload.init(asleep:)) })
         try source.start()
         defer { source.stop() }
         for value in [false, true, true, false] { center.post(name: name, object: value) }
         center.post(name: name, object: nil)
-        #expect(emitted.withLock { $0 } == [["asleep": false], ["asleep": true], ["asleep": false]])
+        func event(_ asleep: Bool, _ value: Emission.ReportedValue) -> Emission {
+            .event(["asleep": .bool(asleep)], origin: .system, value: value)
+        }
+        #expect(
+            emitted.withLock { $0 } == [
+                event(false, .current), event(false, .change), event(true, .change), event(true, .change),
+                event(false, .change),
+            ])
     }
 }
 

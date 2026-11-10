@@ -38,8 +38,8 @@ public enum InputActivityEvent: EventKind, IntervalParameterDefaults {
 
     public static let descriptor = EventDescriptor(
         "input.activity",
-        "How much keyboard, mouse and trackpad input arrived during each interval: counts of key presses, clicks and scrolls, and pointer distance. The first report arrives one interval after subscribing. Key codes, characters and pointer positions are never kept or reported. Needs the Input Monitoring permission.",
-        mechanism: .derived, semantics: .state, loss: .coalesced, permission: .inputMonitoring,
+        "How much keyboard, mouse and trackpad input arrived during each interval: counts of key presses, clicks and scrolls, and pointer distance. The first report arrives one interval after subscribing. Key codes, characters and pointer positions are never kept or reported.",
+        mechanism: .derived, semantics: .state, loss: .coalesced, permission: .required(.inputMonitoring),
         observation: .named,
         source: "CGEventTap (listen-only, session) for key down, mouse down, scroll wheel and mouse moved events"
     )
@@ -124,7 +124,6 @@ final class InputActivitySource: EventSource {
     }
 
     func start() throws {
-        try EventDescriptor.Permission.inputMonitoring.require(for: InputActivityEvent.descriptor.name)
         let callback: CGEventTapCallBack = { _, type, event, refcon in
             guard let refcon else { return Unmanaged.passUnretained(event) }
             let tally = Unmanaged<Tally>.fromOpaque(refcon).takeUnretainedValue()

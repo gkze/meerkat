@@ -1,6 +1,6 @@
 import ArgumentParser
 import Foundation
-import MeerkatKit
+import MeerkatIPC
 
 // MARK: - skills
 
@@ -44,7 +44,7 @@ struct Skills: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Write skills into an agent's skills folder.",
             discussion: """
-                Writes <folder>/<name>/SKILL.md. Run it again after upgrading Meerkat. Exits 1, writing \
+                Writes <folder>/<name>/SKILL.md. Run it again after upgrading Meerkat. Exits \(ExitStatus.failure.code), writing \
                 nothing, if a skill there has other text, unless --force.
                 """
         )

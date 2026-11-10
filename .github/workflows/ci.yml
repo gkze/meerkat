@@ -134,6 +134,10 @@ jobs:
     environment: release
     permissions:
       contents: write
+    env:
+      # Where the bundler writes the signed bundle, whose notices the release
+      # publishes.
+      BUNDLE: build/Meerkat.app
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -183,6 +187,7 @@ jobs:
           umask 077
           printf '%s' "$NOTARY_KEY" > "$RUNNER_TEMP/notary.p8"
       - name: Sign, notarize and archive Meerkat.app
+        id: sign
         if: steps.plan.outputs.publish == 'true'
         env:
           MEERKAT_NOTARY_KEY: ${{ runner.temp }}/notary.p8
@@ -194,19 +199,21 @@ jobs:
           bundler=()
           while IFS= read -r argument; do bundler+=("$argument"); done \
             < <(jq --raw-output '.argv[]' "$RUNNER_TEMP/bundler.json")
-          "${bundler[@]}" --notarize --archive "$ARCHIVE"
+          "${bundler[@]}" --notarize --output "$BUNDLE" --archive "$ARCHIVE"
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
       # The notices are the bundle's own copy, so publishing runs no Buck
       # with the token.
       - name: Publish the release
         if: steps.plan.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          ARCHIVE: ${{ steps.sign.outputs.archive }}
           TAG: ${{ steps.plan.outputs.tag }}
           VERSION: ${{ steps.plan.outputs.version }}
           PRERELEASE: ${{ steps.plan.outputs.prerelease }}
         run: |
-          gh release create "$TAG" "build/Meerkat-$VERSION.zip" \
-            "build/Meerkat.app/Contents/Resources/THIRD_PARTY_NOTICES#THIRD_PARTY_NOTICES" \
+          gh release create "$TAG" "$ARCHIVE" \
+            "$BUNDLE/Contents/Resources/THIRD_PARTY_NOTICES#THIRD_PARTY_NOTICES" \
             --target "$GITHUB_SHA" --title "Meerkat $VERSION" --generate-notes --prerelease="$PRERELEASE"
       - name: Remove the signing keychain, identity and notary key
         if: always()

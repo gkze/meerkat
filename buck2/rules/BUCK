@@ -1,4 +1,6 @@
+load("//buck2/platforms:defs.bzl", "HOSTS")
 load("//buck2/rules:check.bzl", "command_test")
+load("//buck2/rules:toolchains.bzl", "rustup_env")
 
 # The prelude's Python toolchain (buck2/toolchains) runs `python3` from PATH,
 # and its helpers need 3.12: rust/tools/from_any_dir.py, the C compiler shim
@@ -39,7 +41,7 @@ command_test(
         "buck2_test",
         select({
             "//buck2/platforms:{}".format(host): read_root_config("buck2_release", "version_" + host.replace("-", "_"))
-            for host in ["macos-arm64", "linux-arm64"]
+            for host in HOSTS
         }),
         read_root_config("buck2_release", "tag"),
     ],
@@ -55,7 +57,7 @@ command_test(
         "/bin/sh",
         "-c",
         """
-        actual=`RUSTUP_TOOLCHAIN=$1 RUSTUP_AUTO_INSTALL=0 rustc --version 2>&1`
+        actual=`rustc --version 2>&1`
         case "$actual" in
         "rustc $1 "*) ;;
         *)
@@ -68,5 +70,6 @@ command_test(
         "rust_test",
         read_root_config("rust", "release"),
     ],
+    env = rustup_env(read_root_config("rust", "release")),
     labels = ["portable"],
 )

@@ -22,6 +22,36 @@ struct ConfigurationTests {
             "regenerate with: buck2 run //Sources/meerkat-rules:regenerate")
     }
 
+    /// The schema's defaults are the configuration's own, and its `allow`
+    /// doc names every kind the default denies by name, so neither can
+    /// drift from the code.
+    @Test func schemaDefaultsAndDocsComeFromTheCode() throws {
+        let defaults = try JSONValue(encoding: MeerkatConfiguration())
+        var checked = 0
+        func check(_ schema: TypeSchema, _ value: JSONValue?, at path: String) {
+            guard let object = schema.objectSchema else { return }
+            for field in object.fields {
+                let current = value?[field.name]
+                if let given = field.default {
+                    // A section's default is `{}`, which its fields' defaults fill.
+                    let expected = field.schema.objectSchema.map { (try? .object($0.admit(given))) ?? given } ?? given
+                    #expect(expected == current, "\(path).\(field.name)")
+                    checked += 1
+                }
+                check(field.schema, current, at: path + "." + field.name)
+            }
+        }
+        let schema = MeerkatConfiguration.schema()
+        check(schema, defaults, at: "$")
+        #expect(checked > 0)
+        let allow =
+            schema.objectSchema?.field("mcp")?.schema.objectSchema?.field("events")?.schema.objectSchema?
+            .field("allow")?.doc ?? ""
+        let named = MeerkatConfiguration.MCP.Events.rawKinds
+            .union(MeerkatConfiguration.MCP.Events.rawFamilies.map { $0 + ".*" })
+        for kind in named { #expect(allow.contains(kind), "\(kind)") }
+    }
+
     /// The example sets every field to something other than its default, so
     /// a field the schema declares but decoding misses (or the reverse)
     /// shows up as a default here.
@@ -95,6 +125,17 @@ struct ConfigurationTests {
         #expect(try MeerkatConfiguration.decode(Data(pointer.utf8)) == MeerkatConfiguration())
     }
 
+    /// Null for a section or a setting means its default, as leaving it out
+    /// does.
+    @Test func nullMeansTheDefault() throws {
+        for text in [
+            #"{ "mcp": null }"#, #"{ "mcp": { "limits": null } }"#, #"{ "samples": { "maxMegabytes": null } }"#,
+            #"{ "files": null }"#,
+        ] {
+            #expect(try MeerkatConfiguration.decode(Data(text.utf8)) == MeerkatConfiguration(), "\(text)")
+        }
+    }
+
     @Test(arguments: [
         #"{ "mcp": { "limits": { "sampleSeconds": 301 } } }"#,
         #"{ "mcp": { "limits": { "sampleEvents": 1.5 } } }"#,
@@ -102,7 +143,6 @@ struct ConfigurationTests {
         #"{ "mcp": { "events": { "allow": ["log.entri"] } } }"#,
         #"{ "mcp": { "events": { "deny": "fs.change" } } }"#,
         #"{ "samples": { "maxAgeDays": "30" } }"#,
-        #"{ "samples": { "maxMegabytes": null } }"#,
         #"{ "sample": {} }"#,
         #"{ "mcp": { "limits": { "outputBytes": 1 } } }"#,
         #"[]"#,
@@ -198,10 +238,8 @@ struct ConfigurationTests {
         #expect(settings.status.source == .defaults)
         #expect(settings.current == MeerkatConfiguration())
 
-        settings.writeSchema(rulesDirectory: directory)
-        let written = try String(
-            contentsOf: directory.appendingPathComponent(MeerkatConfiguration.schemaPath), encoding: .utf8)
-        #expect(written == MeerkatConfiguration.jsonSchema())
+        // What the editor support writes for `$schema`.
+        #expect(settings.schema.path == MeerkatConfiguration.schemaPath)
     }
 
     /// The engine rereads the file on every reload and reports its problem
@@ -216,6 +254,16 @@ struct ConfigurationTests {
         let problem = try #require(report.diagnostics.first { $0.file == "meerkat.json" })
         #expect(problem.blocksLoading)
         #expect(problem.message.contains("maxAgeDays"))
+    }
+
+    /// A daemon with no rule runtime says so in its host's state, not as
+    /// a host that is idle, and why in the rule diagnostics.
+    @Test func noRuntimeIsAnUnavailableHost() async throws {
+        let fixture = try MCPFixture()
+        await fixture.daemon.engine.reload()
+        #expect(await fixture.daemon.engine.hostStatus().state == .unavailable)
+        let report = await fixture.daemon.engine.report()
+        #expect(report.diagnostics.contains { $0.message == "no rule runtime is available; rules cannot load" })
     }
 
     // MARK: - Paths

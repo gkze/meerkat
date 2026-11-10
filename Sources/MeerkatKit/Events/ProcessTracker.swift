@@ -92,10 +92,11 @@ final class ProcessTracker: SharedResource {
     /// `meerkat` for processes the daemon spawned, for their direct
     /// children, and for the exit of a process it asked to end.
     func origin(of process: ProcessRef, exiting: Bool = false) -> EventOrigin {
-        if ownProcesses.contains(process.identity) { return .meerkat }
-        if exiting, ownProcesses.expectsExit(of: process.identity) { return .meerkat }
-        guard let parent = state.withLock({ $0.known[process.parentPid] }) else { return .system }
-        return ownProcesses.contains(parent.identity) ? .meerkat : .system
+        guard let identity = process.identity else { return .system }
+        if ownProcesses.contains(identity) { return .meerkat }
+        if exiting, ownProcesses.expectsExit(of: identity) { return .meerkat }
+        guard let parent = state.withLock({ $0.known[process.parentPid] })?.identity else { return .system }
+        return ownProcesses.contains(parent) ? .meerkat : .system
     }
 
     // MARK: - Queue-confined work
@@ -144,7 +145,7 @@ final class ProcessTracker: SharedResource {
     private func handleExit(_ pid: pid_t) {
         guard let process = state.withLock({ $0.known.removeValue(forKey: pid) }) else { return }
         events.send(.exited(process))
-        ownProcesses.remove(process.identity)
+        if let identity = process.identity { ownProcesses.remove(identity) }
     }
 
     private func handleExec(_ pid: pid_t) {
@@ -213,7 +214,8 @@ public struct ProcessRef: Sendable, Equatable, Codable {
     public let name: String
     public let path: String?
 
-    var identity: ProcessIdentity {
+    /// Nil only for one decoded with a start time no process can have.
+    var identity: ProcessIdentity? {
         ProcessIdentity(pid: pid, startedAt: startedAt)
     }
 

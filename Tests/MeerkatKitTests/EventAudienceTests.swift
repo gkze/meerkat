@@ -52,6 +52,9 @@ struct EventAudienceTests {
         #expect(RuleID.refusal(file: "b.ts") == nil)
         #expect(RuleID.refusal(file: "x.ts#y.ts") != nil)
         #expect(RuleID.refusal(name: "y.ts#c") != nil)
+        // Bytes, not characters: "é" is two.
+        #expect(RuleID.refusal(name: String(repeating: "é", count: RuleID.maximumNameBytes / 2)) == nil)
+        #expect(RuleID.refusal(name: String(repeating: "é", count: RuleID.maximumNameBytes / 2) + "n") != nil)
         let refused = RuleStatusPayload(ruleId: "x.ts#y.ts", file: "x.ts#y.ts", state: .failed, reason: "x")
         #expect(refused.viewed(by: RuleView(file: "x.ts", user: nil)) == nil)
         #expect(refused.viewed(by: RuleView(file: "x.ts#y.ts", user: nil)) == refused)

@@ -66,9 +66,9 @@ its visibility.
 | `ProcessCardModel` | One process card | `process.sample` while the card is open; owned by the card's `@State` |
 
 There is one `DaemonClient` (one XPC session, one heartbeat) for the whole
-app. `AppState` hands most models `daemon`, an `any DaemonConnection` that
-sample data replaces; the Event Explorer, process cards and `AgentControl`
-always take the real client.
+app. `AppState` hands every model, the Event Explorer's and each process
+card's included, the same `any DaemonConnection`, which sample data
+replaces (`AppState.Stand`, "Sample data and previews").
 
 Pages are split into small views that each read only what they draw, so
 Observation invalidates the smallest part. The Overview reads only the
@@ -80,13 +80,17 @@ a page reads.
 
 ## Live metrics
 
-`MetricsModel` is the dashboard's view of the daemon. Its doc comment holds
-the table of what it subscribes to, at what rates and for which view; that
-table is the authority, and `SamplingRates` builds every parameter in one
-place so the Sampling pane validates exactly what will be asked for. Every
-number comes from the daemon's event sources, the same ones rules use, so
-the Mac samples once however many consumers there are, as long as their
-parameters match (`EventHub` keys instances by kind and parameters).
+`MetricsModel` is the dashboard's view of the daemon. `MetricsModel.feeds`
+is the one table of what it subscribes to: each `Feed` names its event
+kind, builds its parameters from the sampling rates, applies its payloads,
+and lists the cards and pages that draw its numbers. Subscribing, the
+Sampling pane's check of each Custom rate (`SamplingField.options` runs the
+`validate()` of every feed the rate sets, as the daemon does on subscribe),
+where a failed feed is reported, and the sample data's coverage all follow
+it, so a new feed is one row. Every number comes from the daemon's event
+sources, the same ones rules use, so the Mac samples once however many
+consumers there are, as long as their parameters match (`EventHub` keys
+instances by kind and parameters).
 
 The model subscribes to all of its feeds exactly while two things hold: a
 page that shows them is on screen, and the window is not occluded.
@@ -102,7 +106,9 @@ page that shows them is on screen, and the window is not occluded.
   every subscription, and the daemon stops sources nobody else uses.
   `MEERKAT_ALWAYS=1` ignores occlusion, to measure the real cost.
 - New rates from Settings restart the subscriptions and clear chart
-  history rather than mixing two sample spacings on one chart.
+  history rather than mixing two sample spacings on one chart. A series
+  (`RollingSeries`) knows its capacity and spacing, so a chart's time axis,
+  and a page's "last 2 min", are the series' own span.
 
 The sidebar's live values come from the same model, so they hold their
 last values while another page (Rules, Health, the explorer) is showing.
@@ -119,29 +125,65 @@ Three event kinds describe processes, for three different views:
 costly full enumeration. Only this user's processes carry footprint, disk
 and energy; another user's report CPU only. A counter that cannot be read
 is nil, shown as "–", and adds no chart point rather than a zero nobody
-measured.
+measured. A row whose start time cannot make a `ProcessIdentity`
+(`ProcessDelta.identity` is nil) is listed with the rest but names no
+instance, so it opens no card: `ProcessTarget.init` is failable, and every
+card follows one identity.
 
 ## Failure model
 
 Failures are told apart by what they are about, where they were caught.
-`DaemonFault` classifies one once, from the typed
-`DaemonClient.ClientError`; its text is for display only.
+`DaemonFault` classifies one once, from `DaemonFailure` (MeerkatIPC), the
+classification the CLI's exit statuses use too, for every model: `refused` (meerkatd answered,
+and refused or ended the request), `differentBuild`, or `unreachable` (the
+connection: no answer, an unexpected reply, a subscription lost across a
+restart). Its text is for display only, and one map turns it into words
+(`DaemonFault.title` and `explanation`, for a `FaultContext`: a page's
+load, a later poll, a dry run, the explorer's subscription), so every page
+says the same thing about the same fault. A refusal is shown in the
+daemon's own words, never as "isn't answering", and offers no agent action.
+
+Every subscription the app keeps open follows one loop (`follow`, beside
+`FeedRetry` in `DaemonFault.swift`): the metrics feeds, the process card,
+the rules' `meerkat.rule` and the health page's `meerkat.dropped`. A failed
+or ended subscription waits `FeedRetry`'s delay, 5 s at first, doubling to
+a minute. A subscription that delivered, or stayed up past a 2 s grace,
+starts the delay over; one the daemon accepts and ends at once (a source
+whose first tick throws) keeps doubling rather than being asked about every
+5 s. Staying up counts because the rare kinds may send nothing for hours.
+Each subscription calls its owner's refresh (the rules report, the daemon's
+status) as it is made, so what changed while the app was not following is
+read again; a failed one refreshes too, which is how a different build or
+a missing daemon shows. The metrics feeds' reconnect after a lost
+connection waits the same way.
+
+`DaemonReturn` is the app's word that meerkatd may be back: `AgentControl`
+fires it after an install, restart or reinstall succeeds and when it sees
+the agent turned on, and `DaemonClient` (`reconnected`) when a request is
+answered after one was not, or when its heartbeat recreated subscriptions on
+a new daemon, which their readers would not otherwise notice. Every
+follower waiting to retry tries at once, with its delay started over, and
+every subscribed one refreshes. The Event Explorer's subscription is the
+one the user starts again.
 
 | What failed | Where it shows | What happens next |
 |---|---|---|
-| The connection: `unreachable`, `differentBuild`, `resubscribeFailed` or an unexpected reply on any metrics feed | `MetricsModel.connection` becomes `.unavailable`; the Overview shows `ConnectionBanner` above its cards | Every feed is cancelled (`lost`) and all of them subscribe again after `retryDelay` (5 s), while the window stays visible and a page shows them |
-| One feed: the daemon refused it or ended it (`ClientError.daemon`), or ended it without a reason | `feedFailures[kind]`, shown as a `FeedFailureNote` on each card whose `Resource.feeds` lists the kind and each page whose `Resource.pageFeeds` does (the CPU, Memory, Disk and Power pages add `process.list`, which no card shows) | Only that feed retries, backing off from 5 s to 60 s (`longestFeedRetry`); its next payload clears the mark; the other feeds keep running |
+| The connection (`unreachable`, `differentBuild`) on any metrics feed | `MetricsModel.connection` becomes `.unavailable`; the Overview shows `ConnectionBanner` above its cards | Every feed is cancelled (`lost`) and all of them subscribe again after `FeedRetry`'s wait, while the window stays visible and a page shows them |
+| One feed: the daemon refused it or ended it (`refused`), or ended it without a reason | `feedFailures[kind]`, shown as a `FeedFailureNote` on each card in the feed's `cards` and each page in its `pages` (the CPU, Memory, Disk and Power pages' tables read `process.list`, which no card shows; only the Network page reads `network.path`) | Only that feed retries (`FeedRetry`); its next payload clears the mark; the other feeds keep running |
 | `battery.sample` refused when subscribing | `battery = .unavailable`: "This Mac reports no battery telemetry" | Not retried: a Mac without a battery always refuses. A battery feed that ends later is an ordinary failed feed, not "no battery" |
-| A page's first request (`LoadState.failed`) | `DaemonLoadGate`, then `DaemonUnavailableView`: why, and the one action most likely to fix it | Try Again, or the fix button |
-| A later poll, with a good answer on screen | `StaleBanner` over the last good data (Rules, Health) | The next poll |
-| The process card's `process.sample`: refused, ended, the connection lost, or ended with no word while the process runs | `ProcessCardModel.problem`: "Not updating: … Trying again."; tiles keep their last values | The card follows the process again, backing off from 5 s to 60 s; the next sample clears the problem. A process that has exited meanwhile (`ProcessTable`) is not followed again, and the card shows it exited |
+| A page's first request (`LoadState.failed`) | `DaemonLoadGate`, then `DaemonUnavailableView`: why, and the one action most likely to fix it; a refusal in the daemon's words, with no agent action | Try Again, or the fix button |
+| A later poll, with a good answer on screen | `StaleBanner` over the last good data (Rules, Health): lost contact, or the daemon's refusal | The next poll |
+| The process card's `process.sample`: refused, ended, the connection lost, or ended with no word while the process runs | `ProcessCardModel.problem`, as a `FeedFailureNote`; tiles keep their last values | The card follows the process again (`FeedRetry`); the next sample clears the problem. A process that has exited meanwhile (`ProcessTable`) is not followed again, and the card shows it exited |
+| The Event Explorer's subscription | Under the parameters; the empty table says what to check: the parameters for a refusal, meerkatd otherwise | Subscribe again |
+| A dry run | Try It's panel ([rule-editor.md](rule-editor.md)) | Run again |
 
 A feed failure means the daemon still answers, so `FeedFailureNote` offers
 no agent action. Only a connection failure names an agent problem:
 `DaemonProblem` turns the fault and the registration status into one title
-and explanation, shared by the banner and the full-page view, and
-`AgentFixButton` picks the action (Install, Open Login Items, Restart for a
-different build, Reinstall for registered but silent).
+and explanation (the map's load context), shared by the banner and the
+full-page view, and `AgentFixButton` picks the action (Install, Open Login
+Items, Restart for a different build, Reinstall for registered but silent,
+none for a refusal).
 
 The process card retries on its own rather than through `MetricsModel`:
 it follows one process, which may exit while its feed is down, so before
@@ -154,9 +196,11 @@ several times in a row; the card shows that reason while it waits.
 `AgentControl` owns the LaunchAgent's registration and its actions for every
 surface that offers them (Settings › General, the Health toolbar, the agent
 banners), so all of them show the same state and the same action in
-progress. `SMAppService` sends no change notifications, so `status` is a
-cached read, refreshed when Settings, a banner or the full-page view
-appears, and after every action.
+progress. It acts through an `AgentBackend`: `.system(client)`, the
+registration through `AgentRegistration`, or sample data's stand-in.
+`SMAppService` sends no change notifications, so `status` is a cached read,
+refreshed when Settings, a banner or the full-page view appears, and after
+every action.
 
 - **One confirmation policy.** `Action.confirmation` says what to ask
   before Turn Off, Restart and Reinstall, which stop a daemon that may be
@@ -179,8 +223,8 @@ appears, and after every action.
   there and alerts with it, so a failure from a banner is reported at the
   banner and not later as an alert on the Health page.
 
-After a fix succeeds, the banner calls `MetricsModel.reconnect`, which
-subscribes again at once rather than at the next retry.
+After a fix succeeds, the subscriptions come back through `DaemonReturn`;
+the full-page view also loads its page again.
 
 ## Presentation
 
@@ -197,13 +241,25 @@ subscribes again at once rather than at the next retry.
   `Int64(_:)`, and `MemorySize.bytes` clamps. Values the app stores, such
   as custom sampling rates in `UserDefaults`, are checked when read back
   (`SamplingRates(json:)`).
-- **Status colors.** `Theme.normal`, `.warn` and `.critical` are the
-  status colors for fills, chart marks and glyphs. Text in a status color
-  goes through `Theme.text(_:)`, which swaps them for `NSColor.normalText`,
-  `warnText` and `criticalText`: in the light appearance the system green,
-  orange and red do not reach WCAG AA's 4.5:1 as small text. Any other
-  color passes through unchanged. `FeedFailureNote` shows both: an orange
-  glyph beside secondary text.
+- **Status colors.** A state's color comes from what it means: `Status`
+  (`normal`, `warning`, `critical`, `advice` for lint suggestions,
+  `neutral`) is the one map, and each state type says which it is
+  (`RuleSummary.State.status`, `LogLevel.status` for the rule log and the
+  dry run alike, pressure, thermal state, the network path, a kind's
+  permission need, a problem's severity, the language server). Views never
+  pick a status color. `color` is for fills, chart marks and glyphs (the
+  SwiftUI form of `nsColor`); `text` swaps the system green, orange, red
+  and yellow for `NSColor.normalText`, `warnText`, `criticalText` and
+  `adviceText`, since in the light appearance they do not reach WCAG AA's
+  4.5:1 as small text. `FeedFailureNote` shows both: an orange glyph
+  beside secondary text.
+- **Shared pieces.** One column set for the pages' process tables
+  (`ProcessColumn`), one process menu (`ProcessMenu`) and account name
+  (`UserName`) wherever a process is listed, one chart scale
+  (`StickyTop.range`), the battery's figures (`batteryStats`,
+  `LowPowerBadge`), rule counts (`RuleCounts`) and the empty texts a card
+  and its page share (`EmptyList`). `Finder.reveal` is the one way to show
+  files.
 - **Accessibility.** Controls whose meaning is in another column carry it
   in their label: each rule's checkbox in the Rules table is a `Toggle`
   labelled with the rule's name, with `labelsHidden()`, so VoiceOver names
@@ -240,27 +296,34 @@ not wait.
 | Work | Where |
 |---|---|
 | Requests and subscriptions to meerkatd | `async` `DaemonConnection` calls; there is no synchronous request |
-| The host name (`ProcessInfo.hostName` can wait on a lookup) | `Task.detached` in `MetricsModel.init` |
+| The host name (`ProcessInfo.hostName` can wait on a lookup) | `Task.detached` in `MetricsModel.init`, reading the `hostName` it is given |
 | Startup volume capacity ("important usage" computes purgeable space) | `Task.detached` in `refreshVolume`, at most every 30 s |
 | A churn root's volume name (the root comes from `meerkat.json` and may be on a slow volume) | `Task.detached` in `resolveScopeName`; views read `scopeName` |
 | Registering (`AgentRegistration.install`) and `launchctl kickstart` | `Task.detached` inside `AgentRegistration.installAndAwait` and `restartAndAwait` |
 | tsrs, the rule editor's language server | The `RuleLanguageServer` actor |
 
 Reading and writing the open rule file and its draft (`RuleEditorModel`,
-`RuleDrafts`) are local and small, and stay on the main actor.
+`RuleDrafts`) are local and small, and stay on the main actor. Agent
+actions run off it (`AgentBackend.run`).
 
 ## Sample data and previews
 
-`MEERKAT_SAMPLE_DATA=1`, in debug builds only, makes `AppState` hand the
-models a `SampleDaemon` (`SampleData.swift`) instead of the real
-connection. Its replies are written as the daemon's JSON, so they go
-through the same decoding, and they fill the Overview, resource pages,
-Rules, Health and Try It without rule files or a running daemon. Rule
-toggles change only the sample report; nothing reaches the installed
-daemon, whose rules sample data must never change. `AgentControl`
-simulates its actions (a 2 s wait, then the new status) without touching
-the registration. The Event Explorer and process cards still use the real
-daemon. The rest of the app's switches are in
+`MEERKAT_SAMPLE_DATA=1`, in debug builds only, swaps what the models read
+from outside the app, in one place (`AppState.Stand`): a `SampleDaemon`
+(`SampleData.swift`) for the connection, a made-up name for the Mac, and
+`SampleData.agent()` for the registration, which simulates each action (a
+2 s wait, then the new status). The daemon's replies are written as its
+JSON, so they go through the same decoding, and they fill the Overview,
+resource pages, Rules, Health and Try It without a running daemon; every
+feed in `MetricsModel.feeds` has one. Rule toggles change
+only the sample report; nothing reaches the installed daemon, whose rules
+sample data must never change. The Event Explorer's catalog and a process
+card's `process.sample` have sample replies too. The rules folder is a
+scratch one (`SampleData.rulesDirectory`, in the temporary folder): what
+the editor or "Make a Rule…" saves there never reaches the installed
+daemon, which would load it. It is seeded with the files the sample report
+lists, where they are missing, and the editor support the daemon would
+write, so the editor, Open File and tsrs see what the Rules page shows. The rest of the app's switches are in
 [development.md, "Environment switches"](../development.md#environment-switches).
 
 To look at a change without replacing the installed app or its agent,
@@ -275,23 +338,35 @@ build, so sample data works.
 logic against stand-in daemons:
 
 - `MetricsFeedTests`, `MetricsRetryTests`: one feed ending leaves the
-  others running and clears on its next payload; a battery refused at
-  subscribe is "no battery", one ending later is not; a lost connection
-  stops every feed; a page change keeps the feed, and no retry outlives the
-  last viewer.
+  others running and clears on its next payload; each feed's failure shows
+  on exactly the cards and pages that draw it, against the tests' own
+  reading of the views (`drawnBy`); a process with no identity is listed
+  and opens no card; a battery refused at subscribe is "no battery", one
+  ending later is not; a lost connection stops every feed; a page change
+  keeps the feed, and no retry outlives the last viewer. `FeedRetryTests`:
+  the wait doubles to a minute and starts over. `FollowTests`, through the
+  rules' `meerkat.rule`: a subscription ended at once keeps doubling, one
+  that stayed up starts the wait over, every attempt refreshes the report,
+  `DaemonReturn` wakes a long wait and refreshes a live subscription, and a
+  different build shows. They run on the test's clock (`FeedClock`), whose
+  waits last until the test releases them, so load can't change them.
 - `ProcessCardFeedTests`: an unreadable counter adds no point; an ended
   feed is the card's problem, in the daemon's words, until the card's
   next sample; a silent end is a problem too; a process that exited is not
   followed again.
-- A failed `process.list` shows on the four pages that use it and on no
-  card (`aFailedProcessListShowsOnThePagesThatUseIt`).
-- `DaemonWaitTests.swift`: the shared register-then-wait against silent, old,
-  new and cancelled daemons, and typed event decoding (a payload of another
-  shape is a different build).
-- `DaemonProblemTests`, `StatusTextTests` (contrast of the text colors, and
-  that only status colors change), `SamplingTests`, `MemorySizeTests`,
-  rolling series, the sample daemon, and the rule files the app writes,
-  type-checked with the bundled tsrs.
+- `MetricsRetryTests.swift`: the Overview's retries across page changes. The
+  register-then-wait against silent, old, new and cancelled daemons is
+  `MeerkatAgentTests`; typed event decoding (a payload of another shape is a
+  different build) and the failure classes are `MeerkatIPCTests`.
+- `DaemonProblemTests` (the fault-to-words map: a refusal is never a
+  silent daemon, a different build always says restart), `StatusTextTests` (contrast of each status's text
+  color), `SamplingTests` (every preset passes every feed's check),
+  `MemorySizeTests`, rolling series and chart scale, the sample daemon
+  (every feed gets a payload that decodes, through the model; the catalog
+  and a process card's feed answer; the rules folder is a scratch one that
+  holds every file the sample report names, which type-check but for the
+  one it says fails), and the rule files the app writes, every action,
+  metric and owner, type-checked with the bundled tsrs.
 - `RuleEditorTests`, `RuleDryRunTests`, `RuleEditorThemeTests`: see
   [rule-editor.md](rule-editor.md).
 

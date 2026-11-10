@@ -1,3 +1,4 @@
+import DiskArbitration
 import Foundation
 import MeerkatRuntimeBindings
 import MeerkatStore
@@ -11,71 +12,79 @@ import Testing
 /// and match by their shape, and the executor authorizes from the catalog
 /// before it touches the Mac (docs/design/effects.md).
 struct EffectCatalogTests {
-    /// One valid request per catalog effect. A catalog entry without one
-    /// fails `everyCatalogEffectDecodes`, so a new effect cannot skip the
-    /// daemon's decode.
-    static let samples: [String: [String: JSONValue]] = [
-        "state.get": ["key": "k"],
-        "state.set": ["key": "k", "value": 1],
-        "state.delete": ["key": "k"],
-        "notify": ["title": "t"],
-        "notify.withdraw": ["id": "n"],
-        "process.signal": ["target": ["pid": 10, "startedAt": 1], "signal": "stop"],
-        "process.priority": ["target": ["pid": 10, "startedAt": 1], "priority": "background"],
-        "process.nice": ["target": ["pid": 10, "startedAt": 1], "nice": 10],
-        "exec": ["path": "/usr/bin/true"],
-        "http": ["url": "https://example.com/x"],
-        "store.record": ["label": "l"],
-        "power.preventSleep": ["id": "build", "reason": "a build", "timeoutSeconds": 600],
-        "power.allowSleep": ["id": "build"],
-        "audio.setDefaultDevice": ["device": "BuiltInSpeakerDevice"],
-        "audio.setVolume": ["volume": 0.5],
-        "audio.setMute": ["muted": true, "direction": "input"],
-        "apps.open": ["bundleId": "com.apple.TextEdit"],
-        "apps.activate": ["bundleId": "com.apple.TextEdit"],
-        "apps.hide": ["bundleId": "com.apple.TextEdit"],
-        "apps.unhide": ["bundleId": "com.apple.TextEdit"],
-        "apps.quit": ["bundleId": "com.apple.TextEdit", "force": false],
-        "urls.open": ["url": "https://example.com"],
-        "volumes.eject": ["path": "/Volumes/Stick"],
-        "files.trash": ["path": "/tmp/x"],
-        "files.setTags": ["path": "/tmp/x", "tags": ["Red"]],
-        "defaults.read": ["domain": "com.apple.dock", "key": "autohide"],
-        "defaults.write": ["domain": "com.apple.dock", "key": "autohide", "value": true],
-        "defaults.delete": ["domain": "com.apple.dock", "key": "autohide"],
-        "shortcuts.run": ["name": "Focus on"],
-        "wifi.setPower": ["on": false],
-        "clipboard.read": [:],
-        "clipboard.write": ["text": "hi"],
-        "windows.list": ["bundleId": "com.apple.TextEdit"],
-        "windows.set": ["bundleId": "com.apple.TextEdit", "index": 0, "x": 10, "raise": true],
-        "appearance.setDark": ["on": true],
+    /// The least valid request per effect: required fields only, but for a
+    /// few that show a default overridden.
+    static let samples: [EffectKind: [String: JSONValue]] = [
+        .stateGet: ["key": "k"],
+        .stateSet: ["key": "k", "value": 1],
+        .stateDelete: ["key": "k"],
+        .notify: ["title": "t"],
+        .notifyWithdraw: ["id": "n"],
+        .processSignal: ["target": ["pid": 10, "startedAt": 1], "signal": "stop"],
+        .processPriority: ["target": ["pid": 10, "startedAt": 1], "priority": "background"],
+        .processNice: ["target": ["pid": 10, "startedAt": 1], "nice": 10],
+        .exec: ["path": "/usr/bin/true"],
+        .http: ["url": "https://example.com/x"],
+        .storeRecord: ["label": "l"],
+        .preventSleep: ["id": "build", "reason": "a build", "timeoutSeconds": 600],
+        .allowSleep: ["id": "build"],
+        .audioDefaultDevice: ["device": "BuiltInSpeakerDevice"],
+        .audioVolume: ["volume": 0.5],
+        .audioMute: ["muted": true, "direction": "input"],
+        .appsOpen: ["bundleId": "com.apple.TextEdit"],
+        .appsActivate: ["bundleId": "com.apple.TextEdit"],
+        .appsHide: ["bundleId": "com.apple.TextEdit"],
+        .appsUnhide: ["bundleId": "com.apple.TextEdit"],
+        .appsQuit: ["bundleId": "com.apple.TextEdit", "force": true],
+        .urlsOpen: ["url": "https://example.com"],
+        .volumesEject: ["path": "/Volumes/Stick"],
+        .filesTrash: ["path": "/tmp/x"],
+        .filesSetTags: ["path": "/tmp/x", "tags": ["Red"]],
+        .defaultsRead: ["domain": "com.apple.dock", "key": "autohide"],
+        .defaultsWrite: ["domain": "com.apple.dock", "key": "autohide", "value": true],
+        .defaultsDelete: ["domain": "com.apple.dock", "key": "autohide"],
+        .shortcutsRun: ["name": "Focus on"],
+        .wifiPower: ["on": false],
+        .clipboardRead: [:],
+        .clipboardWrite: ["text": "hi"],
+        .windowsList: ["bundleId": "com.apple.TextEdit"],
+        .windowsSet: ["bundleId": "com.apple.TextEdit", "index": 0, "x": 10, "raise": true],
+        .appearanceDark: ["on": true],
     ]
 
-    @Test func everyCatalogEffectDecodes() throws {
-        let catalog = EffectCatalog.standard
-        #expect(Set(Self.samples.keys) == Set(catalog.effects.map(\.kind)))
-        for effect in catalog.effects {
-            let fields = try #require(Self.samples[effect.kind], "\(effect.kind) has no sample request")
-            let request = try EffectRequest(.object(fields.merging(["kind": .string(effect.kind)]) { a, _ in a }))
-            #expect(request.kind == effect.kind)
+    static func request(_ kind: EffectKind) -> JSONValue {
+        .object((samples[kind] ?? [:]).merging(["kind": .string(kind.rawValue)]) { a, _ in a })
+    }
+
+    /// Every effect decodes from its least request, and each default is a
+    /// valid value of its field.
+    @Test(arguments: EffectKind.allCases)
+    func everyEffectDecodesAndItsDefaultsAreValid(kind: EffectKind) throws {
+        _ = try #require(Self.samples[kind], "\(kind) has no sample request")
+        let request = try EffectRequest(Self.request(kind))
+        #expect(request.descriptor.id == kind)
+        for field in request.descriptor.request.fields {
+            guard let value = field.default else { continue }
+            #expect(SchemaValidator.violations(of: value, against: field.schema).isEmpty, "\(kind).\(field.name)")
         }
     }
 
-    @Test func everyEffectsGrantAndArgumentsExist() {
-        let catalog = EffectCatalog.standard
-        for effect in catalog.effects {
-            if let key = effect.grant.grantKey { #expect(catalog.grant(key) != nil, "\(effect.kind): no grant \(key)") }
-            if case .listed(let key, let subject) = effect.grant {
-                #expect(catalog.grant(key)?.shape != .flag, "\(effect.kind): \(key) is a flag")
-                #expect(effect.fields.contains { $0.name == subject }, "\(effect.kind): no field \(subject)")
-            }
-            if case .positional(let names) = effect.arguments {
-                for name in names {
-                    #expect(effect.fields.contains { $0.name == name }, "\(effect.kind): no field \(name)")
-                }
-            }
+    /// The defaults reach the typed value the executor acts on.
+    @Test func defaultsReachTheDecodedAction() throws {
+        #expect(
+            try EffectRequest(Self.request(.exec)).action
+                == .exec(ExecSpec(path: "/usr/bin/true", arguments: [], timeout: 10, stdin: nil)))
+        #expect(
+            try EffectRequest(Self.request(.appsOpen)).action
+                == .openApplication(bundleId: "com.apple.TextEdit", activate: true))
+        #expect(
+            try EffectRequest(Self.request(.audioVolume)).action
+                == .audioVolume(volume: 0.5, scope: .output, device: nil))
+        guard case .record(let record) = try EffectRequest(Self.request(.storeRecord)).action else {
+            Issue.record("store.record did not decode as a record")
+            return
         }
+        #expect(record.window == 20 && record.top == 20 && !record.systemOnly && record.retain == nil)
     }
 
     /// The request schema refuses fields it does not declare, so a typo in a
@@ -88,6 +97,14 @@ struct EffectCatalogTests {
         #expect(throws: EffectError.self) { try EffectRequest(["kind": "files.trash", "path": "/tmp/../etc"]) }
         #expect(throws: EffectError.self) { try EffectRequest(["kind": "defaults.write", "domain": "d", "key": "k"]) }
         #expect(throws: EffectError.self) { try EffectRequest(["kind": "apps.open", "bundleId": "a b"]) }
+        // Lengths and counts are the schema's too: a key with NUL, an empty
+        // title, a fifth action.
+        #expect(throws: EffectError.self) { try EffectRequest(["kind": "state.get", "key": "a\u{0}b"]) }
+        #expect(throws: EffectError.self) { try EffectRequest(["kind": "notify", "title": ""]) }
+        let action: JSONValue = ["id": "a", "title": "A"]
+        #expect(throws: EffectError.self) {
+            try EffectRequest(["kind": "notify", "title": "t", "actions": [action, action, action, action, action]])
+        }
     }
 
     // MARK: Grants
@@ -155,8 +172,6 @@ struct EffectCatalogTests {
         #expect(!grants.allows("defaults", subject: "com.apple.finder", shape: .allowList(.name)))
     }
 
-    /// A list grant is checked against the request's own text. Normalizing it
-    /// through `URL`, as the request's decode does, must not change the answer.
     /// `Int(_:)` traps past Int64, and decoding comes before any grant.
     @Test(arguments: [1e300, -1, 1.5])
     func windowIndexMustBeAnIndex(index: Double) {
@@ -182,7 +197,7 @@ struct EffectCatalogTests {
         ("com.apple.finder", true),
     ])
     func noGrantReachesMeerkatsOwnDomain(domain: String, allowed: Bool) throws {
-        let authorizer = EffectAuthorizer()
+        let authorizer = Self.authorizer()
         let grants = try CapabilityGrants(["defaults": ["allow": .array([.string(domain)])]])
         let write: JSONValue = ["kind": "defaults.write", "domain": .string(domain), "key": "k", "value": "v"]
         let delete: JSONValue = ["kind": "defaults.delete", "domain": .string(domain), "key": "k"]
@@ -206,7 +221,7 @@ struct EffectCatalogTests {
         ("/private/rules-of-thumb", true),
     ])
     func noGrantReachesProtectedPaths(path: String, allowed: Bool) throws {
-        let authorizer = EffectAuthorizer(protectedPaths: ["/private/rules"])
+        let authorizer = Self.authorizer(protecting: ["/private/rules"])
         let grants = try CapabilityGrants(["files": ["trash": ["/"], "tag": ["/"]]])
         let trash = try EffectRequest(["kind": "files.trash", "path": .string(path)])
         let tags = try EffectRequest(["kind": "files.setTags", "path": .string(path), "tags": []])
@@ -247,7 +262,7 @@ struct EffectCatalogTests {
             at: elsewhere.appendingPathComponent("link"), withDestinationURL: granted.appendingPathComponent("file"))
 
         // As `DaemonPaths.protected` lists them: the settings file too.
-        let authorizer = EffectAuthorizer(protectedPaths: [
+        let authorizer = Self.authorizer(protecting: [
             rules.path, rules.appendingPathComponent("meerkat.json").path,
         ])
         func allowed(_ kind: String, _ path: URL, grant: [String: JSONValue]) throws -> Bool {
@@ -285,6 +300,8 @@ struct EffectCatalogTests {
         #expect(try allowed("files.trash", granted.appendingPathComponent("file"), grant: ["trash": inGranted]))
     }
 
+    /// A list grant is checked against the request's own text. Normalizing it
+    /// through `URL`, as the request's decode does, must not change the answer.
     @Test(arguments: [
         ("https://example.com/a b", true),
         ("HTTPS://EXAMPLE.com/path?q=1#f", true),
@@ -296,7 +313,7 @@ struct EffectCatalogTests {
         ("http://example.com/", false),
     ])
     func httpSubjectsMatchOriginsAsURLsDo(text: String, allowed: Bool) throws {
-        let authorizer = EffectAuthorizer()
+        let authorizer = Self.authorizer()
         let grants = try CapabilityGrants(["http": ["allow": ["https://example.com"]]])
         let request = try EffectRequest(["kind": "http", "url": .string(text)])
         let subject = try #require(request.subject)
@@ -318,7 +335,7 @@ struct EffectCatalogTests {
         ("file:///etc/passwd", false),
     ])
     func urlSubjectsMatchSchemesAsURLsDo(text: String, allowed: Bool) throws {
-        let authorizer = EffectAuthorizer()
+        let authorizer = Self.authorizer()
         let grants = try CapabilityGrants(["urls": ["allow": ["https"]]])
         let request = try EffectRequest(["kind": "urls.open", "url": .string(text)])
         let subject = try #require(request.subject)
@@ -331,6 +348,24 @@ struct EffectCatalogTests {
         } else {
             #expect(throws: EffectError.self) { try authorizer.authorize(request, grants: grants) }
         }
+    }
+
+    static func authorizer(protecting protectedPaths: [String] = []) -> EffectAuthorizer {
+        EffectAuthorizer(permissionStatus: { _ in .granted }, protectedPaths: protectedPaths)
+    }
+
+    /// A request field the descriptor names as lasting within the rule's
+    /// timeout is refused when it would not: `store.record`'s default window
+    /// is longer than a 5-second handler.
+    @Test func aWaitAsLongAsTheTimeoutIsRefused() throws {
+        let definition = try RuleDefinition(
+            file: "a.ts", raw: ["name": "r", "on": "memory.pressure", "capabilities": ["store": ["record": true]]],
+            catalog: .standard)
+        #expect(throws: EffectError.self) { try Self.authorizer().admit(Self.request(.storeRecord), for: definition) }
+        var short = Self.samples[.storeRecord] ?? [:]
+        short["windowSeconds"] = 2
+        short["kind"] = "store.record"
+        _ = try Self.authorizer().admit(.object(short), for: definition)
     }
 
     @Test func nullIsAValueOnlyWhereTheSchemaIsJSON() {
@@ -366,9 +401,9 @@ struct EffectCatalogTests {
         func control(bundleId: String, action: AppAction) async throws { record("control \(bundleId) \(action)") }
         func open(_ url: URL) async throws { record("url \(url.absoluteString)") }
         func ejectVolume(path: String) async throws { record("eject \(path)") }
-        func trash(path: String) throws -> String {
+        func trash(path: String) throws -> String? {
             record("trash \(path)")
-            return "/Users/u/.Trash/x"
+            return nil
         }
         func setTags(path: String, tags: [String]) throws { record("tags \(path) \(tags)") }
         func readDefault(domain: String, key: String) throws -> JSONValue? { key == "set" ? .bool(true) : nil }
@@ -381,12 +416,8 @@ struct EffectCatalogTests {
             [WindowInfo(index: 0, title: "w", x: 0, y: 0, width: 100, height: 50, minimized: false, main: true)]
         }
         func setWindow(_ change: WindowChange) throws { record("window \(change.index)") }
+        func requireAutomation(of target: AutomationTarget) async throws {}
         func setDarkMode(_ on: Bool) async throws { record("dark \(on)") }
-    }
-
-    final class SilentNotifier: Notifier {
-        func post(_ plan: NotificationPlan) async throws {}
-        func withdraw(identifier: String) async throws {}
     }
 
     private func executor(
@@ -397,15 +428,33 @@ struct EffectCatalogTests {
         let store = try RuleStore(path: directory.appendingPathComponent("rules.db").path)
         let executor = EffectExecutor(
             store: store, ownProcesses: OwnProcesses(), notifier: SilentNotifier(),
-            sampleDatabasePath: directory.appendingPathComponent("s.db").path, controls: controls,
-            permissionStatus: { _ in accessibility })
+            sampleDatabasePath: directory.appendingPathComponent("s.db").path,
+            authorizer: EffectAuthorizer(permissionStatus: { _ in accessibility }, protectedPaths: []),
+            controls: controls)
         return (executor, directory)
     }
 
-    private func rule(_ capabilities: JSONValue, name: String = "r") throws -> RuleDefinition {
+    private func rule(_ capabilities: JSONValue, name: String = "r", timeoutSeconds: Double = 5) throws
+        -> RuleDefinition
+    {
         try RuleDefinition(
-            file: "a.ts", raw: ["name": .string(name), "on": "memory.pressure", "capabilities": capabilities],
+            file: "a.ts",
+            raw: [
+                "name": .string(name), "on": "memory.pressure", "capabilities": capabilities,
+                "timeoutSeconds": .number(timeoutSeconds),
+            ],
             catalog: .standard)
+    }
+
+    /// A process of this user's that the test did not start, as far as
+    /// the executor can tell: its shell has exited, so launchd is its
+    /// parent.
+    private static func detachedProcess() async throws -> ProcessIdentity {
+        let started = try await ChildProcess.run(
+            path: "/bin/sh", arguments: ["-c", "/bin/sleep 30 </dev/null >/dev/null 2>&1 & echo $!"],
+            environment: [:], stdin: nil, timeout: 10, outputLimit: 64)
+        let pid = try #require(pid_t(started.stdout.trimmingCharacters(in: .whitespacesAndNewlines)))
+        return try #require(ProcessTable.record(pid: pid)?.identity)
     }
 
     @Test func stateStoresAnExplicitNull() async throws {
@@ -473,7 +522,69 @@ struct EffectCatalogTests {
             Issue.record("\(outcome)")
             return
         }
-        #expect(message.contains("accessibility permission"))
+        #expect(message.contains("the Accessibility permission"), "\(message)")
+    }
+
+    /// Every effect, granted, goes from request to an outcome that is the
+    /// effect's own: none fails in the decode, the authorizer or the rename
+    /// hold for want of a descriptor, a trait or a body, and those whose
+    /// body this test can run in full succeed. Those that reach outside the
+    /// fake (`http`, `shortcuts.run`) are left out.
+    @Test(arguments: EffectKind.allCases.filter { ![EffectKind.http, .shortcutsRun].contains($0) })
+    func everyEffectRunsThroughTheExecutor(kind: EffectKind) async throws {
+        let (executor, directory) = try executor(RecordingControls())
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let effect = try #require(EffectCatalog.standard.effect(kind.rawValue))
+        var capabilities: JSONValue = [:]
+        if let key = effect.grant.grantKey, let grant = EffectCatalog.standard.grant(key) {
+            var subject: JSONValue = ""
+            if case .listed(_, let field) = effect.grant { subject = Self.samples[kind]?[field] ?? "" }
+            let leaf: JSONValue =
+                switch grant.shape {
+                case .flag: true
+                case .pathList: ["/"]
+                case .level(let levels): .string(levels.last ?? "")
+                case .allowList(.origin): ["allow": ["https://example.com"]]
+                case .allowList(.scheme): ["allow": ["https"]]
+                case .allowList: ["allow": .array([subject])]
+                }
+            capabilities = grant.path.reversed().reduce(leaf) { inner, name in .object([name: inner]) }
+        }
+        var request = Self.samples[kind] ?? [:]
+        var detached: ProcessIdentity?
+        switch kind {
+        case .processSignal, .processPriority, .processNice:
+            let process = try await Self.detachedProcess()
+            detached = process
+            request["target"] = ["pid": .number(Double(process.pid)), "startedAt": .number(process.startedAt)]
+        case .storeRecord:
+            request["windowSeconds"] = 1
+        default:
+            break
+        }
+        defer { if let detached { kill(detached.pid, SIGKILL) } }
+        request["kind"] = .string(kind.rawValue)
+        let outcome = await executor.perform(.object(request), for: try rule(capabilities, timeoutSeconds: 30))
+        switch (outcome, kind) {
+        case (.failure(let message), .processSignal), (.failure(let message), .processPriority),
+            (.failure(let message), .processNice), (.failure(let message), .storeRecord):
+            Issue.record("\(kind): \(message)")
+        case (.failure(let message), _):
+            for sign in [
+                "does not match the effect catalog", "to check", "declares no path", "renames held off", "not granted",
+            ] {
+                #expect(!message.contains(sign), "\(kind): \(message)")
+            }
+        case (.success, _):
+            break
+        }
+    }
+
+    @Test func aTrashedItemMacOSDoesNotPlaceHasNoPath() async throws {
+        let (executor, directory) = try executor(RecordingControls())
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let outcome = await executor.perform(Self.request(.filesTrash), for: try rule(["files": ["trash": ["/"]]]))
+        #expect(outcome == .success(value: "{}"))
     }
 
     /// Reusing an assertion id replaces it; a rule that stops releases what
@@ -493,6 +604,25 @@ struct EffectCatalogTests {
         #expect(controls.released.withLock { $0 } == [1, 2])
         _ = await executor.perform(["kind": "power.allowSleep", "id": "b"], for: second)
         #expect(controls.released.withLock { $0 } == [1, 2, 3])
+    }
+}
+
+struct EjectTargetTests {
+    /// Only removable media, or a disk that isn't internal, may be ejected;
+    /// what the description leaves out counts against it.
+    @Test func onlyRemovableOrExternalVolumesAreEjected() {
+        func allowed(_ description: [CFString: Any]) -> Bool { EjectTarget(description: description).isAllowed }
+        // The boot disk and its data volume.
+        #expect(!allowed([kDADiskDescriptionDeviceInternalKey: true, kDADiskDescriptionMediaRemovableKey: false]))
+        // An external drive.
+        #expect(allowed([kDADiskDescriptionDeviceInternalKey: false]))
+        // A card in the built-in reader.
+        #expect(allowed([kDADiskDescriptionDeviceInternalKey: true, kDADiskDescriptionMediaRemovableKey: true]))
+        #expect(allowed([kDADiskDescriptionDeviceInternalKey: true, kDADiskDescriptionMediaEjectableKey: true]))
+        // A network share has no device: refused, as is a description with
+        // nothing in it.
+        #expect(!allowed([kDADiskDescriptionVolumeNetworkKey: true]))
+        #expect(!allowed([:]))
     }
 }
 

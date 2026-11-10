@@ -5,11 +5,8 @@ import Observation
 
 extension RuleSummary: Identifiable {
     /// The rule's name within its file, or nil for a row that stands for a
-    /// whole file that failed to load (its id is the file name). Taken past
-    /// `file` rather than at a `#`, which a refused file's name may hold.
-    var name: String? {
-        id == file ? nil : String(id.dropFirst(file.count + 1))
-    }
+    /// whole file that failed to load (its id is the file name).
+    var name: String? { RuleID.name(of: id, file: file) }
 
     var isFileFailure: Bool { name == nil }
     var isEnabled: Bool { state != .disabled }
@@ -49,12 +46,13 @@ final class RulesModel {
 
     private(set) var report: RulesReport?
     private(set) var loadState: LoadState = .loading
-    /// Resolved as the daemon resolves it (`MEERKAT_RULES_DIR`, then the
-    /// `RulesDirectory` default) until its status says otherwise, so the
-    /// folder opens even when status is unreadable. Taken from every
-    /// refresh's status, not the first: a moved `RulesDirectory` applies at
-    /// the daemon's next start, which the app doesn't otherwise see.
-    private(set) var rulesDirectory: String = DaemonPaths.standard().rulesDirectory.path
+    /// The folder the app was given (as the daemon resolves it:
+    /// `MEERKAT_RULES_DIR`, then the `RulesDirectory` default) until a
+    /// report says otherwise, so the folder opens even when the daemon is
+    /// unreachable. Taken from every report, not the first: a moved
+    /// `RulesDirectory` applies at the daemon's next start, which the app
+    /// doesn't otherwise see.
+    private(set) var rulesDirectory: String
     private(set) var reloading = false
     /// The last failed action (reload, enable, disable), shown until the
     /// next one succeeds.
@@ -81,14 +79,22 @@ final class RulesModel {
     private(set) var logsError: String?
 
     private let client: any DaemonConnection
+    private let retry: FeedRetry
+    private let back: DaemonReturn
     private var pendingRefresh: Task<Void, Never>?
 
-    init(client: any DaemonConnection) {
+    init(
+        client: any DaemonConnection, rulesDirectory: URL = DaemonPaths.standard().rulesDirectory,
+        retry: FeedRetry = FeedRetry(), back: DaemonReturn = DaemonReturn()
+    ) {
         self.client = client
+        self.rulesDirectory = rulesDirectory.path
+        self.retry = retry
+        self.back = back
     }
 
     var rules: [RuleSummary] { report?.rules ?? [] }
-    var failingCount: Int { rules.filter { $0.state == .failed }.count }
+    var counts: RuleCounts { RuleCounts(rules) }
 
     var selectedRule: RuleSummary? {
         guard let selection else { return nil }
@@ -113,9 +119,6 @@ final class RulesModel {
     func refresh() async {
         do {
             apply(try await client.rules())
-            if let reported = try? await client.status().rulesDirectory, reported != rulesDirectory {
-                rulesDirectory = reported
-            }
         } catch {
             // Keep the last report on screen; say why it may be stale.
             loadState = .failed(DaemonFault(error))
@@ -159,21 +162,24 @@ final class RulesModel {
     // MARK: - Watching
 
     /// Follows `meerkat.rule` for the window's lifetime, refreshing the
-    /// report when a rule loads, fails, is disabled or unloads. Retries while
-    /// the daemon is unreachable.
+    /// report when a rule loads, fails, is disabled or unloads, and once per
+    /// subscription for the changes made while it was not following. A
+    /// failed subscription refreshes too: the refresh is what says why
+    /// (`loadState`), a different build included.
     func followStateChanges() async {
-        await refresh()
-        while !Task.isCancelled {
-            do {
-                for try await _ in try await client.subscribe("meerkat.rule") {
-                    scheduleRefresh()
-                }
-            } catch {
-                if Task.isCancelled { return }
-            }
-            try? await Task.sleep(for: Self.pollInterval)
-            await refresh()
-        }
+        let client = client
+        await follow(
+            retry: retry, back: back,
+            subscribe: { try await client.subscribe(MeerkatRuleEvent.descriptor.name) },
+            subscribed: { await self.refresh() },
+            event: { _ in
+                self.scheduleRefresh()
+                return true
+            },
+            stopped: { _ in
+                await self.refresh()
+                return true
+            })
     }
 
     /// Polls counts and the selected rule's logs while the Rules page is on
@@ -209,6 +215,7 @@ final class RulesModel {
     }
 
     private func apply(_ report: RulesReport) {
+        if report.rulesDirectory != rulesDirectory { rulesDirectory = report.rulesDirectory }
         if report != self.report {
             self.report = report
             diagnostics = Self.listed(report.diagnostics)
@@ -224,6 +231,35 @@ final class RulesModel {
 
     private func fetchLogs(_ rule: String) async throws -> [RuleLogEntry] {
         try await client.logs(rule: rule, limit: Self.logLimit)
+    }
+}
+
+/// A rule file's state at the daemon's last compile, as the editor's file
+/// list and reload confirmation, and the Rules page's title, show it.
+struct FileStatus: Equatable {
+    let text: String
+    let state: RuleSummary.State
+
+    var isFailure: Bool { state == .failed }
+
+    /// A file that compiled and defines no rules (a library file): nothing
+    /// in it runs, as nothing in an off one does.
+    static let noRules = FileStatus(text: "No rules", state: .disabled)
+}
+
+extension RulesModel {
+    /// Compile or load errors first, then the state of its rules, the worst
+    /// first. Nil for a file that defines no rules (a library file).
+    func status(of file: String) -> FileStatus? {
+        let failures = loadFailures(in: file)
+        if !failures.isEmpty {
+            return FileStatus(text: failures.count == 1 ? "1 error" : "\(failures.count) errors", state: .failed)
+        }
+        let states = Set(rules.filter { $0.file == file }.map(\.state))
+        guard let state = [RuleSummary.State.failed, .loaded, .disabled].first(where: states.contains) else {
+            return nil
+        }
+        return FileStatus(text: state.label, state: state)
     }
 }
 

@@ -326,12 +326,11 @@ struct ObservationDeliveryTests {
             let configuration = RuleEngine.Configuration(
                 rulesDirectory: rules, cacheDirectory: cache, toolchain: try typeScriptToolchain(),
                 runtime: DenoRuntime.handlerRuntime, reloadDebounce: .milliseconds(50), settings: settings)
-            let executor = EffectExecutor(
-                store: store, ownProcesses: hub.environment.ownProcesses,
-                notifier: OwnProcessProtectionTests.NoNotifier(),
-                sampleDatabasePath: root.appendingPathComponent("samples.db").path)
-            engine = RuleEngine(configuration: configuration, hub: hub, store: store, executor: executor)
-            runner = RuleDryRunner(configuration: configuration, hub: hub, store: store)
+            let wired = ruleEngine(
+                configuration, hub: hub, store: store, notifier: SilentNotifier(),
+                sampleDatabase: root.appendingPathComponent("samples.db"))
+            engine = wired.engine
+            runner = wired.runner
         }
 
         func write(_ name: String, _ text: String) throws {

@@ -14,7 +14,7 @@ struct ResourcePage: View {
     var body: some View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 14) {
-                if let failure = model.feedFailure(resource, onPage: true) { FeedFailureNote(reason: failure) }
+                if let failure = model.feedFailure(resource, on: .page) { FeedFailureNote(reason: failure) }
                 switch resource {
                 case .cpu: CPUPage(model: model, app: app)
                 case .memory: MemoryPage(model: model, app: app)
@@ -27,9 +27,7 @@ struct ResourcePage: View {
             .padding(20)
         }
         .frame(minWidth: 940, minHeight: 600)
-        .navigationSubtitle(
-            "Live · last \(resource == .files ? FilesPage.duration(model.rates) : SamplingRates.chartSpanText)"
-        )
+        .navigationSubtitle("Live · last \(SamplingStep.span(model.chartSpan(resource)))")
         .metricsFeed(model)
     }
 }
@@ -71,7 +69,20 @@ struct ResourceChart: View {
         case .files:
             Sparkline(
                 metric: "Changes per window", series: model.churnSeries, tint: resource.tint, height: height,
-                format: { Format.number($0) }, span: FilesPage.span(model.rates))
+                format: { Format.number($0) })
+        }
+    }
+}
+
+extension MetricsModel {
+    /// Seconds the resource's chart covers: its series' window.
+    func chartSpan(_ resource: Resource) -> Double {
+        switch resource {
+        case .cpu, .memory: ticks.span
+        case .disk: diskSeries.span
+        case .network: networkSeries.span
+        case .power: powerSeries.span
+        case .files: churnSeries.span
         }
     }
 }
@@ -157,12 +168,12 @@ private struct Panel<Content: View>: View {
 private struct ValueRow: View {
     let label: String
     let value: String
-    var tint: Color? = nil
+    var status: Status? = nil
 
-    init(_ label: String, _ value: String, tint: Color? = nil) {
+    init(_ label: String, _ value: String, status: Status? = nil) {
         self.label = label
         self.value = value
-        self.tint = tint
+        self.status = status
     }
 
     var body: some View {
@@ -171,7 +182,7 @@ private struct ValueRow: View {
             Spacer(minLength: 8)
             Text(value)
                 .monospacedDigit()
-                .foregroundStyle(tint.map { AnyShapeStyle(Theme.text($0)) } ?? AnyShapeStyle(.primary))
+                .foregroundStyle(status.map { AnyShapeStyle($0.text) } ?? AnyShapeStyle(.primary))
         }
         .lineLimit(1)
         .accessibilityElement(children: .combine)
@@ -327,8 +338,8 @@ private struct ProcessRow: Identifiable {
     let writtenMBps: ProcessCounter
     let readMBps: ProcessCounter
     let user: String
-    /// For the process card.
-    let target: ProcessTarget
+    /// For the process card; nil for a row that names no instance.
+    let target: ProcessTarget?
 
     @MainActor init(_ p: ProcessDelta) {
         id = p.pid
@@ -345,8 +356,53 @@ private struct ProcessRow: Identifiable {
 
 /// The tables' source, `process.list`, arrives one ranking interval after
 /// subscribing; a table is empty only until then.
-private enum ProcessList {
-    static let waiting = "Listing processes…"
+private let listingProcesses = "Listing processes…"
+
+/// The columns of the pages' process tables, so a measure reads, sorts and
+/// sizes the same on every page.
+@MainActor
+private enum ProcessColumn {
+    typealias Column = TableColumnContent<ProcessRow, KeyPathComparator<ProcessRow>>
+
+    static var name: some Column {
+        TableColumn("Process", value: \.name) { row in ProcessName(pid: row.id, name: row.name) }
+    }
+
+    static var cpu: some Column {
+        TableColumn("% CPU", value: \.cpu) { Text(Format.number($0.cpu, digits: 1)).monospacedDigit() }
+            .width(70).alignment(.trailing)
+    }
+
+    static var memory: some Column {
+        TableColumn("Memory", value: \.memoryMB) {
+            Text($0.memoryMB.text(MemorySize.text(megabytes:))).monospacedDigit()
+        }
+        .width(90).alignment(.trailing)
+    }
+
+    static var energy: some Column {
+        TableColumn("Energy", value: \.watts) { Text($0.watts.text { Format.watts($0) }).monospacedDigit() }
+            .width(70).alignment(.trailing)
+    }
+
+    static var written: some Column {
+        TableColumn("Written", value: \.writtenMBps) { Text($0.writtenMBps.text(RateUnit.text)).monospacedDigit() }
+            .width(90).alignment(.trailing)
+    }
+
+    static var read: some Column {
+        TableColumn("Read", value: \.readMBps) { Text($0.readMBps.text(RateUnit.text)).monospacedDigit() }
+            .width(90).alignment(.trailing)
+    }
+
+    static var user: some Column {
+        TableColumn("User", value: \.user) { Text($0.user).lineLimit(1) }.width(90)
+    }
+
+    static var pid: some Column {
+        TableColumn("PID", value: \.id) { Text(String($0.id)).monospacedDigit() }
+            .width(60).alignment(.trailing)
+    }
 }
 
 extension View {
@@ -354,26 +410,11 @@ extension View {
     fileprivate func opensProcessCards(_ rows: [ProcessRow], card: Binding<ProcessTarget?>) -> some View {
         contextMenu(forSelectionType: ProcessRow.ID.self) { ids in
             if let target = rows.first(where: { ids.contains($0.id) })?.target {
-                Button("Show Details") { card.wrappedValue = target }
-                Button("Show in Finder") { ProcessControl.reveal(target) }
-                    .disabled(target.path == nil)
+                ProcessMenu(target: target, card: card)
             }
         } primaryAction: { ids in
-            card.wrappedValue = rows.first { ids.contains($0.id) }?.target
+            if let target = rows.first(where: { ids.contains($0.id) })?.target { card.wrappedValue = target }
         }
-    }
-}
-
-/// Account names by uid, cached: the table asks every second.
-@MainActor
-private enum UserName {
-    private static var cache: [UInt32: String] = [:]
-
-    static func of(_ uid: UInt32) -> String {
-        if let hit = cache[uid] { return hit }
-        let name = getpwuid(uid).flatMap { String(validatingCString: $0.pointee.pw_name) } ?? "\(uid)"
-        cache[uid] = name
-        return name
     }
 }
 
@@ -426,24 +467,16 @@ private struct CPUPage: View {
             }
         } detail: {
             ProcessPanel(
-                title: "Processes", note: "% of one core · double-click for details", empty: ProcessList.waiting,
+                title: "Processes", note: "% of one core · double-click for details", empty: listingProcesses,
                 processes: model.allProcesses, sortedBy: KeyPathComparator(\.cpu, order: .reverse), model: model,
                 app: app
             ) {
-                TableColumn("Process", value: \.name) { row in
-                    ProcessName(pid: row.id, name: row.name)
-                }
-                TableColumn("% CPU", value: \.cpu) { Text(Format.number($0.cpu, digits: 1)).monospacedDigit() }
-                    .width(70).alignment(.trailing)
-                TableColumn("Memory", value: \.memoryMB) {
-                    Text($0.memoryMB.text(MemorySize.text(megabytes:))).monospacedDigit()
-                }
-                .width(80).alignment(.trailing)
-                TableColumn("Energy", value: \.watts) { Text($0.watts.text { Format.watts($0) }).monospacedDigit() }
-                    .width(64).alignment(.trailing)
-                TableColumn("User", value: \.user) { Text($0.user).lineLimit(1) }.width(90)
-                TableColumn("PID", value: \.id) { Text(String($0.id)).monospacedDigit() }
-                    .width(60).alignment(.trailing)
+                ProcessColumn.name
+                ProcessColumn.cpu
+                ProcessColumn.memory
+                ProcessColumn.energy
+                ProcessColumn.user
+                ProcessColumn.pid
             }
         }
     }
@@ -486,23 +519,16 @@ private struct MemoryPage: View {
             }
         } detail: {
             ProcessPanel(
-                title: "Processes", note: "memory footprint · your processes", empty: ProcessList.waiting,
+                title: "Processes", note: "memory footprint · your processes", empty: listingProcesses,
                 processes: model.allProcesses.filter { $0.footprintMB != nil },
                 sortedBy: KeyPathComparator(\.memoryMB, order: .reverse),
                 model: model,
                 app: app
             ) {
-                TableColumn("Process", value: \.name) { row in
-                    ProcessName(pid: row.id, name: row.name)
-                }
-                TableColumn("Memory", value: \.memoryMB) {
-                    Text($0.memoryMB.text(MemorySize.text(megabytes:))).monospacedDigit()
-                }
-                .width(90).alignment(.trailing)
-                TableColumn("% CPU", value: \.cpu) { Text(Format.number($0.cpu, digits: 1)).monospacedDigit() }
-                    .width(70).alignment(.trailing)
-                TableColumn("PID", value: \.id) { Text(String($0.id)).monospacedDigit() }
-                    .width(60).alignment(.trailing)
+                ProcessColumn.name
+                ProcessColumn.memory
+                ProcessColumn.cpu
+                ProcessColumn.pid
             }
         }
     }
@@ -540,7 +566,7 @@ private struct PressureTimeline: View {
                     HStack(spacing: 0) {
                         ForEach(bands, id: \.start) { band in
                             Rectangle()
-                                .fill(Self.color(band.level))
+                                .fill(band.level.status.color)
                                 .frame(width: geo.size.width * band.share)
                         }
                     }
@@ -591,14 +617,6 @@ private struct PressureTimeline: View {
         return bands
     }
 
-    static func color(_ level: PressureLevel) -> Color {
-        switch level {
-        case .normal: Theme.normal
-        case .warning: Theme.warn
-        case .critical: Theme.critical
-        }
-    }
-
     /// "Normal throughout", or "Elevated for 8 s, critical for 2 s".
     static func summary(_ bands: [Band]) -> String {
         let raised = Dictionary(grouping: bands.filter { $0.level != .normal }, by: \.level)
@@ -606,7 +624,7 @@ private struct PressureTimeline: View {
         return [PressureLevel.warning, .critical].compactMap { level -> String? in
             guard let bands = raised[level] else { return nil }
             let seconds = Int(bands.reduce(0) { $0 + $1.seconds }.rounded())
-            return "\(level == .warning ? "Elevated" : "Critical") for \(seconds) s"
+            return "\(level.word.capitalized) for \(seconds) s"
         }.joined(separator: ", ")
     }
 }
@@ -692,20 +710,13 @@ private struct DiskPage: View {
         } detail: {
             ProcessPanel(
                 title: "Your processes", note: "per ranking window · others need root",
-                empty: ProcessList.waiting, processes: model.allProcesses.filter { $0.diskReadMB != nil },
+                empty: listingProcesses, processes: model.allProcesses.filter { $0.diskReadMB != nil },
                 sortedBy: KeyPathComparator(\.writtenMBps, order: .reverse), model: model, app: app
             ) {
-                TableColumn("Process", value: \.name) { row in
-                    ProcessName(pid: row.id, name: row.name)
-                }
-                TableColumn("Written", value: \.writtenMBps) {
-                    Text($0.writtenMBps.text(RateUnit.text)).monospacedDigit()
-                }
-                .width(90).alignment(.trailing)
-                TableColumn("Read", value: \.readMBps) { Text($0.readMBps.text(RateUnit.text)).monospacedDigit() }
-                    .width(90).alignment(.trailing)
-                TableColumn("PID", value: \.id) { Text(String($0.id)).monospacedDigit() }
-                    .width(60).alignment(.trailing)
+                ProcessColumn.name
+                ProcessColumn.written
+                ProcessColumn.read
+                ProcessColumn.pid
             }
         }
     }
@@ -762,8 +773,7 @@ private struct NetworkPage: View {
             Panel(title: "Connection") {
                 if let path = model.networkPath {
                     ValueRow(
-                        "Status", Self.status(path.status),
-                        tint: path.status == .satisfied ? Theme.normal : Theme.warn)
+                        "Status", path.status.label, status: path.status.status)
                     ValueRow("Via", Self.via(path))
                     ValueRow("Expensive", path.isExpensive ? "Yes" : "No")
                     ValueRow("Constrained", path.isConstrained ? "Yes" : "No")
@@ -774,7 +784,7 @@ private struct NetworkPage: View {
         } detail: {
             Panel(title: "Interfaces") {
                 let rows = interfaces.map(InterfaceRow.init).sorted(using: order)
-                TableSlot(note: rows.isEmpty ? "No traffic in this interval" : nil) {
+                TableSlot(note: rows.isEmpty ? EmptyList.traffic : nil) {
                     Table(rows, sortOrder: $order) {
                         TableColumn("Interface", value: \.id) {
                             Text($0.id).font(.system(.body, design: .monospaced))
@@ -792,14 +802,6 @@ private struct NetworkPage: View {
                     }
                 }
             }
-        }
-    }
-
-    static func status(_ status: NetworkPathPayload.Status) -> String {
-        switch status {
-        case .satisfied: "Connected"
-        case .unsatisfied: "Not connected"
-        case .requiresConnection: "Connecting"
         }
     }
 
@@ -870,15 +872,9 @@ private struct PowerPage: View {
                 PageHeader(
                     resource: .power,
                     reading: model.reading(.power, on: .page),
-                    stats: [
-                        .init(label: "Battery", value: model.batteryText ?? "–", tint: model.batteryTint),
-                        .init(
-                            label: "Health", value: sample?.healthPercent.map { Format.percent($0) } ?? "–"),
-                        .init(label: "Cycles", value: sample?.cycleCount.map(String.init) ?? "–"),
-                        .init(label: "Time to full", value: timeToFull),
-                    ]
+                    stats: model.batteryStats + [.init(label: "Time to full", value: timeToFull)]
                 ) {
-                    if model.lowPowerMode { StatusBadge(text: "Low Power Mode", tint: Theme.warn) }
+                    LowPowerBadge(isOn: model.lowPowerMode)
                 } chart: {
                     ResourceChart(resource: .power, model: model, height: 150)
                 }
@@ -902,25 +898,20 @@ private struct PowerPage: View {
             } else {
                 Panel(title: "Power") {
                     Text("This Mac reports no battery telemetry").foregroundStyle(.tertiary)
-                        .help(noBatteryReason)
+                        .help(model.battery.absence ?? "")
                     ValueRow("Low Power Mode", model.lowPowerMode ? "On" : "Off")
                 }
             }
         } detail: {
             ProcessPanel(
-                title: "Energy", note: "per ranking window · your processes", empty: ProcessList.waiting,
+                title: "Energy", note: "per ranking window · your processes", empty: listingProcesses,
                 processes: model.allProcesses.filter { $0.energyJoules != nil },
                 sortedBy: KeyPathComparator(\.watts, order: .reverse), model: model, app: app
             ) {
-                TableColumn("Process", value: \.name) { row in
-                    ProcessName(pid: row.id, name: row.name)
-                }
-                TableColumn("Energy", value: \.watts) { Text($0.watts.text { Format.watts($0) }).monospacedDigit() }
-                    .width(70).alignment(.trailing)
-                TableColumn("% CPU", value: \.cpu) { Text(Format.number($0.cpu, digits: 1)).monospacedDigit() }
-                    .width(70).alignment(.trailing)
-                TableColumn("PID", value: \.id) { Text(String($0.id)).monospacedDigit() }
-                    .width(60).alignment(.trailing)
+                ProcessColumn.name
+                ProcessColumn.energy
+                ProcessColumn.cpu
+                ProcessColumn.pid
             }
             Panel(title: "Keeping the Mac awake", note: "power assertions") {
                 let rows = (model.assertions?.assertions ?? []).map(AssertionRow.init).sorted(using: order)
@@ -941,21 +932,9 @@ private struct PowerPage: View {
 
     /// False once the daemon refuses `battery.sample`; while waiting for the
     /// first sample the battery layout shows with dashes.
-    private var hasBattery: Bool {
-        if case .unavailable = model.battery { return false }
-        return true
-    }
+    private var hasBattery: Bool { model.battery.absence == nil }
 
-    /// The daemon's refusal, for the curious.
-    private var noBatteryReason: String {
-        if case .unavailable(let reason) = model.battery { return reason }
-        return ""
-    }
-
-    private var sample: BatterySamplePayload? {
-        if case .reported(let sample) = model.battery { return sample }
-        return nil
-    }
+    private var sample: BatterySamplePayload? { model.battery.sample }
 
     private var timeToFull: String {
         guard let battery = model.batteryLevel else { return "–" }
@@ -1015,15 +994,14 @@ private struct FilesPage: View {
                     "Excluding",
                     c.map { $0.excluded.isEmpty ? "Nothing" : $0.excluded.map(Self.short).joined(separator: " · ") }
                         ?? "–")
-                ValueRow(
-                    "Window",
-                    "\(Int(SamplingRates.churnWindow)) s every \(SamplingStep.rate(model.rates.churnEvery))")
+                let window = SamplingStep.span(SamplingRates.churnWindow)
+                ValueRow("Window", "\(window) every \(SamplingStep.rate(model.rates.churnEvery))")
                 ValueRow("Set in", "meerkat.json")
             }
         } detail: {
             Panel(title: "Busiest folders", note: "double-click to show in Finder") {
                 let rows = (c?.buckets ?? []).map { FolderRow(id: $0.path, events: $0.events) }.sorted(using: order)
-                TableSlot(note: rows.isEmpty ? "Watching for changes…" : nil) {
+                TableSlot(note: rows.isEmpty ? EmptyList.churn : nil) {
                     Table(rows, sortOrder: $order) {
                         TableColumn("Folder", value: \.id) {
                             Text($0.id).font(.system(.body, design: .monospaced)).lineLimit(1).truncationMode(.middle)
@@ -1033,27 +1011,15 @@ private struct FilesPage: View {
                     }
                     .contextMenu(forSelectionType: FolderRow.ID.self) { paths in
                         if !paths.isEmpty {
-                            Button("Show in Finder", systemImage: "folder") { Self.reveal(paths) }
+                            Button("Show in Finder", systemImage: "folder") { Finder.reveal(Array(paths)) }
                         }
                     } primaryAction: { paths in
-                        Self.reveal(paths)
+                        Finder.reveal(Array(paths))
                     }
                 }
             }
         }
     }
-
-    private static func reveal(_ paths: Set<FolderRow.ID>) {
-        let urls = paths.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
-        NSWorkspace.shared.activateFileViewerSelecting(urls)
-    }
-
-    /// "10 min": the churn series holds one point per window.
-    static func duration(_ rates: SamplingRates) -> String {
-        SamplingStep.span(rates.churnEvery * Double(MetricsModel.churnHistoryLimit))
-    }
-
-    static func span(_ rates: SamplingRates) -> String { "\(duration(rates)) ago" }
 
     static func kindName(_ category: String) -> String {
         category.replacingOccurrences(of: "_", with: " ").capitalized
@@ -1062,4 +1028,16 @@ private struct FilesPage: View {
     static func short(_ path: String) -> String {
         (path as NSString).abbreviatingWithTildeInPath
     }
+}
+
+extension NetworkPathPayload.Status {
+    var label: String {
+        switch self {
+        case .satisfied: "Connected"
+        case .unsatisfied: "Not connected"
+        case .requiresConnection: "Connecting"
+        }
+    }
+
+    var status: Status { self == .satisfied ? .normal : .warning }
 }

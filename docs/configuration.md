@@ -18,7 +18,11 @@ generated from the daemon's own declaration of it
 (`MeerkatConfiguration.schema`):
 [Sources/meerkat-rules/meerkat.schema.json](../Sources/meerkat-rules/meerkat.schema.json),
 and `.meerkat/meerkat.schema.json` in the rules directory, which the daemon
-keeps current. Every field is optional; an absent one keeps its default.
+keeps current. Every field is optional; an absent one keeps its default,
+and an absent section has all of its own. A file holding only `null` is
+`{}`; a section or field set to `null` is a problem, as any other wrong
+value is. The schema states each field's range and default (`minimum`,
+`maximum`, `default`), so an editor shows them as you type.
 [Sources/meerkat-rules/examples/meerkat.json](../Sources/meerkat-rules/examples/meerkat.json)
 sets them all:
 

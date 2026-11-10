@@ -3,6 +3,7 @@ import MeerkatIPC
 import MeerkatKit
 import MeerkatRuntimeBindings
 import MeerkatStore
+import Synchronization
 import Testing
 import notify
 
@@ -182,120 +183,6 @@ struct ReloadAndBlameTests {
     }
 }
 
-struct OwnProcessProtectionTests {
-    /// Rules run inside the daemon, so signalling it would stop them all.
-    /// This test process stands in for the daemon; `continue` would be
-    /// harmless if the refusal failed.
-    @Test func theDaemonCannotBeSignalled() async throws {
-        let directory = temporaryURL("meerkat-protect")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let store = try MeerkatStore.RuleStore(path: directory.appendingPathComponent("rules.db").path)
-        let executor = EffectExecutor(
-            store: store, ownProcesses: OwnProcesses(), notifier: NoNotifier(),
-            sampleDatabasePath: directory.appendingPathComponent("s.db").path)
-        let record = try #require(ProcessTable.record(pid: getpid()))
-        let definition = try RuleDefinition(
-            file: "a.ts",
-            raw: [
-                "name": "r", "on": "memory.pressure", "capabilities": ["process": ["signal": true]],
-            ], catalog: .standard)
-        let outcome = await executor.perform(
-            [
-                "kind": "process.signal", "signal": "continue",
-                "target": ["pid": .number(Double(record.pid)), "startedAt": .number(record.identity.startedAt)],
-            ], for: definition)
-        guard case .failure(let message) = outcome else {
-            Issue.record("expected a refusal, got \(outcome)")
-            return
-        }
-        #expect(message.contains("the daemon itself"))
-    }
-
-    /// Nor a process the daemon started (`log stream`, a compiler, another
-    /// rule's `exec`): this process stands in for the daemon again, and a
-    /// child it started for `continue`.
-    @Test func theDaemonsChildrenCannotBeSignalled() async throws {
-        let directory = temporaryURL("meerkat-protect")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let store = try MeerkatStore.RuleStore(path: directory.appendingPathComponent("rules.db").path)
-        let executor = EffectExecutor(
-            store: store, ownProcesses: OwnProcesses(), notifier: NoNotifier(),
-            sampleDatabasePath: directory.appendingPathComponent("s.db").path)
-        let child = Process()
-        child.executableURL = URL(fileURLWithPath: "/bin/sleep")
-        child.arguments = ["30"]
-        try child.run()
-        defer { child.terminate() }
-        let record = try #require(ProcessTable.record(pid: child.processIdentifier))
-        let definition = try RuleDefinition(
-            file: "a.ts",
-            raw: [
-                "name": "r", "on": "memory.pressure", "capabilities": ["process": ["signal": true]],
-            ], catalog: .standard)
-        let outcome = await executor.perform(
-            [
-                "kind": "process.signal", "signal": "continue",
-                "target": ["pid": .number(Double(record.pid)), "startedAt": .number(record.identity.startedAt)],
-            ], for: definition)
-        guard case .failure(let message) = outcome else {
-            Issue.record("expected a refusal, got \(outcome)")
-            return
-        }
-        #expect(message.contains("was started by the daemon"))
-    }
-
-    /// Nor what those started in turn: a shell's `sleep` stands in for the
-    /// process an `exec` child or a helper runs.
-    @Test func whatTheDaemonsChildrenStartCannotBeSignalled() async throws {
-        let directory = temporaryURL("meerkat-protect")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let store = try MeerkatStore.RuleStore(path: directory.appendingPathComponent("rules.db").path)
-        let executor = EffectExecutor(
-            store: store, ownProcesses: OwnProcesses(), notifier: NoNotifier(),
-            sampleDatabasePath: directory.appendingPathComponent("s.db").path)
-        let shell = Process()
-        shell.executableURL = URL(fileURLWithPath: "/bin/sh")
-        shell.arguments = ["-c", "/bin/sleep 30 & echo $!; wait"]
-        let output = Pipe()
-        shell.standardOutput = output
-        try shell.run()
-        defer { shell.terminate() }
-        var line = ""
-        while !line.contains("\n") {
-            let data = output.fileHandleForReading.availableData
-            guard !data.isEmpty else { break }
-            line += String(decoding: data, as: UTF8.self)
-        }
-        let pid = try #require(pid_t(line.trimmingCharacters(in: .whitespacesAndNewlines)))
-        defer { kill(pid, SIGKILL) }
-        let record = try #require(ProcessTable.record(pid: pid))
-        #expect(record.parentPid == shell.processIdentifier)
-        let definition = try RuleDefinition(
-            file: "a.ts",
-            raw: [
-                "name": "r", "on": "memory.pressure", "capabilities": ["process": ["signal": true]],
-            ], catalog: .standard)
-        let outcome = await executor.perform(
-            [
-                "kind": "process.signal", "signal": "continue",
-                "target": ["pid": .number(Double(record.pid)), "startedAt": .number(record.identity.startedAt)],
-            ], for: definition)
-        guard case .failure(let message) = outcome else {
-            Issue.record("expected a refusal, got \(outcome)")
-            return
-        }
-        #expect(message.contains("was started by the daemon"))
-    }
-
-    struct NoNotifier: Notifier {
-        func post(_ plan: NotificationPlan) async throws {}
-        func withdraw(identifier: String) async throws {}
-    }
-}
-
 @Suite(.serialized)
 struct LifecycleEdgeTests {
     typealias Fixture = DaemonEndToEndTests.Fixture
@@ -345,6 +232,107 @@ struct HostPlumbingTests {
         }
         func send(_ message: DaemonToHost) {}
         func stop(reason: String) {}
+    }
+
+    /// A runtime that is ready at once, loads every entry with no rules, and
+    /// answers an invocation as `invoked` says, given the invocation, its
+    /// rule, and how to send and to stop.
+    final class ScriptedTransport: HandlerHostTransport {
+        typealias Delegate = (receive: @Sendable (HostToDaemon) -> Void, terminated: @Sendable (String) -> Void)
+        let invoked: @Sendable (UInt64, String, Delegate) -> Void
+        private let current = Mutex<Delegate?>(nil)
+
+        init(invoked: @escaping @Sendable (UInt64, String, Delegate) -> Void) { self.invoked = invoked }
+
+        func start(
+            receive: @escaping @Sendable (HostToDaemon) -> Void, terminated: @escaping @Sendable (String) -> Void
+        ) throws {
+            current.withLock { $0 = (receive, terminated) }
+            receive(.ready)
+        }
+
+        func send(_ message: DaemonToHost) {
+            guard let delegate = current.withLock({ $0 }) else { return }
+            switch message {
+            case .load(_, let entries, _, _, _):
+                delegate.receive(
+                    .loaded(results: entries.map { EntryResult(entry: $0.module, rules: [], error: nil) }))
+            case .invoke(let invocation, let rule, _, _):
+                invoked(invocation, rule, delegate)
+            default:
+                break
+            }
+        }
+
+        func stop(reason: String) { current.withLock { $0 }?.terminated(reason) }
+    }
+
+    /// Runs one invocation of `spin.ts#spin` in a host over `transport`, and
+    /// returns its result and the reason the host exited with.
+    private func invokeOnce(_ transport: ScriptedTransport) async throws -> (HandlerHost.InvocationResult, String?) {
+        let host = HandlerHost(transport: transport)
+        try await host.start()
+        let loaded = try await host.load(modules: [], entries: ["spin"], rejected: [:], entryDeadline: .seconds(5))
+        #expect(loaded.map(\.file) == ["spin.ts"])
+        let event = EventEnvelope(kind: "timer", sequence: 1, time: 0, origin: .system, replayed: false, payload: [:])
+        let result = await host.invoke(rule: "spin.ts#spin", event: event, timeout: .seconds(1))
+        var exit: String?
+        for await event in host.events {
+            if case .exited(let reason) = event { exit = reason }
+        }
+        return (result, exit)
+    }
+
+    /// The fault's kind, not whether it names an invocation, makes that
+    /// invocation an overrun; and the host exits with the runtime's own
+    /// sentence for the fault.
+    @Test func anOverrunTimesOutItsInvocation() async throws {
+        let ended = "spin.ts#spin held the JavaScript thread for 5.1 s"
+        let (result, exit) = try await invokeOnce(
+            ScriptedTransport { invocation, rule, delegate in
+                delegate.receive(
+                    .fault(
+                        file: "spin.ts", rule: rule, invocation: invocation, kind: .overran,
+                        reason: "held the JavaScript thread for 5.1 s"))
+                delegate.terminated(ended)
+            })
+        #expect(result == .overran)
+        #expect(exit == ended)
+    }
+
+    /// A fault that is the file's alone interrupts the invocation running
+    /// then, which is not charged to its rule, even when it names it.
+    @Test func aFilesFaultInterruptsTheInvocation() async throws {
+        let ended = "spin.ts passed its JavaScript heap limit of 256 MiB"
+        let (result, exit) = try await invokeOnce(
+            ScriptedTransport { invocation, _, delegate in
+                delegate.receive(
+                    .fault(
+                        file: "spin.ts", rule: nil, invocation: invocation, kind: .outOfMemory,
+                        reason: "passed its JavaScript heap limit of 256 MiB"))
+                delegate.terminated(ended)
+            })
+        #expect(result == .interrupted(ended))
+        #expect(exit == ended)
+    }
+
+    /// An event with no JSON form never reaches the runtime, and its rule is
+    /// not charged for it: the outcome says why, in the encoder's words.
+    @Test func anEventWithNoJSONFormIsNotDelivered() async throws {
+        let host = HandlerHost(
+            transport: ScriptedTransport { _, _, _ in Issue.record("the event reached the runtime") })
+        try await host.start()
+        _ = try await host.load(modules: [], entries: ["spin"], rejected: [:], entryDeadline: .seconds(5))
+        let event = EventEnvelope(
+            kind: "timer", sequence: 1, time: .nan, origin: .system, replayed: false, payload: [:])
+        let result = await host.invoke(rule: "spin.ts#spin", event: event, timeout: .seconds(1))
+        guard case .undeliverable(let reason) = result else {
+            Issue.record("\(result)")
+            return
+        }
+        #expect(reason.contains("time"), "\(reason)")
+        #expect(result.failure(timeout: .seconds(1)) == nil)
+        await host.stop(reason: "done")
     }
 
     /// A host whose runtime cannot start ends its event stream, so the

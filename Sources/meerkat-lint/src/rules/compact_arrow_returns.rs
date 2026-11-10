@@ -7,7 +7,7 @@ use oxc::ast::ast::{ArrowFunctionBody, Expression, ForStatementInit, ForStatemen
 use oxc::semantic::NodeId;
 use oxc::span::{GetSpan, Span};
 
-use crate::source::{Context, Edit, Finding, LINE_WIDTH, has_line_break, width};
+use crate::source::{Context, Edit, Finding, has_line_break};
 
 const MESSAGE: &str = "Compact arrow function return.";
 
@@ -78,7 +78,7 @@ fn fits(context: &Context<'_, '_>, body: Span, replacement: &str) -> bool {
     let end = body.end as usize;
     let line =
         format!("{}{replacement}{}", &text[line_start_lf(text, start)..start], &text[end..line_end_lf(text, end)]);
-    width(&line) <= LINE_WIDTH
+    context.layout.width(&line) <= context.layout.line_width
 }
 
 // tsmono's rule measures this line by `\n` only; the port keeps that.

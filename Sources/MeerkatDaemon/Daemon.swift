@@ -25,7 +25,7 @@ extension DaemonPaths {
         let samples = sampleDatabase.standardizedFileURL.path
         let rules = rulesDirectory.standardizedFileURL
         var write = [
-            rules.path, rules.appendingPathComponent(MeerkatConfiguration.fileName).path,
+            rules.path, DaemonPaths.configurationFile(in: rules).path,
             cacheDirectory.standardizedFileURL.path, state, samples, samples + "-wal", samples + "-shm",
             DaemonPaths.preferencesFile.path,
         ]
@@ -67,13 +67,11 @@ public final class Daemon: Sendable {
     /// - Parameters:
     ///   - runtime: what rules are compiled against and run in; nil runs no
     ///     rules (meerkatd passes the embedded Deno runtime).
-    ///   - ruleLoadDeadline: how long one rule file's top-level code may run
-    ///     before the file is rejected.
     ///   - lintToolchain: what lints the rules directory on each reload; nil
     ///     lints nothing.
     public init(
         paths: DaemonPaths = .standard(), runtime: HandlerRuntime?,
-        toolchain: TypeScriptToolchain? = TypeScriptToolchain.locate(), ruleLoadDeadline: Duration = .seconds(5),
+        toolchain: TypeScriptToolchain? = TypeScriptToolchain.locate(),
         lintToolchain: LintToolchain? = LintToolchain.locate()
     ) throws {
         self.paths = paths
@@ -85,22 +83,24 @@ public final class Daemon: Sendable {
         let settings = DaemonSettings(rulesDirectory: paths.rulesDirectory, catalog: hub.catalog)
         // fs.churn without a root measures meerkat.json's `files`, read per window.
         hub.environment.provideFileScope { settings.current.files.scope }
-        let ownExecutable = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
-        let protected = paths.protected(executable: ownExecutable)
+        let protected = paths.protected(executable: .currentExecutable)
+        // One authorizer for what runs and what a dry run simulates, so a
+        // draft is refused exactly as the saved rule will be.
+        let authorizer = EffectAuthorizer(permissionStatus: { $0.status }, protectedPaths: protected.write)
         let executor = EffectExecutor(
             store: store, ownProcesses: hub.environment.ownProcesses,
-            notifier: UserNotifier(), sampleDatabasePath: paths.sampleDatabase.path,
-            sampleLimits: { settings.sampleLimits }, protectedPaths: protected.write)
+            notifier: UserNotifier(), sampleDatabasePath: paths.sampleDatabase.path, authorizer: authorizer,
+            sampleLimits: { settings.sampleLimits })
         let engine = RuleEngine(
             configuration: .init(
                 rulesDirectory: paths.rulesDirectory, cacheDirectory: paths.cacheDirectory,
                 toolchain: toolchain, runtime: runtime, linter: lintToolchain.map(RuleLinter.init),
-                protected: protected, loadDeadline: ruleLoadDeadline,
-                settings: settings),
+                protected: protected, settings: settings),
             hub: hub, store: store, executor: executor
         )
-        // Deliberately not given the executor: see `RuleDryRunner`.
-        let dryRunner = RuleDryRunner(configuration: engine.configuration, hub: hub, store: store)
+        // The engine's loader and authorizer, never its executor: see
+        // `RuleDryRunner`.
+        let dryRunner = RuleDryRunner(engine: engine, hub: hub, store: store)
         self.dryRunner = dryRunner
         self.hub = hub
         self.engine = engine
@@ -119,7 +119,7 @@ public final class Daemon: Sendable {
                 version: Daemon.version,
                 pid: getpid(),
                 startedAt: startedAt.timeIntervalSince1970 * 1000,
-                executablePath: Bundle.main.executableURL?.path ?? CommandLine.arguments[0],
+                executablePath: URL.currentExecutable.path,
                 rulesDirectory: rulesDirectory,
                 handlerHost: await engine.hostStatus(),
                 sources: hub.statistics(),
@@ -132,7 +132,8 @@ public final class Daemon: Sendable {
             mcp: MCPService(
                 hub: hub, engine: engine, dryRunner: dryRunner, sampleDatabase: paths.sampleDatabase,
                 policy: { settings.policy },
-                configuration: { settings.status }, status: status),
+                configuration: { settings.status }, status: status,
+                permissionStatus: authorizer.permissionStatus),
             startedAt: startedAt.timeIntervalSince1970 * 1000, status: status)
     }
 

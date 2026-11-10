@@ -1,4 +1,5 @@
 load("//buck2/third_party/tools:defs.bzl", "tool")
+load(":toolchains.bzl", "env_command", "xcode_env")
 
 # A check as a test: a command, run from the repository root, that passes
 # when it exits 0. `srcs` are what it reads (appended to the command with
@@ -42,14 +43,14 @@ command_test = rule(
     },
 )
 
-# The environment that makes `xcrun` run the Xcode Buck builds with
-# (`[swift] developer_dir`), not xcode-select's.
-XCODE_ENV = {"DEVELOPER_DIR": read_root_config("swift", "developer_dir")}
+# The environment that runs the tools of the Xcode Buck builds with
+# (`[swift] developer_dir`), as every Swift action does (xcode_env).
+XCODE_ENV = xcode_env(read_root_config("swift", "developer_dir"), read_root_config("swift", "xcode_build"))
 
 def with_xcode_env(command: list) -> list:
-    """`command`, run through `env` with XCODE_ENV, for a RunInfo (which has
-    no environment of its own)."""
-    return ["/usr/bin/env"] + ["{}={}".format(name, value) for name, value in XCODE_ENV.items()] + command
+    """`command`, run with XCODE_ENV, for a RunInfo (which has no
+    environment of its own)."""
+    return env_command(XCODE_ENV, command)
 
 _SWIFT_FORMAT = with_xcode_env(["/usr/bin/xcrun", "swift-format"])
 
@@ -64,9 +65,36 @@ def swift_format_test(name: str, srcs: list):
         labels = ["format"],
     )
 
+# The files a generator writes, each with the target that rewrites it
+# (`buck2 run`), in the order //:fix runs those. They are their generator's
+# to format: no `over_files` check or fixer reads them, whatever its
+# pathspecs. AGENTS.md's table ("Generated files") lists the same files,
+# which //:generated_files_test checks; a `checked_in_copy` must be here.
+GENERATED = {
+    "Sources/meerkat-runtime/CMeerkatRuntime/include/meerkat_runtime.h": "//Sources/meerkat-runtime/bindgen:regenerate",
+    "Sources/meerkat-runtime/MeerkatRuntimeBindings/MeerkatRuntimeBindings.swift": "//Sources/meerkat-runtime/bindgen:regenerate",
+    "Sources/meerkat-rules/deno.d.ts": "//Sources/meerkat-runtime:regenerate",
+    "Sources/meerkat-rules/meerkat.d.ts": "//Sources/meerkat-rules:regenerate",
+    "Sources/meerkat-rules/meerkat.schema.json": "//Sources/meerkat-rules:regenerate",
+    "buck2/third_party/swift/modules.bzl": "//buck2/third_party/swift:regenerate",
+    "buck2/third_party/rust/BUCK": "//buck2/third_party/rust/check:regenerate",
+    "buck2/third_party/rust/Cargo.lock": "//buck2/third_party/rust/check:regenerate",
+    "Tools/Notices/bundled_crates.bzl": "//Tools/Notices:regenerate",
+    "docs/images/meerkat-icon.png": "//Tools/Bundler:regenerate",
+}
+
+def regenerators() -> list[str]:
+    """Each target GENERATED names, once, in its order."""
+    targets = []
+    for target in GENERATED.values():
+        if target not in targets:
+            targets.append(target)
+    return targets
+
 # Runs a command with the repository's files appended: those git's
-# `pathspecs` match, tracked or new and not ignored, that exist. A Buck glob
-# stops at package boundaries, and these checks read every package's files.
+# `pathspecs` match, tracked or new and not ignored, that exist, less
+# GENERATED. A Buck glob stops at package boundaries, and these checks read
+# every package's files.
 # `keep`, when given, is a command that prints the ones to keep, one per
 # line (//:BUCK's shell-script filter). Every pathspec here names files the
 # repository has, so a listing git or `keep` fails, or one that comes back
@@ -108,11 +136,12 @@ exec "${command[@]}" "${files[@]}"
 def over_files(command: list, pathspecs: list[str], keep: list = []) -> list:
     """`command` over the files `pathspecs` match (see _OVER_FILES). Each
     element of `command` and `keep` must be one argument."""
-    return ["/bin/bash", "-c", _OVER_FILES, "over_files", str(len(keep))] + keep + [str(len(command))] + command + pathspecs
+    excludes = [":(exclude)" + path for path in GENERATED]
+    return ["/bin/bash", "-c", _OVER_FILES, "over_files", str(len(keep))] + keep + [str(len(command))] + command + pathspecs + excludes
 
-def files_test(name: str, command: list, pathspecs: list[str], keep: list = [], env: dict = {}, labels: list[str] = ["lint"]):
+def files_test(name: str, command: list, pathspecs: list[str], keep: list = [], labels: list[str] = ["lint"]):
     """A check of `command` over the files `pathspecs` match."""
-    command_test(name = name, command = over_files(command, pathspecs, keep), env = env, labels = labels)
+    command_test(name = name, command = over_files(command, pathspecs, keep), labels = labels)
 
 def swiftlint_test(name: str, srcs: list, config: str):
     """SwiftLint over `srcs` with `config` (a repository path), any finding
@@ -157,10 +186,38 @@ run_all = rule(
     attrs = {"commands": attrs.list(attrs.dep(providers = [RunInfo]))},
 )
 
-def swift_format_fix(name: str, paths: list[str]):
-    """Rewrites the Swift sources under `paths` (repository-relative) with
-    swift-format, as `Tools/check --fix` did."""
+def swift_format_fix(name: str, pathspecs: list[str]):
+    """Rewrites the Swift sources git's `pathspecs` match (`over_files`)
+    with swift-format."""
     command(
         name = name,
-        command = _SWIFT_FORMAT + ["format", "--in-place", "--parallel", "--recursive", "--configuration", ".swift-format"] + paths,
+        command = over_files(_SWIFT_FORMAT + ["format", "--in-place", "--parallel", "--configuration", ".swift-format"], pathspecs),
+    )
+
+def checked_in_copy(test: str, generated: str, path: str):
+    """`path`, a checked-in copy of `generated` (a `$(location …)`):
+    `buck2 run :regenerate` (or //:fix) rewrites it, and `test` fails while
+    the two differ. GENERATED names `path` with that target, so a package
+    holds one copy at most."""
+    regenerate = "//{}:regenerate".format(native.package_name())
+    if GENERATED.get(path) != regenerate:
+        fail("GENERATED (buck2/rules/check.bzl) must name {} as {}'s".format(path, regenerate))
+    command(
+        name = "regenerate",
+        command = ["/bin/cp", "-f", generated, path],
+        visibility = ["PUBLIC"],
+    )
+
+    # The checked-in copy is read where it is, from the repository root, as
+    # the other checks of the repository's files read them.
+    command_test(
+        name = test,
+        command = [
+            "/bin/sh",
+            "-c",
+            'cmp -s "$1" "$2" || {{ echo "$2 is stale; regenerate with: buck2 run {}" >&2; exit 1; }}'.format(regenerate),
+            test,
+            generated,
+            path,
+        ],
     )

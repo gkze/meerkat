@@ -8,12 +8,9 @@ import MeerkatRules
 // Commands that talk to meerkatd, or work with the same catalog and rule
 // compiler it uses.
 
-/// Writes `value` as one line of JSON.
+/// Writes `value` as JSON and a newline.
 func printJSON<T: Encodable>(_ value: T, pretty: Bool = false) throws {
-    let encoder = JSONEncoder()
-    encoder.outputFormatting =
-        pretty ? [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes] : [.sortedKeys, .withoutEscapingSlashes]
-    FileHandle.standardOutput.write(try encoder.encode(value))
+    FileHandle.standardOutput.write(try JSONEncoder.meerkat(pretty: pretty).encode(value))
     FileHandle.standardOutput.write(Data("\n".utf8))
 }
 
@@ -53,30 +50,36 @@ struct TerminalOutput {
     }
 }
 
-/// Runs a daemon request, turning client errors into failures with exit
-/// status 69 (EX_UNAVAILABLE) or 1. `connection` is for tests.
+/// Runs a daemon request; what a failure says about the daemon
+/// (`DaemonFailure`) decides its exit status. `connection` is for tests.
 func withDaemon<T>(
     _ connection: any DaemonConnection = DaemonClient(), _ body: (any DaemonConnection) async throws -> T
 ) async throws -> T {
     do {
         return try await body(connection)
-    } catch let error as DaemonClient.ClientError {
-        switch error {
-        case .unreachable:
-            // The daemon only accepts clients signed by its own team, which a
-            // development build (buck-out/) is not.
-            let note =
-                AgentRegistration.appBundle == nil
-                ? "\nnote: this meerkat is not the one inside Meerkat.app; meerkatd accepts only clients signed with the app."
-                : ""
-            throw CommandFailure("\(error)" + note, status: ExitStatus.unavailable)
-        case .resubscribeFailed:
-            // A watch that lost its subscription to a daemon restart: the
-            // service, not the request, was unavailable.
-            throw CommandFailure("\(error)", status: ExitStatus.unavailable)
-        default:
-            throw CommandFailure("\(error)")
-        }
+    } catch {
+        throw daemonFailure(error)
+    }
+}
+
+/// `error` as the command's failure, by what it says about the daemon
+/// (`DaemonFailure`): unavailable, including a watch that lost its
+/// subscription to a restart, is `ExitStatus.unavailable`; a refusal or a
+/// different build is `failure`. An error that is not the daemon's stays as
+/// it is.
+func daemonFailure(_ error: any Error) -> any Error {
+    switch DaemonFailure(classifying: error) {
+    case .unavailable?:
+        // The daemon only accepts clients signed by its own team, which a
+        // development build (buck-out/) is not: it shows as unreachable.
+        let unreachable = if case .unreachable? = error as? DaemonClient.ClientError { true } else { false }
+        let note =
+            unreachable && AgentRegistration.appBundle == nil
+            ? "\nnote: this meerkat is not the one inside Meerkat.app; meerkatd accepts only clients signed with the app."
+            : ""
+        return CommandFailure("\(error)" + note, status: .unavailable)
+    case .refused?, .differentBuild?: return CommandFailure("\(error)")
+    case nil: return error
     }
 }
 
@@ -135,6 +138,12 @@ struct Status: AsyncParsableCommand, JSONOutput {
                 "  \(padField(source.kind, 24)) subscribers \(source.subscribers)  delivered \(source.delivered)  dropped \(source.dropped)  \(source.parameters.canonicalString)"
             )
             if let detail = source.detail { output.add("  \(padField("", 24)) \(detail)") }
+            // Payloads JSON can't carry, which the source left out.
+            if source.unencodable > 0 {
+                output.add(
+                    "  \(padField("", 24)) unencodable \(source.unencodable)"
+                        + (source.lastUnencodable.map { ", last: \($0)" } ?? ""))
+            }
         }
         addRules(status.rules, to: &output)
         return output
@@ -170,7 +179,7 @@ struct Effects: ParsableCommand, JSONOutput {
         let kind: String
         let method: String
         let grant: String?
-        let permission: String?
+        let permission: EventDescriptor.Permission?
         let summary: String
         let request: String
     }
@@ -179,7 +188,8 @@ struct Effects: ParsableCommand, JSONOutput {
         let listing = Self.listing()
         if json { return try printJSON(listing, pretty: true) }
         for entry in listing.effects {
-            let tags = [entry.grant ?? "no grant"] + (entry.permission.map { ["needs \($0) permission"] } ?? [])
+            let need = entry.permission.map { EventDescriptor.PermissionNeed.required($0).note }
+            let tags = [entry.grant ?? "no grant"] + (need.map { [$0] } ?? [])
             print("\(padField(entry.method, 30)) \(tags.joined(separator: ", "))")
             print("    \(entry.summary)")
         }
@@ -199,14 +209,15 @@ struct Effects: ParsableCommand, JSONOutput {
     /// The effect catalog, and the grants observing needs as the event
     /// catalog names them: a grant is an observation grant because some
     /// kind needs it to be observed, in the effect catalog's order.
-    static func listing(events: EventCatalog = .standard, effects catalog: EffectCatalog = .standard) -> Listing {
+    static func listing() -> Listing {
+        let catalog = EffectCatalog.standard
         let entries = catalog.effects.map { effect in
             Entry(
                 kind: effect.kind, method: "ctx." + effect.method.joined(separator: "."),
-                grant: effect.grant.grantKey.map { "capabilities.\($0)" }, permission: effect.permission?.rawValue,
-                summary: effect.summary, request: TypeScriptDeclarations.inlineType(effect.request))
+                grant: effect.grant.grantKey.map { "capabilities.\($0)" }, permission: effect.permission,
+                summary: effect.summary, request: TypeScriptDeclarations.inlineType(effect.requestType))
         }
-        let observed = Set(events.kinds.compactMap { $0.descriptor.observationGrant?.key })
+        let observed = Set(EventCatalog.standard.kinds.compactMap { $0.descriptor.observationGrant?.key })
         let observing = catalog.grants.filter { observed.contains($0.key) }.map {
             ObservationGrant(grant: "capabilities.\($0.key)", summary: $0.doc)
         }
@@ -242,7 +253,7 @@ struct Events: AsyncParsableCommand {
                 let tags =
                     [d.mechanism.rawValue, d.semantics.rawValue, "loss: \(d.loss.rawValue)"]
                     + (d.stability == .undocumented ? ["undocumented"] : [])
-                    + (d.permission.map { ["needs \($0.rawValue) permission"] } ?? [])
+                    + (d.permission.map { [$0.note] } ?? [])
                     + (d.observationGrant.map { ["rules need capabilities.\($0.key)"] } ?? [])
                 print("\(padField(d.name, 26)) \(tags.joined(separator: ", "))")
                 print("    \(d.summary)")
@@ -356,8 +367,8 @@ struct Rules: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Type-check a rules directory with the daemon's compiler, without the daemon.",
             discussion: """
-                Exits 1 when any file has a diagnostic, with or without --json, 66 when the directory \
-                doesn't exist, and 69 when the compiler isn't installed. Defaults to ~/.config/meerkat/rules.
+                Exits \(ExitStatus.failure.code) when any file has a diagnostic, with or without --json, \(ExitStatus.noInput.code) when the directory \
+                doesn't exist, and \(ExitStatus.unavailable.code) when the compiler isn't installed. Defaults to ~/.config/meerkat/rules.
                 """
         )
 
@@ -412,11 +423,11 @@ struct Rules: AsyncParsableCommand {
                 Runs Oxlint (type-aware rules on tsrslint), meerkat-lint and an Oxfmt check; \
                 `meerkat rules check` reports type errors. --fix applies every fix and formats until \
                 nothing more changes. Findings are advice: the daemon loads a rule whatever they say. \
-                Exits 1 when any remain, with or without --json, and 66 when the directory doesn't exist. \
+                Exits \(ExitStatus.failure.code) when any remain, with or without --json, and \(ExitStatus.noInput.code) when the directory doesn't exist. \
                 Defaults to ~/.config/meerkat/rules. Without --fix it writes nothing: it checks a copy of \
                 the directory with Meerkat's configuration added. --fix, like the daemon, first writes \
-                editor support into the directory: .meerkat/, and tsconfig.json, .oxlintrc.json and \
-                .oxfmtrc.json where they are missing.
+                editor support into the directory: \(RulesDirectoryLayout.supportDirectory)/, and \
+                tsconfig.json, .oxlintrc.json and .oxfmtrc.json where they are missing.
                 """
         )
 
@@ -506,19 +517,25 @@ struct Rules: AsyncParsableCommand {
         let linter = RuleLinter(toolchain: toolchain)
         let (rules, cleanup) = try folder(for: try existingDirectory(directory), writing: writing)
         do {
-            // The CLI does not link the runtime: its declarations come from
-            // the copy installed with the compiler, when there is one.
-            let runtimeDeclarations = TypeScriptToolchain.locate()?.runtimeDeclarations.flatMap {
-                try? String(contentsOf: $0, encoding: .utf8)
-            }
-            try RuleCompiler.writeEditorSupport(
-                in: rules, declarations: TypeScriptDeclarations.render(), runtimeDeclarations: runtimeDeclarations)
-            try await linter.writeConfiguration(in: rules)
+            try await editorSupport(linter: linter).write(in: rules)
         } catch {
             cleanup()
             throw error
         }
         return (linter, rules, cleanup)
+    }
+
+    /// What the daemon writes into a rules directory (`EditorSupport`). The
+    /// CLI does not link the runtime: its declarations come from the copy
+    /// installed with the compiler, when there is one.
+    static func editorSupport(linter: RuleLinter?) -> EditorSupport {
+        EditorSupport(
+            declarations: TypeScriptDeclarations.render(),
+            runtimeDeclarations: TypeScriptToolchain.locate()?.runtimeDeclarations.flatMap {
+                try? String(contentsOf: $0, encoding: .utf8)
+            },
+            configurationSchema: (MeerkatConfiguration.schemaPath, MeerkatConfiguration.jsonSchema()),
+            linter: linter)
     }
 
     /// `rules` itself when `writing`, or a scratch copy of it and what
@@ -554,7 +571,7 @@ struct Rules: AsyncParsableCommand {
                 try fileManager.createSymbolicLink(atPath: link.path, withDestinationPath: absolute.path)
             }
             // Written again for this build, as the daemon would.
-            try? fileManager.removeItem(at: scratch.appendingPathComponent(".meerkat"))
+            try? fileManager.removeItem(at: scratch.appendingPathComponent(RulesDirectoryLayout.supportDirectory))
         } catch {
             cleanup()
             throw error
@@ -574,7 +591,10 @@ struct Rules: AsyncParsableCommand {
         @Flag(help: "Print JSON.") var json = false
 
         func validate() throws {
-            guard (1...10_000).contains(limit) else { throw ValidationError("--limit must be 1–10000") }
+            let limits = RuleLogEntry.readLimits
+            guard limits.contains(limit) else {
+                throw ValidationError("--limit must be \(limits.lowerBound)–\(limits.upperBound)")
+            }
         }
 
         func run() async throws {
@@ -600,7 +620,7 @@ struct Rules: AsyncParsableCommand {
                 or run, and the rules directory is not touched: state.get reads the rule's stored state, and \
                 every other effect gets a placeholder result. Events come from --payload, from --sample, or by \
                 default from the event kind's examples. Rate limits are not applied. \
-                Exits 1 when the file does not load or a handler fails, and 66 when there is no file.
+                Exits \(ExitStatus.failure.code) when the file does not load or a handler fails, and \(ExitStatus.noInput.code) when there is no file.
                 """
         )
 
@@ -725,16 +745,15 @@ struct Rules: AsyncParsableCommand {
         func run() async throws { try await setEnabled(rule, false, json: json) }
     }
 
-    /// Prints the rule as it is now: with `json`, its `RuleSummary`.
+    /// Prints the rule as it is now: its `RuleSummary`, as JSON or text.
     static func setEnabled(_ rule: String, _ enabled: Bool, json: Bool) async throws {
         let report = try await withDaemon { try await $0.setRule(rule, enabled: enabled) }
-        let matching = report.rules.filter { $0.id == rule }
-        if json {
-            guard let summary = matching.first else { throw CommandFailure("no rule \(rule)") }
-            return try printJSON(summary, pretty: true)
+        guard let summary = report.rules.first(where: { $0.id == rule }) else {
+            throw CommandFailure("no rule \(rule)")
         }
+        if json { return try printJSON(summary, pretty: true) }
         var output = TerminalOutput()
-        addRules(matching, to: &output)
+        addRules([summary], to: &output)
         output.print()
     }
 
@@ -818,7 +837,9 @@ struct Config: AsyncParsableCommand {
     struct Check: ParsableCommand, JSONOutput {
         static let configuration = CommandConfiguration(
             abstract: "Validate a meerkat.json without the daemon.",
-            discussion: "Exits 1 when it is not valid, with or without --json, and 66 when there is no file.")
+            discussion:
+                "Exits \(ExitStatus.failure.code) when it is not valid, with or without --json, and \(ExitStatus.noInput.code) when there is no file."
+        )
 
         @Argument(help: "The file to check (default: meerkat.json in the rules directory).")
         var file: String?
@@ -834,8 +855,7 @@ struct Config: AsyncParsableCommand {
 
         func run() throws {
             let path =
-                file.map { ($0 as NSString).expandingTildeInPath }
-                ?? DaemonPaths.standard().rulesDirectory.appendingPathComponent(MeerkatConfiguration.fileName).path
+                file.map { ($0 as NSString).expandingTildeInPath } ?? DaemonPaths.standard().configurationFile.path
             let data: Data
             do {
                 data = try Data(contentsOf: URL(fileURLWithPath: path))
@@ -867,7 +887,7 @@ struct Config: AsyncParsableCommand {
     struct Schema: ParsableCommand, AlwaysJSONOutput {
         static let configuration = CommandConfiguration(
             abstract: "Print the JSON Schema for meerkat.json.",
-            discussion: "The daemon also writes it to .meerkat/meerkat.schema.json in the rules directory.")
+            discussion: "The daemon also writes it to \(MeerkatConfiguration.schemaPath) in the rules directory.")
 
         @Option(help: "Write to this file instead of stdout.")
         var output: String?
@@ -892,9 +912,9 @@ struct Agent: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Register the agent (again, if it is registered) so the daemon runs this build and its plist.",
             discussion: """
-                Succeeds once a daemon started from this build answers. Exits \(DaemonService.registeredButSilentExit) \
-                when the agent registered but none answered within \(AgentRegistration.startLimit), which trying \
-                again can fix.
+                Succeeds once a daemon started from this build answers. Exits \(ExitStatus.registeredButSilent.code) \
+                when the agent registered but none answered within \(AgentRegistration.startLimit.formatted()), \
+                which trying again can fix.
                 """
         )
 
@@ -904,7 +924,7 @@ struct Agent: AsyncParsableCommand {
             do {
                 started = try await AgentRegistration.installAndAwait(client: DaemonClient())
             } catch {
-                throw CommandFailure("\(error)")
+                throw Self.failure(error)
             }
             switch started {
             case .answering(let daemon):
@@ -912,13 +932,6 @@ struct Agent: AsyncParsableCommand {
                     wasEnabled
                         ? "agent re-registered; meerkatd restarted from this build, pid \(daemon.pid)"
                         : "agent installed; meerkatd started, pid \(daemon.pid)")
-            case .silent:
-                throw CommandFailure(
-                    """
-                    meerkatd did not start from this build within \(AgentRegistration.startLimit). If Meerkat.app was \
-                    just replaced, open it once and run `meerkat agent install` again: macOS keeps the earlier build's \
-                    signature for the agent until the app launches.
-                    """, status: DaemonService.registeredButSilentExit)
             case .requiresApproval:
                 print(
                     "agent installed but switched off: enable Meerkat in System Settings > General > Login Items & Extensions"
@@ -926,17 +939,20 @@ struct Agent: AsyncParsableCommand {
                 AgentRegistration.openLoginItemsSettings()
             }
         }
+
+        /// Registered but silent exits `registeredButSilent`, which trying
+        /// again can fix; every other failure is an ordinary one.
+        static func failure(_ error: any Error) -> any Error {
+            guard case .silent? = error as? AgentRegistration.RegistrationError else { return error }
+            return CommandFailure("\(error)", status: .registeredButSilent)
+        }
     }
 
     struct Uninstall: ParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Unregister the agent; launchd stops meerkatd.")
 
         func run() throws {
-            do {
-                try AgentRegistration.uninstall()
-            } catch {
-                throw CommandFailure("\(error)")
-            }
+            try AgentRegistration.uninstall()
             print("agent uninstalled")
         }
     }
@@ -948,11 +964,7 @@ struct Agent: AsyncParsableCommand {
         )
 
         func run() throws {
-            do {
-                try AgentRegistration.restart()
-            } catch {
-                throw CommandFailure("\(error)")
-            }
+            try AgentRegistration.restart()
             print("meerkatd restarting")
         }
     }
@@ -960,7 +972,9 @@ struct Agent: AsyncParsableCommand {
     struct Status: AsyncParsableCommand, JSONOutput {
         static let configuration = CommandConfiguration(
             abstract: "Registration state and whether the daemon answers.",
-            discussion: "Exits 1 when the agent is registered and the daemon doesn't answer, with or without --json.")
+            discussion:
+                "Exits \(ExitStatus.failure.code) when the agent is registered and the daemon doesn't answer, with or without --json."
+        )
 
         @Flag(help: "Print JSON.") var json = false
 
@@ -975,7 +989,7 @@ struct Agent: AsyncParsableCommand {
             let registration = AgentRegistration.status
             // Bounded: a daemon that takes the request and never replies is
             // not answering, which is what this reports.
-            let daemon = try? await DaemonClient().daemonIdentity(within: DaemonClient.pingLimit)
+            let daemon = try? await DaemonClient().daemonIdentity()
             if json {
                 try printJSON(
                     Report(

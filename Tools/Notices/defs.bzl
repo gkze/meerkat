@@ -19,3 +19,26 @@ def fetched_texts(prefix: str, files: dict) -> dict:
         else:
             targets[file] = ":{}.fetched".format(name)
     return targets
+
+# A component of THIRD_PARTY_NOTICES pinned at a commit of a GitHub
+# repository, or of one of Chromium's mirrors, whose license `files` (name to
+# SHA-256) are at that commit; `fields` are the rest of it.
+def github_component(repository: str, revision: str, files: dict[str, str], **fields) -> dict:
+    return dict(
+        version = revision[:12],
+        source = "https://github.com/{}/tree/{}".format(repository, revision),
+        files = {
+            file: ("https://raw.githubusercontent.com/{}/{}/{}".format(repository, revision, file), sha256)
+            for file, sha256 in files.items()
+        },
+        **fields
+    )
+
+def chromium_component(path: str, revision: str, files: dict[str, str], **fields) -> dict:
+    source = "https://chromium.googlesource.com/{}/+/{}".format(path, revision)
+    return dict(
+        version = revision[:12],
+        source = source,
+        files = {file: ("{}/{}?format=TEXT".format(source, file), sha256) for file, sha256 in files.items()},
+        **fields
+    )

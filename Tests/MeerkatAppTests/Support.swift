@@ -1,5 +1,7 @@
 import Testing
 
+@testable import MeerkatApp
+
 /// Polls until `condition` holds, and records an issue if it does not within
 /// `timeout`.
 @MainActor
@@ -7,4 +9,10 @@ func waitUntil(timeout: Duration = .seconds(10), _ condition: () -> Bool) async 
     let deadline = ContinuousClock.now + timeout
     while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
     #expect(condition())
+}
+
+extension MetricsModel.Connection {
+    var isUnavailable: Bool {
+        if case .unavailable = self { true } else { false }
+    }
 }

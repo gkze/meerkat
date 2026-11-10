@@ -12,23 +12,30 @@ public enum ProcessSampler {
     // import; the value is ABI-stable and documented in sys/resource.h.
     private static let rusageInfoV6: Int32 = 6
 
-    /// Minimal subprocess helper (`ps` is a one-shot call per snapshot, not
-    /// per process). Throws when `ps` cannot be run, so its rows are not
-    /// mistaken for processes that are gone.
-    private static func run(_ args: [String]) throws -> String {
-        guard let exe = args.first else { return "" }
+    /// Runs `ps` (a one-shot call per snapshot, not per process). Throws
+    /// when it cannot be run, prints what isn't text, or fails without
+    /// printing a row, so its rows are not mistaken for processes that are
+    /// gone. `ps -p` exits 1 when one of the processes it was given is gone,
+    /// and still prints the others.
+    private static func ps(_ arguments: [String]) throws -> String {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: exe)
-        process.arguments = Array(args.dropFirst())
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = arguments
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
         do { try process.run() } catch {
-            throw MeerkatError.cpuTimesUnreadable("\(exe) could not be run: \(error.localizedDescription)")
+            throw MeerkatError.cpuTimesUnreadable("/bin/ps could not be run: \(error.localizedDescription)")
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        return String(data: data, encoding: .utf8) ?? ""
+        guard let output = String(data: data, encoding: .utf8) else {
+            throw MeerkatError.cpuTimesUnreadable("/bin/ps printed something other than UTF-8")
+        }
+        guard process.terminationStatus == 0 || !output.isEmpty else {
+            throw MeerkatError.cpuTimesUnreadable("/bin/ps exited with status \(process.terminationStatus)")
+        }
+        return output
     }
 
     // MARK: - Identity cache
@@ -39,9 +46,13 @@ public enum ProcessSampler {
     // includes the start time, so a reused pid misses the cache; exec keeps
     // the start time, so `invalidateNames(of:)` exists for observers of exec.
     private struct Names: Sendable {
-        let name: String
+        /// Nil when neither `proc_name`, the path nor `p_comm` gave one.
+        let name: String?
         let path: String?
     }
+
+    /// What a row is called when nothing gave the process a name.
+    static let unnamed = "?"
 
     private static let nameCache = Mutex<[ProcessIdentity: Names]>([:])
 
@@ -68,7 +79,7 @@ public enum ProcessSampler {
             ? String(nulTerminated: nameBuffer)
             : path.map { ($0 as NSString).lastPathComponent } ?? record.command
 
-        let resolved = Names(name: name.isEmpty ? "?" : name, path: path)
+        let resolved = Names(name: name.isEmpty ? nil : name, path: path)
         nameCache.withLock { cache in
             if cache.count > 4096 { cache.removeAll(keepingCapacity: true) }
             cache[record.identity] = resolved
@@ -87,7 +98,7 @@ public enum ProcessSampler {
     }
 
     public static func name(of record: ProcessRecord) -> String {
-        names(of: record).name
+        names(of: record).name ?? unnamed
     }
 
     public static func path(of record: ProcessRecord) -> String? {
@@ -112,7 +123,7 @@ public enum ProcessSampler {
         return ProcessCounters(
             identity: record.identity,
             uid: record.uid,
-            name: names.name,
+            name: names.name ?? unnamed,
             path: names.path,
             cpuSeconds: cpu,
             usage: ResourceUsage(
@@ -121,11 +132,6 @@ public enum ProcessSampler {
                 diskWriteBytes: info.ri_diskio_byteswritten,
                 energyNanojoules: info.ri_energy_nj)
         )
-    }
-
-    /// Counters for a pid, looking its identity up in the process table.
-    public static func counters(for pid: pid_t) -> ProcessCounters? {
-        ProcessTable.record(pid: pid).flatMap(counters(for:))
     }
 
     /// Fallback for processes that refuse `proc_pid_rusage` (root-owned daemons
@@ -138,7 +144,7 @@ public enum ProcessSampler {
     /// leaves out the ones that are gone.
     public static func psCpuTimes(of pids: [pid_t]? = nil) throws -> [pid_t: (name: String, cpuSeconds: Double)] {
         let selection = pids.map { ["-p", $0.map(String.init).joined(separator: ",")] } ?? ["-A"]
-        let out = try run(["/bin/ps"] + selection + ["-o", "pid=,time=,comm="])
+        let out = try ps(selection + ["-o", "pid=,time=,comm="])
         var table: [pid_t: (name: String, cpuSeconds: Double)] = [:]
         for rawLine in out.split(separator: "\n", omittingEmptySubsequences: true) {
             let line = String(rawLine)
@@ -203,7 +209,7 @@ public enum ProcessSampler {
         var refused: [pid_t: ProcessRecord] = [:]
         for identity in identities {
             // Re-check the identity: the pid may now belong to another process.
-            guard let record = ProcessTable.record(pid: identity.pid), record.identity == identity else {
+            guard let record = ProcessTable.record(of: identity) else {
                 exited.insert(identity)
                 continue
             }
@@ -241,7 +247,7 @@ public enum ProcessSampler {
             counters[record.identity] = ProcessCounters(
                 identity: record.identity,
                 uid: record.uid,
-                name: names.name != "?" ? names.name : (info.name as NSString).lastPathComponent,
+                name: names.name ?? (info.name as NSString).lastPathComponent,
                 path: names.path ?? (info.name.hasPrefix("/") ? info.name : nil),
                 cpuSeconds: info.cpuSeconds,
                 usage: nil
@@ -264,7 +270,7 @@ public enum ProcessSampler {
         top: Int = 10,
         includeIdle: Bool = false
     ) -> [ProcessDelta] {
-        let window = max(current.takenAt.timeIntervalSince(previous.takenAt), 0.001)
+        let window = current.window(since: previous)
 
         var rows: [ProcessDelta] = []
         rows.reserveCapacity(current.counters.count)
@@ -304,16 +310,5 @@ public enum ProcessSampler {
 
         rows.sort { $0.cpuPct > $1.cpuPct }
         return Array(rows.prefix(top))
-    }
-
-    /// Blocking convenience: snapshot, wait, snapshot, diff.
-    ///
-    /// For one-shot CLI use where a fixed window is the point; streaming
-    /// consumers use the snapshot/deltas pair or the `process.top` source.
-    public static func measure(window: Double, top: Int = 10) throws -> [ProcessDelta] {
-        let before = try snapshot()
-        Thread.sleep(forTimeInterval: window)
-        let after = try snapshot()
-        return deltas(previous: before, current: after, top: top)
     }
 }

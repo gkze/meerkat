@@ -22,7 +22,7 @@ struct HealthPage: View {
         if let status = model.status {
             VStack(spacing: 0) {
                 if case .failed(let fault) = model.loadState {
-                    StaleBanner(subject: "status", reason: fault.description)
+                    StaleBanner(subject: "status", fault: fault)
                     Divider()
                 }
                 HealthSummary(status: status, startedAt: model.startedAt, app: app)
@@ -87,9 +87,6 @@ private struct HealthSummary: View {
     let startedAt: Date?
     let app: AppState
 
-    private var failedRules: Int { status.rules.filter { $0.state == .failed }.count }
-    private var runningRules: Int { status.rules.filter { $0.state == .loaded }.count }
-
     var body: some View {
         HStack(alignment: .top, spacing: 28) {
             Section(title: "Daemon", symbol: "gearshape.2") {
@@ -109,7 +106,7 @@ private struct HealthSummary: View {
             Section(title: "Rules", symbol: "wand.and.rays") {
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 5) {
                     LabeledGridRow(label: "Runtime") {
-                        StatusBadge(text: status.handlerHost.state.label, tint: status.handlerHost.state.tint)
+                        StatusBadge(text: status.handlerHost.state.label, status: status.handlerHost.state.status)
                     }
                     LabeledGridRow(label: "Workers") {
                         Text(status.handlerHost.workers, format: .number).monospacedDigit()
@@ -117,15 +114,13 @@ private struct HealthSummary: View {
                     LabeledGridRow(label: "Restarts") {
                         Text(status.handlerHost.restarts, format: .number)
                             .monospacedDigit()
-                            .foregroundStyle(status.handlerHost.restarts > 0 ? Theme.text(Theme.warn) : .primary)
+                            .foregroundStyle(status.handlerHost.restarts > 0 ? Status.warning.text : .primary)
                     }
                     LabeledGridRow(label: "Status") {
                         Button {
                             app.destination = .rules
                         } label: {
-                            Text(
-                                failedRules > 0
-                                    ? "\(runningRules) running, \(failedRules) failed" : "\(runningRules) running")
+                            Text(RuleCounts(status.rules).summary)
                         }
                         .buttonStyle(.link)
                         .help("Open the Rules page")
@@ -206,7 +201,7 @@ private struct SourcesTable: View {
                 }
                 .width(min: 120, ideal: 170)
                 TableColumn("Parameters") { source in
-                    let text = source.parameters.compactText
+                    let text = source.parameters.canonicalString
                     Text(text == "{}" ? "none" : text)
                         .font(.system(.callout, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -244,10 +239,20 @@ private struct SourcesTable: View {
                 TableColumn("Dropped") { source in
                     Text(source.dropped, format: .number)
                         .monospacedDigit()
-                        .foregroundStyle(source.dropped > 0 ? Theme.text(Theme.warn) : .secondary)
+                        .foregroundStyle(source.dropped > 0 ? Status.warning.text : .secondary)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
                 .width(min: 60, ideal: 70, max: 100)
+                // Payloads JSON can't carry (a NaN, say): the source's fault,
+                // not a slow subscriber's, so not counted as dropped.
+                TableColumn("Unencodable") { source in
+                    Text(source.unencodable, format: .number)
+                        .monospacedDigit()
+                        .foregroundStyle(source.unencodable > 0 ? Status.warning.text : .secondary)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .help(source.lastUnencodable ?? "Every payload this source made could be sent.")
+                }
+                .width(min: 60, ideal: 90, max: 110)
             }
             .tableStyle(.inset)
             .alternatingRowBackgrounds()
@@ -284,7 +289,7 @@ private struct DroppedList: View {
         VStack(alignment: .leading, spacing: 6) {
             Label("Dropped events", systemImage: "exclamationmark.triangle")
                 .font(.headline)
-                .foregroundStyle(Theme.text(Theme.warn))
+                .foregroundStyle(Status.warning.text)
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(model.dropped) { report in

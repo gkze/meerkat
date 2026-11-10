@@ -33,6 +33,12 @@ public struct DryRunRequest: Codable, Sendable, Equatable {
         self.rule = rule
         self.events = events
     }
+
+    /// Events one run may take, from any source. The daemon refuses a
+    /// request beyond it; a client keeps no more than this to send.
+    public static let maximumEvents = 64
+    /// The longest sample, in seconds.
+    public static let maximumSampleSeconds = 120.0
 }
 
 /// One event to run, of the rule's own kind.

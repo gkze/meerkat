@@ -4,14 +4,21 @@
       "additionalProperties" : false,
       "properties" : {
         "exclude" : {
-          "description" : "Paths under root whose changes are not counted, absolute or starting with ~. Replaces the default list: /private/var/folders, /private/var/db, /.Spotlight-V100, /.fseventsd.",
+          "default" : [
+            "/private/var/folders",
+            "/private/var/db",
+            "/.Spotlight-V100",
+            "/.fseventsd"
+          ],
+          "description" : "Paths under root whose changes are not counted, absolute or starting with ~. Replaces the default list.",
           "items" : {
             "type" : "string"
           },
           "type" : "array"
         },
         "root" : {
-          "description" : "Directory file churn watches, absolute or starting with ~. Default /, the whole startup volume.",
+          "default" : "/",
+          "description" : "Directory file churn watches, absolute or starting with ~; by default the whole startup volume.",
           "type" : "string"
         }
       },
@@ -21,10 +28,16 @@
       "additionalProperties" : false,
       "properties" : {
         "events" : {
-          "$ref" : "#/$defs/MCPEvents"
+          "$ref" : "#/$defs/MCPEvents",
+          "default" : {
+
+          }
         },
         "limits" : {
-          "$ref" : "#/$defs/MCPLimits"
+          "$ref" : "#/$defs/MCPLimits",
+          "default" : {
+
+          }
         }
       },
       "type" : "object"
@@ -33,7 +46,10 @@
       "additionalProperties" : false,
       "properties" : {
         "allow" : {
-          "description" : "Kinds or family.* patterns MCP clients may sample although the default denies them: kinds that need a privacy permission, and log.entry, darwin.notification, distributed.notification and iokit.*. A permission kind still needs its grant, and is never prompted for.",
+          "default" : [
+
+          ],
+          "description" : "Kinds or family.* patterns MCP clients may sample although the default denies them: kinds that need a privacy permission, and darwin.notification, distributed.notification, log.entry, power.assertions and iokit.*. A permission kind still needs its grant, and is never prompted for.",
           "items" : {
             "enum" : [
               "memory.pressure",
@@ -152,6 +168,9 @@
           "type" : "array"
         },
         "deny" : {
+          "default" : [
+
+          ],
           "description" : "Kinds or family.* patterns MCP clients may not sample. Deny wins over allow.",
           "items" : {
             "enum" : [
@@ -277,25 +296,29 @@
       "additionalProperties" : false,
       "properties" : {
         "concurrentSamples" : {
-          "description" : "events_sample and system_sample calls one MCP session runs at once: 1 to 32, default 4.",
+          "default" : 4,
+          "description" : "events_sample and system_sample calls one MCP session runs at once",
           "maximum" : 32,
           "minimum" : 1,
           "type" : "integer"
         },
         "outputKiB" : {
-          "description" : "Most text one MCP resource read or tool reply returns, in KiB: 16 to 16384, default 1024. A longer reply is cut; events_sample instead stops adding events at it.",
+          "default" : 1024,
+          "description" : "Most text one MCP resource read or tool reply returns, in KiB. A longer reply is cut; events_sample instead stops adding events at it.",
           "maximum" : 16384,
           "minimum" : 16,
           "type" : "integer"
         },
         "sampleEvents" : {
-          "description" : "Most events one events_sample returns: 1 to 10000, default 500.",
+          "default" : 500,
+          "description" : "Most events one events_sample returns",
           "maximum" : 10000,
           "minimum" : 1,
           "type" : "integer"
         },
         "sampleSeconds" : {
-          "description" : "Longest events_sample, and longest system_sample window, in seconds: 1 to 300, default 30.",
+          "default" : 30,
+          "description" : "Longest events_sample, and longest system_sample window, in seconds",
           "maximum" : 300,
           "minimum" : 1,
           "type" : "number"
@@ -307,13 +330,15 @@
       "additionalProperties" : false,
       "properties" : {
         "maxAgeDays" : {
-          "description" : "Samples older than this many days are deleted: 1 to 3650, default 30.",
+          "default" : 30,
+          "description" : "Samples older than this many days are deleted",
           "maximum" : 3650,
           "minimum" : 1,
           "type" : "integer"
         },
         "maxMegabytes" : {
-          "description" : "The store is trimmed, oldest first, past this size in MB: 10 to 100000, default 500.",
+          "default" : 500,
+          "description" : "The store is trimmed, oldest first, past this size in MB",
           "maximum" : 100000,
           "minimum" : 10,
           "type" : "integer"
@@ -331,14 +356,23 @@
     },
     "files" : {
       "$ref" : "#/$defs/FilesConfiguration",
+      "default" : {
+
+      },
       "description" : "What file churn watches: the Files card and page, and fs.churn subscriptions without a root."
     },
     "mcp" : {
       "$ref" : "#/$defs/MCPConfiguration",
+      "default" : {
+
+      },
       "description" : "What MCP clients (`meerkat mcp`) may sample, and how much."
     },
     "samples" : {
       "$ref" : "#/$defs/SampleStoreConfiguration",
+      "default" : {
+
+      },
       "description" : "The sample store's budget (samples.db)."
     }
   },

@@ -223,9 +223,11 @@ and nothing in it is linked into `meerkatd`. The decisive reasons:
   child is one diagnostic; in `meerkatd` it ends the hub, every
   subscription and every rule. V8 already uses the daemon's tolerance for
   native faults it cannot contain.
-- **Bounded by killing.** A tool that overruns its deadline gets SIGTERM,
-  then SIGKILL (`RuleCompiler.runTool`). A checker in the daemon's process has
-  no counterpart to V8's `terminate_execution`; a pathological type would
+- **Bounded by killing.** A tool runs as the `exec` effect's children do
+  (`ChildProcess`): in its own process group, with its output cut, and a
+  tool that overruns its deadline gets SIGTERM, then SIGKILL, with
+  anything it started (`RuleCompiler.runTool`). A checker in the daemon's
+  process has no counterpart to V8's `terminate_execution`; a pathological type would
   hold a daemon thread rather than a child.
 - **The compiler is the load gate and has no library API.** tsrs ships as
   a binary, not a crate, and it alone decides whether a rule loads.
@@ -314,7 +316,9 @@ flowchart LR
     bridge["meerkat mcp"] <--> listener
 ```
 
-The bundle:
+The bundle, whose directories `AppBundle` (MeerkatKit) names and whose
+files `DaemonService` (MeerkatIPC) names, for the bundler and for every
+lookup of a part of it:
 
 ```text
 Meerkat.app/Contents/
@@ -420,16 +424,23 @@ which process instances (pid plus start time) the daemon signalled or
 spawned. `meerkat.*` events are about the daemon, not caused by effects, and
 reach rules normally.
 
-`replayed` is true for a `state` event's current value: the first value a
-push `state` source reports when it starts, or the latest value replayed from
-a source that was already running. Polled and derived `state` kinds have no
-current value apart from a measurement, so their first event is not a
-replay.
+`replayed` is true for a `state` event's current value: the value a push
+`state` source reads as it starts, or the latest value replayed from a source
+that was already running. The source says which of its values is the one it
+read at the start (`Emitter.current`) and which it read after a change
+(`Emitter.changed`); the hub sets `replayed` from that, and only while the
+read is the source's first event, so a source with no value to read at the
+start marks nothing, its first change is not a replay, and a read that a
+change beat to the hub is not one either. Polled and derived `state` kinds have no current value apart from a
+measurement, so their first event is not a replay.
 
-A push `state` source emits a value only when it differs from the last one it
-emitted: a repeated notification that leaves the state unchanged emits
-nothing. A source's reads and emits are serialized, so an initial read cannot
-publish a value older than one a change already published.
+The hub leaves out a reported value equal to the latest one: a repeated
+notification that leaves the state unchanged delivers nothing. A source's
+reads and emits are serialized (`StateReporter`), so an initial read cannot
+publish a value older than one a change already published. A payload with no
+JSON form (a NaN or infinite number) is not delivered; the hub counts it in
+the source's statistics (`unencodable`, with the latest reason), apart from
+the source's own `detail`.
 
 ### Catalog
 
@@ -521,20 +532,27 @@ Choices for the permission-gated and escape-hatch sources:
 
 ### Permissions
 
-A descriptor names at most one TCC permission (`EventDescriptor.Permission`).
-The permission is the daemon's; a rule observing the kind also needs the
-kind's observation grant, and every permission-gated kind is observed by
-name (`observe.allow`).
-`Permissions.swift` is the only code that checks or requests one. A source
-needing one checks it in `start`, which runs only when a rule subscribes, so
-a user with no such rules is never prompted. Without the grant the
-subscription fails with the Settings pane to use, and the rule works after
-`meerkat rules reload`; `network.wifi` instead starts and leaves the network
-name out. Location and Bluetooth need usage strings in the bundle's
-Info.plist (the Bundler writes them); a process without them, such as a test
-runner, reports the permission as unavailable rather than asking, which for
-Bluetooth also avoids the kill macOS applies to a process using it without
-one.
+A descriptor names at most one TCC permission and what the kind does
+without it (`EventDescriptor.PermissionNeed`): it is refused, or it runs and
+reports less (`network.wifi`, whose network name needs Location). The
+permission is the daemon's; a rule observing the kind also needs the kind's
+observation grant, and every permission-gated kind is observed by name
+(`observe.allow`).
+`Permissions.swift` is the only code that checks or requests one, and the
+only code that says what a kind needs (`PermissionNeed.note`, which
+`meerkat events list`, the app and `meerkat.d.ts` show). The hub checks it
+from the descriptor before it makes the kind's first source, which happens
+only when something subscribes, so a user with no such rules is never
+prompted. Accessibility and Input Monitoring are asked for there; without
+them the subscription fails with the Settings pane to use, and the rule works
+after `meerkat rules reload`. Location and Bluetooth are asked for by the
+source as it starts, since the prompt lives as long as the source's manager
+object. A client that samples (`events_sample`, a dry run's sample) never
+causes a prompt: it is refused a kind that would ask (`clientRefusal`).
+Location and Bluetooth need usage strings in the bundle's Info.plist (the
+Bundler writes them); a process without them, such as a test runner, reports
+the permission as unavailable rather than asking, which for Bluetooth also
+avoids the kill macOS applies to a process using it without one.
 
 Not included, and why:
 
@@ -612,7 +630,16 @@ export const throttle = rule({
 ### Params, match and rate
 
 - `params` configure the source (paths to watch, an interval) and are typed
-  per event.
+  per event. Each kind's parameter schema declares every field's bounds and
+  default: decoding checks the bounds and fills the defaults from it, at any
+  depth (`ObjectSchema.decode`, which effect requests, MCP tools and a rule's
+  `rate`, `includeOwn` and `timeoutSeconds` go through too), and
+  `meerkat.d.ts` documents both from it, so they are written once. A null
+  given for a field with a default takes the default; for any other field
+  it is refused, as `meerkat.d.ts` types it: an optional field is left out,
+  never null (`{ root: cond ? path : undefined }`). What a
+  schema cannot say, a check between fields (`rankInterval` at least
+  `interval`), is the parameter type's `validateRelations`.
 - `match` filters payload fields, typed against the payload:
 
   | Field type | Operators |
@@ -676,12 +703,14 @@ Whatever a file's code does to end the host (an overrun, its heap limit, a
 worker that failed), the host reports it as a fault naming the file
 (`HostToDaemon.fault`). An overrun also names the rule and invocation when
 that rule's handler was running its own code, and that invocation fails as
-a timeout. Running out of heap is the file's: every rule of the file keeps
+a timeout, charged when the engine counts the fault so the two always agree.
+Running out of heap is the file's: every rule of the file keeps
 its memory in that one heap, so the handler that made the last allocation
 is named in the reason only as a clue. Other invocations that were running
 end as "interrupted" and do not count toward their breakers. The reason is
-cut at 64 KiB, as rule code can write it (an uncaught error that ends the
-worker's event loop). Three faults within
+cut at 64 KiB (`MAXIMUM_TEXT` in protocol.rs), as rule code can write it (an
+uncaught error that ends the worker's event loop); the engine logs it, and a
+dry run reports it, in the runtime's words. Three faults within
 five minutes disable the rule they were charged to, or, charged to the file
 alone, exclude the file, until it changes. The breaker could not do this: it
 counts within a minute, and a handler that ends the host only after a long
@@ -702,8 +731,8 @@ starts a new one:
 stateDiagram-v2
     [*] --> idle
     idle --> starting: rules to load
+    idle --> unavailable: runtime or compiler missing, at any reload
     starting --> running: loaded
-    starting --> unavailable: runtime or compiler missing
     starting --> backingOff: failed to start
     running --> idle: retired on purpose (reload, shutdown)
     running --> backingOff: crashed or stalled
@@ -751,7 +780,7 @@ sequenceDiagram
     W-->>R: effect request (JSON text)
     Note over R: per-rule queue, in request order.<br/>Refused if the invocation has ended.
     R->>E: perform(request, definition in force)
-    Note over E: check against the effect catalog's schema,<br/>decode, then check the grant
+    Note over E: check against the effect catalog's schema,<br/>decode with its defaults, then check the grant<br/>and the checks its traits declare
     E->>X: notify, signal, exec, http, record,<br/>macOS controls (SystemControls)
     X-->>E: result
     E-->>W: effect outcome
@@ -790,9 +819,13 @@ sequenceDiagram
   result counts on its own (`MAXIMUM_MESSAGE_TEXT` in protocol.rs, which the
   daemon reads). The runtime keeps rule code within it: log lines, error
   messages and stacks, and the reasons a file failed or ended the host, are
-  cut at 64 KiB, an effect request that would pass it is refused to the
-  handler, and a file whose rule definitions would pass it fails to load
-  alone. A host that sends more anyway is stopped.
+  cut at 64 KiB (`MAXIMUM_TEXT`, which the daemon reads as
+  `HandlerHost.maximumLogLineBytes`), an effect request that would pass it is
+  refused to the handler, and a file whose rule definitions would pass it
+  fails to load alone. A host that sends more anyway is stopped. What the
+  daemon itself writes to a rule's log is cut to the same bytes, on a
+  character boundary, and what it sends the host (events, effect results) is
+  checked where it enters the host.
 - `console.*` is attributed to the rule only in a handler's synchronous part;
   after an `await`, and in timers, it is attributed to the file. `ctx.log` is
   always attributed to the rule. The host keeps a line under a rule only if
@@ -972,7 +1005,7 @@ eviction of unused ones. MeerkatApp never registers categories.
 One Mach service, `com.gkze.meerkat.daemon`, peer requirement
 `.isFromSameTeam()` on both sides, so only binaries signed with the app talk
 to it (a development build's CLI is refused). Requests: `ping`, `status`, `catalog`,
-`types`, `subscribe`, `unsubscribe`, `rules`, `reloadRules`, `setRuleEnabled`,
+`subscribe`, `unsubscribe`, `rules`, `reloadRules`, `setRuleEnabled`,
 `ruleLogs`, `dryRun` (see `rule-editor.md`), and `mcp` (one JSON-RPC message,
 see `mcp.md`). Pushes: `event`
 (subscription id plus envelope), `ended`, and `mcp`.

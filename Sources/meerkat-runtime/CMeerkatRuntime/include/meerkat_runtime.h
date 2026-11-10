@@ -364,6 +364,18 @@ uint64_t uniffi_meerkat_runtime_fn_func_maximum_message_text_bytes(RustCallStatu
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MEERKAT_RUNTIME_FN_FUNC_MAXIMUM_RULE_NAME_BYTES
+#define UNIFFI_FFIDEF_UNIFFI_MEERKAT_RUNTIME_FN_FUNC_MAXIMUM_RULE_NAME_BYTES
+uint64_t uniffi_meerkat_runtime_fn_func_maximum_rule_name_bytes(RustCallStatus *_Nonnull out_status
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MEERKAT_RUNTIME_FN_FUNC_MAXIMUM_TEXT_BYTES
+#define UNIFFI_FFIDEF_UNIFFI_MEERKAT_RUNTIME_FN_FUNC_MAXIMUM_TEXT_BYTES
+uint64_t uniffi_meerkat_runtime_fn_func_maximum_text_bytes(RustCallStatus *_Nonnull out_status
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_MEERKAT_RUNTIME_FN_FUNC_RUNTIME_DECLARATIONS
 #define UNIFFI_FFIDEF_UNIFFI_MEERKAT_RUNTIME_FN_FUNC_RUNTIME_DECLARATIONS
 RustBuffer uniffi_meerkat_runtime_fn_func_runtime_declarations(RustCallStatus *_Nonnull out_status
@@ -639,6 +651,18 @@ uint16_t uniffi_meerkat_runtime_checksum_func_hold_rule_renames(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_MEERKAT_RUNTIME_CHECKSUM_FUNC_MAXIMUM_MESSAGE_TEXT_BYTES
 #define UNIFFI_FFIDEF_UNIFFI_MEERKAT_RUNTIME_CHECKSUM_FUNC_MAXIMUM_MESSAGE_TEXT_BYTES
 uint16_t uniffi_meerkat_runtime_checksum_func_maximum_message_text_bytes(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MEERKAT_RUNTIME_CHECKSUM_FUNC_MAXIMUM_RULE_NAME_BYTES
+#define UNIFFI_FFIDEF_UNIFFI_MEERKAT_RUNTIME_CHECKSUM_FUNC_MAXIMUM_RULE_NAME_BYTES
+uint16_t uniffi_meerkat_runtime_checksum_func_maximum_rule_name_bytes(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_MEERKAT_RUNTIME_CHECKSUM_FUNC_MAXIMUM_TEXT_BYTES
+#define UNIFFI_FFIDEF_UNIFFI_MEERKAT_RUNTIME_CHECKSUM_FUNC_MAXIMUM_TEXT_BYTES
+uint16_t uniffi_meerkat_runtime_checksum_func_maximum_text_bytes(void
     
 );
 #endif

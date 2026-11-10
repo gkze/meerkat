@@ -17,8 +17,7 @@ struct HALPropertyKey: Hashable, Sendable {
     var object: UInt32
     var selector: UInt32
     var scope: UInt32
-    /// The main element; both frameworks define it as 0.
-    var element: UInt32 = 0
+    var element: UInt32
 }
 
 /// A framework's block-based property listener calls.
@@ -179,12 +178,13 @@ enum CoreAudioListenerAPI: HALListenerAPI {
 
 // MARK: - CoreAudio reads
 
-/// Reads of CoreAudio object properties.
-enum CoreAudioProperties: HALProperties {
-    static let system = AudioObjectID(kAudioObjectSystemObject)
-    static let global = kAudioObjectPropertyScopeGlobal
-    static let input = kAudioObjectPropertyScopeInput
-    static let output = kAudioObjectPropertyScopeOutput
+/// Reads of CoreAudio object properties, for whatever reads them: the
+/// audio sources, and code that reads back what it set.
+public enum CoreAudioProperties: HALProperties {
+    public static let system = AudioObjectID(kAudioObjectSystemObject)
+    public static let global = kAudioObjectPropertyScopeGlobal
+    public static let input = kAudioObjectPropertyScopeInput
+    public static let output = kAudioObjectPropertyScopeOutput
 
     static func key(
         _ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
@@ -216,7 +216,7 @@ enum CoreAudioProperties: HALProperties {
         objectIDs(key(object, selector, scope))
     }
 
-    static func uint32(
+    public static func uint32(
         _ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
         _ scope: AudioObjectPropertyScope = global
     ) -> UInt32? {
@@ -230,12 +230,12 @@ enum CoreAudioProperties: HALProperties {
         value(key(object, selector, scope), initial: 0)
     }
 
-    static func string(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
+    public static func string(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
         string(key(object, selector))
     }
 
     /// Channels across the device's streams in one direction.
-    static func channels(_ device: AudioObjectID, _ scope: AudioObjectPropertyScope) -> Int? {
+    public static func channels(_ device: AudioObjectID, _ scope: AudioObjectPropertyScope) -> Int? {
         let key = key(device, kAudioDevicePropertyStreamConfiguration, scope)
         guard let size = dataSize(key) else { return nil }
         guard size >= MemoryLayout<AudioBufferList>.size else { return 0 }
@@ -247,7 +247,7 @@ enum CoreAudioProperties: HALProperties {
         return buffers.reduce(0) { $0 + Int($1.mNumberChannels) }
     }
 
-    static func devices() -> [AudioObjectID]? {
+    public static func devices() -> [AudioObjectID]? {
         objectIDs(system, kAudioHardwarePropertyDevices)
     }
 

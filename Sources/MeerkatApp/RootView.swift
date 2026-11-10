@@ -70,7 +70,7 @@ private struct Sidebar: View {
             }
             Section("Automate") {
                 SidebarLabel("Rules", symbol: "wand.and.rays")
-                    .badge(app.rules.failingCount)
+                    .badge(app.rules.counts.failed)
                     .badgeProminence(.increased)
                     .tag(Destination.rules)
             }

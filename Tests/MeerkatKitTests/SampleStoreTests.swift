@@ -333,6 +333,35 @@ struct SampleStoreTests {
         #expect(try store.sampleCount() == 2)
     }
 
+    /// A writer's path through the store: the folder is made, and each
+    /// recorded sample is followed by its label's retention.
+    @Test func recordingMakesTheFolderAndRetains() throws {
+        let folder = temporaryURL("meerkat-test-folder", suffix: "")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = try SampleStore(path: folder.appendingPathComponent("nested/samples.db").path)
+        for index in 1...3 { try store.record(makeSample(index: index), label: "unit", retain: 2) }
+        try store.record(makeSample(index: 4), label: "other", retain: nil)
+        #expect(try store.labelMetrics().map { "\($0.label) \($0.count)" }.sorted() == ["other 1", "unit 2"])
+    }
+
+    /// Retention that fails after the commit is the same committed-but-not-
+    /// bounded failure as the store's limits, naming the retention.
+    @Test func retentionFailingAfterCommitKeepsTheSample() throws {
+        let path = temporaryURL("meerkat-test", suffix: ".db").path
+        defer { cleanup(path) }
+        let store = try SampleStore(path: path)
+        try store.record(makeSample(index: 0), label: "unit", retain: 1)
+        try DatabaseQueue(path: path).write { db in
+            try db.execute(
+                sql: "CREATE TRIGGER refuse BEFORE DELETE ON samples BEGIN SELECT RAISE(ABORT, 'refused'); END")
+        }
+        let failure = #expect(throws: LimitsNotAppliedError.self) {
+            try store.record(makeSample(index: 1), label: "unit", retain: 1)
+        }
+        #expect(failure?.retain == 1)
+        #expect(try store.sampleCount() == 2)
+    }
+
     /// The migrations and the `@Table` types are written separately, so a
     /// rename, retype, or nullability change in one must fail here rather
     /// than at the first query that touches the column.
@@ -431,7 +460,7 @@ struct RuleStateLimitTests {
             for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: path + suffix) }
         }
         let store = try RuleStore(path: path)
-        for index in 0..<RuleStore.stateKeyLimit {
+        for index in 0..<EffectLimits.stateKeys {
             try store.setValue(.number(Double(index)), rule: "a.ts#r", key: "k\(index)")
         }
         #expect(throws: RuleStateLimitError.self) { try store.setValue(.null, rule: "a.ts#r", key: "one-more") }
@@ -440,11 +469,57 @@ struct RuleStateLimitTests {
         try store.setValue(.null, rule: "b.ts#r", key: "k0")
 
         let big = JSONValue.string(String(repeating: "x", count: 1 << 20 - 16))
-        let budget = RuleStore.stateByteLimit / (1 << 20)
+        let budget = EffectLimits.stateBytes / (1 << 20)
         for index in 0..<(budget - 1) { try store.setValue(big, rule: "c.ts#r", key: "big\(index)") }
         #expect(throws: RuleStateLimitError.self) {
             try store.setValue(big, rule: "c.ts#r", key: "big\(budget - 1)")
             try store.setValue(big, rule: "c.ts#r", key: "big\(budget)")
         }
+    }
+}
+
+/// `compare` and MCP's `samples_compare` share `SampleComparison`.
+struct SampleComparisonTests {
+    static func samples(_ cpu: [Double], swap: Double = 0) -> [[String: Double]] {
+        cpu.map { ["cpu_usage_pct": $0, "swap_mb": swap] }
+    }
+
+    @Test func twoLabelsHaveADeltaAndItsWarnings() throws {
+        let comparison = SampleComparison([
+            ("before", Self.samples([10, 12, 11])),
+            ("after", Self.samples([30, 31, 29])),
+        ])
+        #expect(comparison.labels.map(\.label) == ["before", "after"])
+        #expect(comparison.labels[0].metrics["cpu_usage_pct"] == Spread([10, 11, 12]))
+        let change = try #require(comparison.delta?["cpu_usage_pct"])
+        #expect(change.change == 19)
+        #expect(change.percent.map { abs($0 - 172.727) < 0.01 } == true)
+        // Separate ranges, and swap didn't move on either side.
+        #expect(comparison.overlapping.isEmpty)
+        #expect(comparison.noisy.isEmpty)
+        // A zero median has a change but no percentage.
+        #expect(comparison.delta?["swap_mb"] == SampleComparison.Change(change: 0, percent: nil))
+    }
+
+    @Test func overlapAndNoiseAreFlagged() {
+        let comparison = SampleComparison([("a", Self.samples([10, 40])), ("b", Self.samples([20, 30]))])
+        #expect(comparison.overlapping == ["cpu_usage_pct"])
+        #expect(comparison.noisy == ["cpu_usage_pct"])
+    }
+
+    /// Records group by label in the order labels first appear; with other
+    /// than two there is no delta.
+    @Test func recordsGroupByLabel() {
+        let records = [
+            StoredMetrics(label: "b", metrics: ["cpu_usage_pct": 1]),
+            StoredMetrics(label: "a", metrics: ["cpu_usage_pct": 2]),
+            StoredMetrics(label: "b", metrics: ["cpu_usage_pct": 3]),
+            StoredMetrics(label: "c", metrics: [:]),
+        ]
+        let comparison = SampleComparison(records)
+        #expect(comparison.labels.map(\.label) == ["b", "a", "c"])
+        #expect(comparison.labels.map(\.count) == [2, 1, 1])
+        #expect(comparison.labels[2].metrics.isEmpty)
+        #expect(comparison.delta == nil && comparison.overlapping.isEmpty)
     }
 }

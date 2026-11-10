@@ -48,10 +48,19 @@ enum IORegistry {
     }
 
     static func className(_ entry: io_object_t) -> String {
-        var name = [CChar](repeating: 0, count: 128)  // io_name_t
+        var name = nameBuffer
         IOObjectGetClass(entry, &name)
         return String(nulTerminated: name)
     }
+
+    /// The entry's name in the registry plane, or nil when it has none.
+    static func name(_ entry: io_registry_entry_t) -> String? {
+        var name = nameBuffer
+        return IORegistryEntryGetName(entry, &name) == KERN_SUCCESS ? String(nulTerminated: name) : nil
+    }
+
+    /// `io_name_t`, which Swift imports as a 128-byte tuple.
+    private static var nameBuffer: [CChar] { [CChar](repeating: 0, count: 128) }
 }
 
 /// An IOKit notification on a port scheduled on a private serial queue, with

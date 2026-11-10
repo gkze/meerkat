@@ -15,15 +15,16 @@ use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use serde_json::value::RawValue;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 
 use crate::loader::{RuleModules, module_specifier};
 use crate::protocol::{
-    DaemonToHost, EffectOutcome, EntryResult, FaultKind, HandlerError, HostLogLevel, HostModule, HostToDaemon,
-    MAXIMUM_MESSAGE_TEXT,
+    DaemonToHost, EffectOutcome, EntryResult, FaultKind, HandlerError, HostEntry, HostLogLevel, HostModule,
+    HostToDaemon, MAXIMUM_MESSAGE_TEXT, MAXIMUM_RULE_NAME,
 };
 use crate::watchdog::{Finding, Holder, Watchdog, WorkerId};
-use crate::worker::{self, Inbound, WorkerControl, WorkerSpec};
+use crate::worker::{self, Inbound, JsMessage, WorkerControl, WorkerSpec};
 
 /// Where the host's messages go: the daemon's delegate.
 pub trait Delivery: Send + 'static {
@@ -62,6 +63,10 @@ pub struct Shared {
     pub(crate) watchdog: Watchdog,
     next_call: AtomicU64,
     next_worker: AtomicU64,
+    /// Halts the host once, after the next invoke is checked and before it
+    /// is routed: the window a `stop` on the daemon's thread can fall in.
+    #[cfg(test)]
+    halt_before_dispatch: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Default)]
@@ -76,7 +81,7 @@ struct State {
     /// Invocations sent to a worker that it has not begun: the worker, the
     /// rule and the daemon's timeout. Rule code supplies the ids it begins
     /// with, so the host holds them to what it sent.
-    dispatched: HashMap<u64, (WorkerId, String, f64)>,
+    dispatched: HashMap<u64, (WorkerId, String, Duration)>,
     load: Load,
 }
 
@@ -91,7 +96,7 @@ enum Load {
 
 struct Worker {
     entry: String,
-    /// What the host calls the file everywhere: `file_name(entry)`.
+    /// What the host calls the file everywhere, as the daemon named it.
     file: String,
     inbox: UnboundedSender<Inbound>,
     control: Arc<WorkerControl>,
@@ -115,6 +120,8 @@ impl Host {
             watchdog: Watchdog::default(),
             next_call: AtomicU64::new(1),
             next_worker: AtomicU64::new(1),
+            #[cfg(test)]
+            halt_before_dispatch: std::sync::atomic::AtomicBool::new(false),
         });
         std::thread::Builder::new()
             .name("meerkat delivery".into())
@@ -168,6 +175,17 @@ impl Host {
 
 #[cfg(test)]
 impl Host {
+    /// `stop`'s first half alone: halted, with the control thread yet to
+    /// close, as when an earlier message is still queued there.
+    pub(crate) fn halt(&self) {
+        self.shared.halt();
+    }
+
+    /// Halts the host between checking the next invoke and routing it.
+    pub(crate) fn halt_before_next_dispatch(&self) {
+        self.shared.halt_before_dispatch.store(true, Ordering::Relaxed);
+    }
+
     /// The worker running `entry`, to speak as it.
     pub(crate) fn worker_of(&self, entry: &str) -> Option<WorkerId> {
         self.shared.state.lock().unwrap().by_entry.get(entry).copied()
@@ -207,11 +225,17 @@ impl Shared {
         }
     }
 
+    /// The daemon's values are checked here, where they enter: a duration
+    /// that is not one, or JSON that is not, fails what it was sent for.
     fn receive(self: &Arc<Self>, message: DaemonToHost) {
         match message {
             DaemonToHost::Load { modules, entries, rejected, entry_deadline_seconds, effects } => {
-                let deadline = Duration::try_from_secs_f64(entry_deadline_seconds).unwrap_or(Duration::ZERO);
-                self.load(modules, entries, rejected, deadline, &effects);
+                let setup = duration(entry_deadline_seconds, "load deadline").and_then(|deadline| {
+                    let effects = RawValue::from_string(effects)
+                        .map_err(|e| format!("the daemon's effect table is not JSON: {e}"))?;
+                    Ok((deadline, effects))
+                });
+                self.load(modules, entries, rejected, setup);
             }
             DaemonToHost::Permit { entry, permissions } => {
                 let state = self.state.lock().unwrap();
@@ -220,58 +244,83 @@ impl Shared {
                 }
             }
             DaemonToHost::Invoke { invocation, rule, event, timeout_seconds } => {
-                let delivered = {
-                    let mut state = self.state.lock().unwrap();
-                    let target = state.by_rule.get(&rule).cloned();
-                    target.is_some_and(|(id, name)| {
-                        // The worker finds the handler by name, and hands
-                        // the handler its rule's id as the host formed it.
-                        let message = format!(
-                            r#"{{"type":"invoke","invocation":{invocation},"rule":{},"name":{},"event":{event}}}"#,
-                            json_string(&rule),
-                            json_string(&name),
-                        );
-                        // Recorded before the worker can see the message, so
-                        // its `begin_invocation` always finds it.
-                        state.dispatched.insert(invocation, (id, rule.clone(), timeout_seconds));
-                        let sent = state
-                            .workers
-                            .get(&id)
-                            .is_some_and(|worker| worker.inbox.send(Inbound::Js(message)).is_ok());
-                        if !sent {
-                            state.dispatched.remove(&invocation);
-                        }
-                        sent
-                    })
-                };
-                if !delivered {
-                    self.send(HostToDaemon::InvocationDone {
-                        invocation,
-                        error: Some(HandlerError::new(format!("no rule {rule} is loaded"))),
-                    });
+                let checked = duration(timeout_seconds, "timeout").and_then(|timeout| {
+                    let event = RawValue::from_string(event).map_err(|e| format!("the event is not JSON: {e}"))?;
+                    Ok((timeout, event))
+                });
+                #[cfg(test)]
+                if self.halt_before_dispatch.swap(false, Ordering::Relaxed) {
+                    self.halt();
+                }
+                if let Some(reason) = self.dispatch(invocation, &rule, checked) {
+                    self.send(HostToDaemon::InvocationDone { invocation, error: Some(HandlerError::new(reason)) });
                 }
             }
             DaemonToHost::EffectResult { call, result } => {
                 let mut state = self.state.lock().unwrap();
                 let Some((id, local)) = state.calls.remove(&call) else { return };
-                let (ok, payload) = match result {
-                    EffectOutcome::Success { value } => (true, value),
-                    EffectOutcome::Failure { message } => (false, serde_json::to_string(&message).unwrap_or_default()),
+                let message = match result {
+                    EffectOutcome::Success { value } => match RawValue::from_string(value) {
+                        Ok(value) => JsMessage::EffectSucceeded { local, value },
+                        Err(e) => {
+                            JsMessage::EffectFailed { local, message: format!("the effect's value is not JSON: {e}") }
+                        }
+                    },
+                    EffectOutcome::Failure { message } => JsMessage::EffectFailed { local, message },
                 };
                 if let Some(worker) = state.workers.get(&id) {
-                    let _ = worker.inbox.send(effect_result(local, ok, &payload));
+                    let _ = worker.inbox.send(Inbound::Js(message));
                 }
             }
         }
     }
 
+    /// Sends `invocation` to the worker running `rule`, or says why not;
+    /// once the host halted, nothing. `stop` halts on the caller's thread,
+    /// so an invoke queued before it can arrive after: the daemon settles it
+    /// on `terminated`, and a refusal would charge the rule. Decided under
+    /// the lock `halt` takes, so no halt falls between the check and the
+    /// routing.
+    fn dispatch(
+        &self,
+        invocation: u64,
+        rule: &str,
+        checked: Result<(Duration, Box<RawValue>), String>,
+    ) -> Option<String> {
+        let mut state = self.state.lock().unwrap();
+        if state.terminated {
+            return None;
+        }
+        let (timeout, event) = match checked {
+            Ok(checked) => checked,
+            Err(reason) => return Some(reason),
+        };
+        let Some((id, name)) = state.by_rule.get(rule).cloned() else {
+            return Some(format!("no rule {rule} is loaded"));
+        };
+        // The worker finds the handler by name, and hands the handler its
+        // rule's id as the host formed it.
+        let message = JsMessage::Invoke { invocation, rule: rule.to_owned(), name, event };
+        // Recorded before the worker can see the message, so its
+        // `begin_invocation` always finds it.
+        state.dispatched.insert(invocation, (id, rule.to_owned(), timeout));
+        let sent = state.workers.get(&id).is_some_and(|worker| worker.inbox.send(Inbound::Js(message)).is_ok());
+        if sent {
+            None
+        } else {
+            state.dispatched.remove(&invocation);
+            Some(format!("no rule {rule} is loaded"))
+        }
+    }
+
+    /// Starts a worker for each entry, given the load deadline and the
+    /// effect table; without them, every entry fails with the reason.
     fn load(
         self: &Arc<Self>,
         modules: Vec<HostModule>,
-        entries: Vec<String>,
+        entries: Vec<HostEntry>,
         rejected: HashMap<String, String>,
-        deadline: Duration,
-        effects: &str,
+        setup: Result<(Duration, Box<RawValue>), String>,
     ) {
         let rules = Arc::new(RuleModules {
             modules: modules.into_iter().map(|module| (module.id, module.code)).collect(),
@@ -292,19 +341,26 @@ impl Shared {
                 });
                 return;
             }
-            state.load = Load::Pending(PendingLoad { entries: entries.clone(), results: HashMap::new() });
-            for entry in &entries {
+            let modules = entries.iter().map(|entry| entry.module.clone()).collect();
+            state.load = Load::Pending(PendingLoad { entries: modules, results: HashMap::new() });
+            let (deadline, effects) = match setup {
+                Ok(setup) => setup,
+                Err(reason) => {
+                    for HostEntry { module, .. } in entries {
+                        let error = Some(HandlerError::new(reason.clone()));
+                        record(&mut state, EntryResult { entry: module, rules: vec![], error });
+                    }
+                    drop(state);
+                    self.finish_load_if_complete();
+                    return;
+                }
+            };
+            for HostEntry { module: entry, file } in entries {
                 let id = self.next_worker.fetch_add(1, Ordering::Relaxed);
                 let (inbox, receiver) = unbounded_channel();
                 let control = Arc::new(WorkerControl::default());
-                let file = file_name(entry);
-                // `effects` is the daemon's own JSON, passed through as is.
-                let message = format!(
-                    r#"{{"type":"load","file":{},"url":{},"effects":{effects}}}"#,
-                    json_string(&file),
-                    json_string(module_specifier(entry).as_str())
-                );
-                let _ = inbox.send(Inbound::Js(message));
+                let url = module_specifier(&entry).to_string();
+                let _ = inbox.send(Inbound::Js(JsMessage::Load { file: file.clone(), url, effects: effects.clone() }));
                 self.watchdog.add_worker(id, file.clone(), deadline, Instant::now());
                 state.workers.insert(
                     id,
@@ -318,7 +374,7 @@ impl Shared {
                     },
                 );
                 state.by_entry.insert(entry.clone(), id);
-                spawned.push((WorkerSpec { id, entry: entry.clone(), file, rules: rules.clone() }, receiver, control));
+                spawned.push((WorkerSpec { id, entry, file, rules: rules.clone() }, receiver, control));
             }
         }
         for (spec, receiver, control) in spawned {
@@ -428,9 +484,8 @@ impl Shared {
             let mut state = self.state.lock().unwrap();
             if state.by_rule.get(&rule).is_none_or(|(owner, _)| *owner != id) {
                 if let Some(worker) = state.workers.get(&id) {
-                    let reason =
-                        serde_json::to_string(&format!("{rule} is not a rule of this file")).unwrap_or_default();
-                    let _ = worker.inbox.send(effect_result(local, false, &reason));
+                    let message = format!("{rule} is not a rule of this file");
+                    let _ = worker.inbox.send(Inbound::Js(JsMessage::EffectFailed { local, message }));
                 }
                 return;
             }
@@ -446,7 +501,7 @@ impl Shared {
     /// to this worker can only be rule code reaching the host's ops, so the
     /// host stops.
     pub(crate) fn begin_invocation(&self, id: WorkerId, invocation: u64, rule: String) {
-        let (file, timeout_seconds) = {
+        let (file, timeout) = {
             let mut state = self.state.lock().unwrap();
             // A worker still finishing its turn while the host halts finds
             // nothing dispatched; that is the halt, not a violation.
@@ -461,13 +516,12 @@ impl Shared {
                 if matches { state.dispatched.remove(&invocation).map(|(_, _, timeout)| timeout) } else { None };
             (file, timeout)
         };
-        let Some(timeout_seconds) = timeout_seconds else {
+        let Some(timeout) = timeout else {
             // `rule` is whatever the code passed, so it stays out of the
             // reason.
             self.fault(file, Holder::default(), FaultKind::Failed, "began an invocation it was not sent".into());
             return;
         };
-        let timeout = Duration::try_from_secs_f64(timeout_seconds).unwrap_or(Duration::ZERO);
         self.watchdog.invocation_began(id, invocation, rule, timeout, Instant::now());
         self.send(HostToDaemon::Started { invocation });
     }
@@ -585,17 +639,12 @@ impl Shared {
     }
 }
 
-/// The file a worker runs, as the host names it to the watchdog, the
-/// runtime's JavaScript and the daemon: the entry plus `.ts`.
-fn file_name(entry: &str) -> String {
-    format!("{entry}.ts")
-}
-
 /// A rule's id: its file, `#`, its name. The daemon forms the same id from
 /// the definitions this file reported (`RuleID` in `MeerkatKit`), and invokes
 /// by it. Neither part holds a `#`: the daemon loads no entry file whose
-/// name does, and fails a rule whose name does, which is not routed here
-/// either; so one id is one rule of one file.
+/// name does, and fails a rule whose name does, or whose name is longer than
+/// `MAXIMUM_RULE_NAME`, which is not routed here either; so one id is one
+/// rule of one file, and fits beside any text the host sends.
 fn rule_id(file: &str, name: &str) -> String {
     format!("{file}#{name}")
 }
@@ -605,35 +654,36 @@ type Routes = Vec<(String, String)>;
 
 /// The file's rules as the daemon gets them, each definition back to JSON
 /// text for it to decode, with each rule's id and name to route by. A file
-/// whose definitions would not fit in one message fails alone.
+/// whose result would not fit in one message fails alone.
 fn definitions(entry: &str, file: &str, rules: &[serde_json::Value]) -> Result<(Routes, Vec<String>), HandlerError> {
     let texts: Vec<String> = rules.iter().map(ToString::to_string).collect();
-    let bytes = entry.len() + texts.iter().map(String::len).sum::<usize>();
-    if bytes > MAXIMUM_MESSAGE_TEXT {
-        return Err(HandlerError::new(format!(
-            "its rule definitions take {bytes} bytes; at most {MAXIMUM_MESSAGE_TEXT} fit in one message"
-        )));
-    }
+    definitions_fit(entry.len() + texts.iter().map(String::len).sum::<usize>())?;
     let names = rules
         .iter()
         .filter_map(|rule| rule.get("name").and_then(|name| name.as_str()))
-        .filter(|name| !name.contains('#'))
+        .filter(|name| !name.contains('#') && name.len() <= MAXIMUM_RULE_NAME)
         .map(|name| (rule_id(file, name), name.to_owned()))
         .collect();
     Ok((names, texts))
 }
 
-fn json_string(text: &str) -> String {
-    serde_json::to_string(text).unwrap_or_default()
+/// Whether a file's rule definitions, `bytes` of them, fit in the message
+/// that reports them; a worker also refuses longer text unread (worker.rs).
+pub(crate) fn definitions_fit(bytes: usize) -> Result<(), HandlerError> {
+    if bytes > MAXIMUM_MESSAGE_TEXT {
+        return Err(HandlerError::new(format!(
+            "its rule definitions take {bytes} bytes; at most {MAXIMUM_MESSAGE_TEXT} fit in one message"
+        )));
+    }
+    Ok(())
+}
+
+fn duration(seconds: f64, what: &str) -> Result<Duration, String> {
+    Duration::try_from_secs_f64(seconds).map_err(|_| format!("the daemon sent a {what} of {seconds} s"))
 }
 
 fn record(state: &mut State, result: EntryResult) {
     if let Load::Pending(load) = &mut state.load {
         load.results.insert(result.entry.clone(), result);
     }
-}
-
-/// `payload` is JSON text, passed through unparsed.
-fn effect_result(local: u64, ok: bool, payload: &str) -> Inbound {
-    Inbound::Js(format!(r#"{{"type":"effectResult","local":{local},"ok":{ok},"payload":{payload}}}"#))
 }

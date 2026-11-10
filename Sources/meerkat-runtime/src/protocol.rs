@@ -22,6 +22,16 @@ pub struct HostModule {
     pub code: String,
 }
 
+/// An entry module and its file's name, which the daemon gives it (the
+/// module plus `.ts`): the host calls the file that in every `Fault`, every
+/// `Log` and the first part of each of its rules' ids, so the daemon's name
+/// for a file is the only one.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct HostEntry {
+    pub module: String,
+    pub file: String,
+}
+
 #[derive(Debug, uniffi::Enum)]
 pub enum DaemonToHost {
     /// Load the rule set: each entry in a worker of its own. `rejected` maps
@@ -30,7 +40,7 @@ pub enum DaemonToHost {
     /// not fails alone. A host loads once.
     Load {
         modules: Vec<HostModule>,
-        entries: Vec<String>,
+        entries: Vec<HostEntry>,
         rejected: HashMap<String, String>,
         entry_deadline_seconds: f64,
         /// The daemon's effect table, as JSON: each effect's wire name, its
@@ -47,7 +57,7 @@ pub enum DaemonToHost {
     /// host enforces `timeout_seconds` from the moment the handler starts,
     /// not from when the message was sent.
     ///
-    /// `rule` is the rule's id: its file (the entry plus `.ts`), `#`, its
+    /// `rule` is the rule's id: its file (`HostEntry.file`), `#`, its
     /// name. The daemon forms it from the definition (`RuleDefinition.id`),
     /// and the host from the definitions the file reported (host.rs,
     /// `rule_id`), which it hands the rule's code.
@@ -86,9 +96,22 @@ pub enum EffectOutcome {
 /// `HandlerHost`), and for `Loaded` per entry. Rule code cannot make the host
 /// send more: each op cuts or refuses what would pass it (worker.rs), a file
 /// whose definitions would fails alone and every fault or load failure's
-/// reason is cut (host.rs), and the daemon stops a host that sends more
+/// reason is cut (host.rs), and the rule id a log or fault carries beside
+/// that text is a file's name, which the file system bounds, and a name of
+/// at most `MAXIMUM_RULE_NAME`. The daemon stops a host that sends more
 /// anyway.
 pub const MAXIMUM_MESSAGE_TEXT: usize = 4 << 20;
+
+/// Longest rule name, in UTF-8 bytes. A rule whose name is longer is not
+/// routed (host.rs, `definitions`), and the daemon fails it
+/// (`RuleID.refusal(name:)` in `MeerkatKit`, which holds the same number).
+pub const MAXIMUM_RULE_NAME: usize = 256;
+
+/// Longest log message, error message or stack, log label and fault reason
+/// the host sends, in bytes; longer ones are cut to it (worker.rs, `cut`).
+/// Well within `MAXIMUM_MESSAGE_TEXT`, so what rule code logs or throws
+/// never stops the host. The daemon holds its own rule log lines to it too.
+pub const MAXIMUM_TEXT: usize = 64 << 10;
 
 #[derive(Debug, uniffi::Enum)]
 pub enum HostToDaemon {
@@ -116,9 +139,10 @@ pub enum HostToDaemon {
     /// file, and for an overrun the rule and invocation when that rule's
     /// handler was running its own code (after an `await`, or in a timer,
     /// the runtime knows only the file). Only an overrun names them: running
-    /// out of heap, or a worker failing, is the file's alone, so a fault with
-    /// an invocation is that invocation's overrun. `reason` follows the
-    /// name: "held the JavaScript thread for 5.1 s".
+    /// out of heap, or a worker failing, is the file's alone. `reason`
+    /// follows the name: "held the JavaScript thread for 5.1 s". The host's
+    /// `terminated` reason that follows is that sentence whole: the rule's id
+    /// or the file, then `reason`.
     Fault {
         file: String,
         rule: Option<String>,
@@ -158,6 +182,7 @@ pub enum FaultKind {
 
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct EntryResult {
+    /// The entry's module, as `HostEntry.module` named it.
     pub entry: String,
     /// Each rule's definition with `handle` removed, as the author wrote it,
     /// as JSON.
@@ -191,13 +216,16 @@ pub enum HostLogLevel {
 }
 
 impl HostLogLevel {
+    /// A level as runtime.js names it. It names only these four, and maps
+    /// Deno's console levels above warn to "error"; anything else is code
+    /// reaching the op directly, and is kept as an error too.
     #[must_use]
     pub fn parse(text: &str) -> HostLogLevel {
         match text {
             "debug" => HostLogLevel::Debug,
+            "info" => HostLogLevel::Info,
             "warn" => HostLogLevel::Warn,
-            "error" => HostLogLevel::Error,
-            _ => HostLogLevel::Info,
+            _ => HostLogLevel::Error,
         }
     }
 }

@@ -38,21 +38,19 @@ struct RuleEditorThemeTests {
         }
     }
 
-    @Test(arguments: RuleEditorTheme.allCases.filter { ![.dracula, .nord].contains($0) })
+    /// What Settings says of a theme (`isDarkOnly`) is what it draws.
+    @Test(arguments: RuleEditorTheme.allCases)
     func variantsMatchTheAppearance(theme: RuleEditorTheme) {
-        #expect(Self.luminance(theme.palette(.light).background) > 0.5)
+        #expect((Self.luminance(theme.palette(.light).background) < 0.1) == theme.isDarkOnly)
+        if !theme.isDarkOnly { #expect(Self.luminance(theme.palette(.light).background) > 0.5) }
         #expect(Self.luminance(theme.palette(.dark).background) < 0.1)
     }
 
-    @Test func darkOnlyThemesStayDark() {
-        for theme in [RuleEditorTheme.dracula, .nord] {
-            #expect(Self.luminance(theme.palette(.light).background) < 0.1)
-        }
-    }
-
-    @Test func keywordsAreBoldOnlyInSystem() {
-        #expect(RuleEditorTheme.system.palette(.dark).boldKeywords)
-        #expect(!RuleEditorTheme.nord.palette(.dark).boldKeywords)
+    /// Only the system theme bolds keywords, as Xcode's default does; the
+    /// published themes are drawn as their authors wrote them.
+    @Test(arguments: RuleEditorTheme.allCases, [ColorScheme.light, .dark])
+    func onlyTheSystemThemeBoldsKeywords(theme: RuleEditorTheme, scheme: ColorScheme) {
+        #expect(theme.palette(scheme).boldKeywords == (theme == .system))
     }
 
     /// The raw values are what `UserDefaults` keeps, so renaming a case

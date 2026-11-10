@@ -52,33 +52,26 @@ struct EventSampler: Sendable {
         var reason: String? = nil
     }
 
-    struct Failure: Error, CustomStringConvertible {
-        let description: String
-    }
-
     // MARK: - Schemas
 
     /// The tool's input. `kind` lists exactly what the policy allows, so a
     /// client sees the boundary before it calls.
-    func inputSchema() -> TypeSchema {
+    func inputSchema() -> ObjectSchema {
         let limits = policy.limits
-        return .object(
-            ObjectSchema([
-                .init(
-                    "kind", .enumeration(policy.sampleableKinds(hub.catalog)),
-                    doc: "Event kind to sample; read meerkat://catalog/{kind} for its payload and parameters."),
-                .init(
-                    "params", .json, optional: true,
-                    doc: "The kind's parameters (its `parameters` schema); omitted means its defaults."),
-                .init(
-                    "maxEvents", .number, optional: true,
-                    doc: "Stop after this many events: 1 to \(limits.sampleEvents), default \(defaultEvents)."),
-                .init(
-                    "maxSeconds", .number, optional: true,
-                    doc:
-                        "Stop after this many seconds: more than 0, at most \(Self.format(limits.sampleSeconds)), default \(Self.format(defaultSeconds))."
-                ),
-            ]))
+        return ObjectSchema([
+            .init(
+                "kind", .enumeration(policy.sampleableKinds(hub.catalog)),
+                doc: "Event kind to sample; read meerkat://catalog/{kind} for its payload and parameters."),
+            .init(
+                "params", .json, optional: true,
+                doc: "The kind's parameters (its `parameters` schema); omitted means its defaults."),
+            .init(
+                "maxEvents", .bounded(.integer(1...limits.sampleEvents)), default: .number(Double(defaultEvents)),
+                doc: "Stop after this many events."),
+            .init(
+                "maxSeconds", .bounded(.positive(atMost: limits.sampleSeconds)),
+                default: .number(defaultSeconds), doc: "Stop after this many seconds."),
+        ])
     }
 
     static let envelopeSchema = TypeSchema.named(
@@ -104,26 +97,23 @@ struct EventSampler: Sendable {
 
     // MARK: - Running
 
-    /// Checks a call's arguments against the input schema, the ranges and
-    /// the policy. Everything a client sends is checked here, before any
-    /// source starts.
-    func request(_ arguments: JSONValue) throws(Failure) -> Request {
-        let problems = SchemaValidator.violations(of: arguments, against: inputSchema(), at: "arguments")
-        guard problems.isEmpty else { throw Failure(description: problems.joined(separator: "; ")) }
-        let limits = policy.limits
-        let events = arguments["maxEvents"]?.numberValue ?? Double(defaultEvents)
-        guard events >= 1, events <= Double(limits.sampleEvents), events.rounded() == events else {
-            throw Failure(description: "maxEvents must be a whole number from 1 to \(limits.sampleEvents)")
-        }
-        let seconds = arguments["maxSeconds"]?.numberValue ?? defaultSeconds
-        guard seconds > 0, seconds <= limits.sampleSeconds else {
-            throw Failure(
-                description: "maxSeconds must be more than 0 and at most \(Self.format(limits.sampleSeconds))")
-        }
-        // The schema's enumeration already holds only allowed kinds.
+    /// Checks a call's arguments against the input schema, whose bounds are
+    /// the policy's, and fills its defaults. Everything a client sends is
+    /// checked here, before any source starts.
+    func request(_ arguments: JSONValue) throws(Refusal) -> Request {
+        // The schema's enumeration holds only allowed kinds, and its bounds
+        // keep the numbers whole and in range.
+        let input: Input = try MCPService.decoded(arguments, inputSchema())
         return Request(
-            kind: arguments["kind"]?.stringValue ?? "", parameters: arguments["params"] ?? .null,
-            maxEvents: Int(events), maxSeconds: seconds)
+            kind: input.kind, parameters: input.params ?? .null, maxEvents: input.maxEvents,
+            maxSeconds: input.maxSeconds)
+    }
+
+    private struct Input: Decodable {
+        let kind: String
+        let params: JSONValue?
+        let maxEvents: Int
+        let maxSeconds: Double
     }
 
     /// Runs one sample. Cancelling the calling task (the client cancelled
@@ -131,16 +121,16 @@ struct EventSampler: Sendable {
     /// subscription; the result is then discarded.
     func run(_ request: Request) async throws -> Result {
         // A kind the policy allows can still need a privacy permission.
-        if let permission = hub.catalog.kind(named: request.kind)?.descriptor.permission,
-            let refusal = permission.refusal(for: request.kind, status: permissionStatus(permission))
+        if let need = hub.catalog.kind(named: request.kind)?.descriptor.permission,
+            let refusal = need.clientRefusal(for: request.kind, status: permissionStatus(need.permission))
         {
-            throw Failure(description: refusal)
+            throw Refusal(refusal)
         }
         let subscription: EventSubscription
         do {
             subscription = try hub.subscribe(request.kind, parameters: request.parameters)
         } catch {
-            throw Failure(description: "\(error)")
+            throw Refusal("\(error)")
         }
         defer { subscription.cancel() }
 
@@ -149,7 +139,7 @@ struct EventSampler: Sendable {
             for: request.maxSeconds, timedOut: Stop.maxSeconds, sourceEnded: .sourceStopped
         ) { collected, envelope in
             // An event that would pass the output limit is not added.
-            let size = (try? JSONEncoder().encode(envelope).count) ?? 0
+            let size = (try? JSONEncoder.meerkat().encode(envelope).count) ?? 0
             guard collected.bytes + size <= outputLimit else { return .outputLimit }
             collected.events.append(envelope)
             collected.bytes += size
@@ -159,10 +149,6 @@ struct EventSampler: Sendable {
         return Result(
             kind: request.kind, parameters: subscription.parameters, events: collected.events, stopped: stop,
             reason: stop == .sourceStopped ? hub.stopReason(of: subscription) : nil)
-    }
-
-    static func format(_ seconds: Double) -> String {
-        seconds.rounded() == seconds ? String(Int(seconds)) : String(seconds)
     }
 }
 
@@ -182,10 +168,7 @@ final class SampleSlots: Sendable {
             count += 1
             return true
         }
-        guard acquired else {
-            throw EventSampler.Failure(
-                description: "this session already runs \(limit) samples; wait for one to finish")
-        }
+        guard acquired else { throw Refusal("this session already runs \(limit) samples; wait for one to finish") }
         defer { running.withLock { $0 -= 1 } }
         return try await body()
     }

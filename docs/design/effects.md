@@ -29,14 +29,37 @@ each, and which controls to offer.
 `EffectCatalog` (MeerkatKit) declares each grant and each effect once, in
 Swift, the way `EventCatalog` declares event kinds. An effect declares:
 
-- its wire name (`process.signal`), and where it appears on `ctx`
-  (`ctx.process.signal`);
-- its request as a `TypeSchema` object, and whether the method takes that
-  object or positional arguments (`signal(target, signal)`);
+- its wire name (`process.signal`), a case of `EffectKind`, and where it
+  appears on `ctx` (`ctx.process.signal`);
+- its request as a `TypeSchema` object, with each field's bounds (numbers,
+  string lengths in UTF-8 bytes, list lengths) and default, and whether the method
+  takes that object or positional arguments (`signal(target, signal)`);
 - its result: nothing, a value with a schema, or a stored value that may be
-  absent (`state.get`);
+  absent (`state.get`). A result's schema is its Swift type's
+  (`ExecResult`, `HTTPResponse`, `WindowInfo`), so the value the daemon
+  encodes is the one the declarations describe;
 - the grant it needs: none, a flag, or an allow list and the request field
-  checked against it.
+  checked against it;
+- its traits: the field holding the path it acts on and in which form, the
+  field holding a defaults domain it changes, and a field that must stay
+  under the rule's timeout. The daemon's checks for each come from these,
+  so an effect cannot have a path or a domain without its check
+  ("Protected state" below), and a request without the field a check reads
+  is refused, never let through;
+- the macOS permission it needs (Accessibility), or the app it sends Apple
+  Events to (Automation), which the executor checks for every effect that
+  declares one.
+
+The catalog checks its own data as it is made: every grant an effect names
+exists in the right shape, a list grant's subject and each positional
+argument are fields, a path grant names the protected path the effect acts
+on, and each trait's field is always present. No code that reads the
+catalog checks these again.
+
+Text a person reads (a notification's title and its buttons, an assertion's
+reason, a tag, a sample's label) is bounded at four bytes for each character
+it once counted, so a limit fits as much text in any script; names and ids
+keep their byte limits.
 
 Everything else is derived from the catalog:
 
@@ -45,15 +68,18 @@ Everything else is derived from the catalog:
 | `Grants` and `Context` in `meerkat.d.ts`, with request and result interfaces | `TypeScriptDeclarations` | Generated; a test fails when the checked-in file is stale |
 | Grant parsing and normalization | `CapabilityGrants` | Reads the grant descriptors at load |
 | Authorization | `EffectAuthorizer` (the executor and a dry run) | Reads the effect's grant requirement |
-| Request shape checks | `EffectRequest` | `SchemaValidator` runs the request schema before the typed decode |
+| Request checks and defaults | `EffectRequest` | `SchemaValidator` runs the request schema, bounds included, before the typed decode, which reads defaults from the schema |
+| Protected paths and domains | `EffectAuthorizer` | Reads the effect's traits |
 | The JavaScript `ctx` | `runtime.js` | The daemon sends the effect table with `Load`; the runtime builds `ctx` from it |
 | The list of effects and grants | `meerkat effects` | Printed from the catalog |
 
 The typed decode (`EffectRequest`) and the code that performs each effect
 stay hand-written Swift: they hold the checks a schema cannot express (a
-URL is absolute, a path is inside a grant, a volume is removable). A test
-requires every catalog effect to decode, and a decoded effect that isn't in
-the catalog is refused at authorization.
+URL is absolute, a path is inside a grant, a volume is removable). Both
+switch over `EffectKind` with no default, so the compiler refuses an effect
+either leaves out, and the catalog refuses to exist without a descriptor
+for each kind. A request whose kind the catalog doesn't know is refused as
+it decodes.
 
 The effect table travels to the runtime as data, not as generated
 JavaScript, so the daemon's catalog is the only source and no artifact can
@@ -196,11 +222,17 @@ limits").
 | `windows.list`, `windows.set` | `windows.*` | `windows.control` | Accessibility (`AXUIElement`) | B |
 | `appearance.setDark` | `appearance.setDark(on)` | `appearance.set` | Apple Events to System Events | B |
 
-No grant reaches the daemon's own settings. `defaults.write` and
-`defaults.delete` refuse the `com.gkze.meerkat` domain, by name in any case or
-by path, and the daemon reads that domain alone, not macOS's search list, so
-the global domain can't set it either. `files.trash` and `files.setTags` refuse
-the paths denied to Deno (`DaemonPaths.protected`, `meerkat.json` among them)
+### Protected state
+
+No grant reaches the daemon's own settings. An effect that changes a
+defaults domain declares the field (`changesDefaultsDomain`): `defaults.write`
+and `defaults.delete` refuse the `com.gkze.meerkat` domain, by name in any
+case or by path, and the daemon reads that domain alone, not macOS's search
+list, so the global domain can't set it either. An effect that acts on a path
+declares the field and its form (`Traits.path`): `entry` for the link itself
+(`files.trash`), `target` for what it leads to (`files.setTags`). The decode
+reads a path from that field alone, so a path effect cannot leave out its
+checks: each refuses the paths denied to Deno (`DaemonPaths.protected`, `meerkat.json` among them)
 and any folder holding one, comparing the path as the effect acts on it with
 each protected path in every form the runtime gives it: as named, each symlink
 on its way, and resolved (`CapabilityGrants.forms`; meerkatd.md, "Why embedded
@@ -210,11 +242,13 @@ there. Both check and act while no rule's code can
 rename anything (meerkat-runtime's `hold_rule_renames`), so a rule cannot
 swap a folder on the path between the check and the act; another program
 still could (docs/design/meerkatd.md, "Known limits").
-A rule could otherwise move the rules directory or change what it runs. Only
+A rule could otherwise move the rules directory or change what it runs. The
+one path form without these checks is `mountPoint` (`volumes.eject`): it acts
+on a whole removable volume, which its grant covers, not on a file. Only
 `exec` steps outside this, because an allow-listed executable can do whatever
 it does.
 
-Two choices in that table need their reason:
+Two choices in the table of effects need their reason:
 
 - **Shortcuts through `/usr/bin/shortcuts`.** macOS has no in-process API
   to run a shortcut. The command is Apple's supported interface, and it
@@ -238,7 +272,8 @@ entitlement, which the hardened runtime requires.
 `windows.list` and `windows.set` declare the Accessibility permission, and
 `EffectAuthorizer` checks it before acting: without it they fail with the
 System Settings pane to use, the way event sources do (`Permissions.swift`).
-`appearance.setDark` checks Automation when it runs, and its error names
+`appearance.setDark` names its Automation target in the catalog
+(`AutomationTarget.systemEvents`), checks it when it runs, and its error names
 Settings › Automation or the System Settings pane. `clipboard.read` has no
 check of its own: macOS may ask before the first read.
 
@@ -268,8 +303,10 @@ Most effects act once. Two hold something:
 
 ## Validation
 
-- Catalog tests: every effect's grant exists, every request schema has
-  named types the generator can declare, and every catalog effect decodes.
+- Catalog tests: every effect's grant exists, every default is valid for its
+  field, every catalog effect decodes from its least request and each
+  request's defaults reach the typed value, and every effect runs through
+  the executor without touching the Mac.
 - Grant tests: each shape parses, normalizes and refuses what it should
   (relative paths, `..`, unknown fields, a scheme with a colon).
 - Authorization tests: each allow-list subject inside and outside its list,

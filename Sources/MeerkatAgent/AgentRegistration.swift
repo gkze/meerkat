@@ -1,5 +1,6 @@
 import Foundation
 import MeerkatIPC
+import MeerkatKit
 import ServiceManagement
 
 /// Installs and removes `meerkatd` as a LaunchAgent through `SMAppService`.
@@ -7,9 +8,9 @@ import ServiceManagement
 /// This is the only install mechanism: the CLI (`meerkat agent install`)
 /// and the app's install button both call it (`installAndAwait`), and both
 /// run from inside Meerkat.app, so either one sees and changes the same
-/// registration, and both wait for a daemon the same way. The
-/// agent's plist lives in the bundle at
-/// `Contents/Library/LaunchAgents/com.gkze.meerkat.daemon.plist`.
+/// registration; registering, both wait for a daemon the same way and fail
+/// in the same words (`RegistrationError`). The agent's plist lives in the
+/// bundle at `DaemonService.agentPlist`.
 public enum AgentRegistration {
     public enum Status: String, Sendable, Codable {
         /// Registered and allowed to run.
@@ -25,6 +26,14 @@ public enum AgentRegistration {
 
     public enum RegistrationError: Error, CustomStringConvertible {
         case notInBundle(String)
+        /// Registered and allowed to run, but no new daemon answered within
+        /// the limit: launchd can accept a registration and still refuse to
+        /// run the binary (a launch constraint from an earlier signature of
+        /// the app, recorded again only once the app has launched). Trying
+        /// again can fix it.
+        case silent(within: Duration)
+        /// launchd restarted the daemon, but none answered within the limit.
+        case restartUnanswered(within: Duration)
         case failed(String)
 
         public var description: String {
@@ -33,8 +42,16 @@ public enum AgentRegistration {
                 return """
                     \(path) is not inside Meerkat.app, so it cannot manage the agent. \
                     Build the app with `buck2 run //Tools/Bundler:app -- --install` and run \
-                    ~/Applications/Meerkat.app/Contents/MacOS/meerkat agent install.
+                    ~/\(DaemonService.installedApp)/\(DaemonService.cliPath) agent install.
                     """
+            case .silent(let limit):
+                return """
+                    meerkatd registered but did not start from this build within \(limit.formatted()). If \
+                    Meerkat.app was just replaced, quit it if it is open, open it again, and install the agent \
+                    again: macOS keeps the earlier build's signature for the agent until the app launches.
+                    """
+            case .restartUnanswered(let limit):
+                return "meerkatd did not answer within \(limit.formatted()) of restarting."
             case .failed(let message): return message
             }
         }
@@ -43,12 +60,10 @@ public enum AgentRegistration {
     /// The `.app` containing the running executable, resolving symlinks (a
     /// `meerkat` on PATH is usually a symlink into the bundle).
     public static var appBundle: URL? {
-        let executable = (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0]))
-            .resolvingSymlinksInPath()
-        var directory = executable.deletingLastPathComponent()
+        var directory = URL.currentExecutable.resolvingSymlinksInPath().deletingLastPathComponent()
         while directory.path != "/" {
             if directory.pathExtension == "app" {
-                let plist = directory.appendingPathComponent("Contents/Library/LaunchAgents/\(DaemonService.plistName)")
+                let plist = directory.appendingPathComponent(DaemonService.agentPlist)
                 return FileManager.default.fileExists(atPath: plist.path) ? directory : nil
             }
             directory.deleteLastPathComponent()
@@ -100,14 +115,11 @@ public enum AgentRegistration {
     }
 
     /// What registering found, once the daemon had its chance to start.
+    /// Registered but silent is not one: it fails, with
+    /// `RegistrationError.silent`.
     public enum Started: Sendable, Equatable {
         /// Registered, and a daemon other than the one before answered.
         case answering(DaemonIdentity)
-        /// Registered and allowed to run, but no new daemon answered within
-        /// `startLimit`: launchd can accept a registration and still refuse
-        /// to run the binary (a launch constraint from an earlier signature
-        /// of the app, recorded again only once the app has launched).
-        case silent
         /// Registered, but switched off in Login Items until the user allows
         /// it, so launchd runs nothing yet.
         case requiresApproval
@@ -128,13 +140,15 @@ public enum AgentRegistration {
     ) async throws -> Started {
         // Read before registering: after it, the old daemon may still answer
         // and would count as new.
-        let before = try? await client.daemonIdentity(within: DaemonClient.pingLimit)
+        let before = try? await client.daemonIdentity()
         // SMAppService and launchctl block; kept off the caller's actor.
         let status = try await Task.detached { try register() }.value
         switch status {
         case .enabled:
-            return try await newDaemon(replacing: before, client: client, within: limit).map(Started.answering)
-                ?? .silent
+            guard let daemon = try await newDaemon(replacing: before, client: client, within: limit) else {
+                throw RegistrationError.silent(within: limit)
+            }
+            return .answering(daemon)
         case .requiresApproval:
             return .requiresApproval
         case .notRegistered, .notInBundle:
@@ -143,11 +157,18 @@ public enum AgentRegistration {
     }
 
     /// `restart()`, then the daemon launchd started in place of the one
-    /// before, or nil when none answered within `startLimit`.
-    public static func restartAndAwait(client: any DaemonConnection) async throws -> DaemonIdentity? {
-        let before = try? await client.daemonIdentity(within: DaemonClient.pingLimit)
-        try await Task.detached { try AgentRegistration.restart() }.value
-        return try await newDaemon(replacing: before, client: client)
+    /// before; `RegistrationError.restartUnanswered` when none answered
+    /// within `limit`. `restart` stands in for `restart()` in tests.
+    public static func restartAndAwait(
+        client: any DaemonConnection, within limit: Duration = startLimit,
+        restart: @escaping @Sendable () throws -> Void = { try AgentRegistration.restart() }
+    ) async throws -> DaemonIdentity {
+        let before = try? await client.daemonIdentity()
+        try await Task.detached { try restart() }.value
+        guard let daemon = try await newDaemon(replacing: before, client: client, within: limit) else {
+            throw RegistrationError.restartUnanswered(within: limit)
+        }
+        return daemon
     }
 
     /// The daemon once one other than `before` answers, within `limit`; nil
@@ -160,7 +181,7 @@ public enum AgentRegistration {
     ) async throws -> DaemonIdentity? {
         let deadline = ContinuousClock.now + limit
         while ContinuousClock.now < deadline {
-            if let daemon = try? await client.daemonIdentity(within: DaemonClient.pingLimit), daemon != before {
+            if let daemon = try? await client.daemonIdentity(), daemon != before {
                 return daemon
             }
             try await Task.sleep(for: .milliseconds(500))
@@ -244,7 +265,5 @@ public enum AgentRegistration {
         .agent(plistName: DaemonService.plistName)
     }
 
-    private static var executablePath: String {
-        (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])).resolvingSymlinksInPath().path
-    }
+    private static var executablePath: String { URL.currentExecutable.resolvingSymlinksInPath().path }
 }

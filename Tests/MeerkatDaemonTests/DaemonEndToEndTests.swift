@@ -23,9 +23,7 @@ struct DaemonEndToEndTests {
         ///     staged.
         ///   - linkedRules: the rules directory is a symlink to the folder,
         ///     whose real path is what FSEvents reports.
-        init(loadDeadline: Duration = .seconds(5), lintToolchain: LintToolchain? = nil, linkedRules: Bool = false)
-            throws
-        {
+        init(lintToolchain: LintToolchain? = nil, linkedRules: Bool = false) throws {
             root = temporaryURL("meerkatd-e2e")
             paths = DaemonPaths(
                 rulesDirectory: root.appendingPathComponent("rules"),
@@ -41,8 +39,7 @@ struct DaemonEndToEndTests {
             try FileManager.default.createDirectory(at: paths.rulesDirectory, withIntermediateDirectories: true)
             let toolchain = try typeScriptToolchain()
             daemon = try Daemon(
-                paths: paths, runtime: DenoRuntime.handlerRuntime, toolchain: toolchain, ruleLoadDeadline: loadDeadline,
-                lintToolchain: lintToolchain)
+                paths: paths, runtime: DenoRuntime.handlerRuntime, toolchain: toolchain, lintToolchain: lintToolchain)
         }
 
         func write(_ name: String, _ source: String) throws {

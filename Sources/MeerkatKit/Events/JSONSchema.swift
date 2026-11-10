@@ -22,16 +22,33 @@ public enum JSONSchema {
         func node(_ schema: TypeSchema, root: Bool = false) -> JSONValue {
             switch schema {
             case .string: return ["type": "string"]
+            case .text(let bounds):
+                // JSON Schema counts code points, the bounds count UTF-8
+                // bytes: a byte maximum is also a code-point maximum, and a
+                // minimum of one byte is one code point. The projection is
+                // looser than the validator, never stricter.
+                var fields: [String: JSONValue] = ["type": "string", "maxLength": .number(Double(bounds.maximum))]
+                if bounds.minimum > 0 { fields["minLength"] = 1 }
+                if let pattern = bounds.pattern { fields["pattern"] = .string(pattern.regex) }
+                return .object(fields)
             case .number: return ["type": "number"]
             case .bounded(let bounds):
                 var fields: [String: JSONValue] = ["type": bounds.integer ? "integer" : "number"]
-                if let minimum = bounds.minimum { fields["minimum"] = .number(minimum) }
+                if let minimum = bounds.minimum {
+                    fields[bounds.exclusiveMinimum ? "exclusiveMinimum" : "minimum"] = .number(minimum)
+                }
                 if let maximum = bounds.maximum { fields["maximum"] = .number(maximum) }
                 return .object(fields)
             case .boolean: return ["type": "boolean"]
             case .json: return .object([:])
             case .enumeration(let cases): return ["type": "string", "enum": .array(cases.map { .string($0) })]
-            case .array(let element): return ["type": "array", "items": node(element)]
+            case .array(let element, let bounds):
+                var fields: [String: JSONValue] = ["type": "array", "items": node(element)]
+                if bounds.minimum > 0 { fields["minItems"] = .number(Double(bounds.minimum)) }
+                // JSON Schema counts duplicates, which a `distinct` maximum
+                // does not: left out, so the projection stays the looser.
+                if let maximum = bounds.maximum, !bounds.distinct { fields["maxItems"] = .number(Double(maximum)) }
+                return .object(fields)
             case .record(let element): return ["type": "object", "additionalProperties": node(element)]
             case .object(let object): return objectNode(object)
             case .named(let name, let object):
@@ -53,8 +70,11 @@ public enum JSONSchema {
             var properties: [String: JSONValue] = [:]
             for field in object.fields {
                 var property = node(field.schema)
-                if let doc = field.doc, !doc.isEmpty, case .object(var fields) = property {
-                    fields["description"] = .string(doc)
+                // Bounds and the default have keywords of their own, so the
+                // description is the doc alone.
+                if case .object(var fields) = property {
+                    if let doc = field.doc, !doc.isEmpty { fields["description"] = .string(doc) }
+                    if let value = field.default { fields["default"] = value }
                     property = .object(fields)
                 }
                 properties[field.name] = property

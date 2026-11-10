@@ -3,10 +3,11 @@
 //! tsmono's JS rules do (UTF-16 code units, every ECMAScript line
 //! terminator).
 
+use std::fs;
 use std::path::Path;
 
 use oxc::allocator::Allocator;
-use oxc::ast::ast::Comment;
+use oxc::ast::ast::{Comment, Expression, ObjectPropertyKind};
 use oxc::parser::{ParseOptions, Parser};
 use oxc::semantic::{AstNodes, Scoping, Semantic, SemanticBuilder};
 use oxc::span::{SourceType, Span};
@@ -42,13 +43,91 @@ impl Edit {
     }
 }
 
-/// Oxfmt's default print width, which the repository and rule folders use.
-pub const LINE_WIDTH: usize = 100;
+/// What Oxfmt lays a file out to, and so the compact rules: its print
+/// width and one level of indent. A rules folder's `.oxfmtrc.json` starts as
+/// policy/oxfmtrc.json and is the author's from then on, so a file's layout
+/// is read from the `.oxfmtrc.json` nearest it, over Oxfmt's own defaults
+/// as Oxfmt reads it; a file with none above it, or one that does not
+/// parse, keeps to the policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Layout {
+    pub line_width: usize,
+    pub tab_width: usize,
+    pub use_tabs: bool,
+}
+
+const POLICY: &str = include_str!("../policy/oxfmtrc.json");
+const CONFIGURATION: &str = ".oxfmtrc.json";
+
+/// What Oxfmt applies where a configuration says nothing.
+const OXFMT_DEFAULTS: Layout = Layout { line_width: 100, tab_width: 2, use_tabs: false };
+
+impl Layout {
+    /// policy/oxfmtrc.json's layout, which its test holds it to.
+    pub fn policy() -> Layout {
+        OXFMT_DEFAULTS.with(POLICY).unwrap_or(OXFMT_DEFAULTS)
+    }
+
+    /// The layout for the file at `path`. A configuration that cannot be
+    /// read or parsed counts as absent: Oxfmt reports it, and the rules
+    /// keep to the policy meanwhile.
+    pub fn of(path: &Path) -> Layout {
+        let Ok(path) = std::path::absolute(path) else { return Layout::policy() };
+        path.ancestors()
+            .skip(1)
+            .find_map(|directory| fs::read_to_string(directory.join(CONFIGURATION)).ok())
+            .and_then(|text| OXFMT_DEFAULTS.with(&text))
+            .unwrap_or_else(Layout::policy)
+    }
+
+    /// These options with what `configuration`, Oxfmt's JSON, sets; none
+    /// when it is not a JSON object.
+    fn with(mut self, configuration: &str) -> Option<Layout> {
+        let allocator = Allocator::default();
+        let Ok(Expression::ObjectExpression(object)) =
+            Parser::new(&allocator, configuration, SourceType::default()).parse_expression()
+        else {
+            return None;
+        };
+        // A whole number as written: Oxfmt takes no other.
+        let whole = |value: &Expression| match value {
+            Expression::NumericLiteral(number) => number.raw.as_ref().and_then(|raw| raw.parse::<usize>().ok()),
+            _ => None,
+        };
+        for property in &object.properties {
+            let ObjectPropertyKind::ObjectProperty(property) = property else { continue };
+            let key = |name: &str| property.key.is_specific_static_name(name);
+            if key("printWidth") {
+                self.line_width = whole(&property.value).filter(|width| *width > 0).unwrap_or(self.line_width);
+            } else if key("tabWidth") {
+                self.tab_width = whole(&property.value).unwrap_or(self.tab_width);
+            } else if key("useTabs")
+                && let Expression::BooleanLiteral(tabs) = &property.value
+            {
+                self.use_tabs = tabs.value;
+            }
+        }
+        Some(self)
+    }
+
+    /// One level of indent.
+    pub fn indent(&self) -> String {
+        if self.use_tabs { "\t".to_owned() } else { " ".repeat(self.tab_width) }
+    }
+
+    /// Width as Oxfmt measures it against `line_width`: JavaScript's
+    /// `String.length`, which tsmono's rules count, with a tab as
+    /// `tab_width` columns.
+    pub fn width(&self, text: &str) -> usize {
+        text.encode_utf16().map(|unit| if unit == u16::from(b'\t') { self.tab_width } else { 1 }).sum()
+    }
+}
 
 /// What a rule sees.
 pub struct Context<'s, 'a> {
     pub text: &'a str,
     pub semantic: &'s Semantic<'a>,
+    pub layout: &'s Layout,
 }
 
 impl<'a> Context<'_, 'a> {
@@ -115,12 +194,6 @@ pub fn line_indent(text: &str, offset: usize) -> &str {
     &line[..line.len() - line.trim_start_matches([' ', '\t']).len()]
 }
 
-/// Width as JavaScript's `String.length` counts it, which `LINE_WIDTH` was
-/// defined against.
-pub fn width(text: &str) -> usize {
-    text.encode_utf16().count()
-}
-
 /// Why a file was not analyzed.
 #[derive(Debug)]
 pub enum Skip {
@@ -128,9 +201,9 @@ pub enum Skip {
     Syntax(usize),
 }
 
-/// Parse `text` as the file at `path` and run `rules` on it. Each finding
-/// comes with the id of the rule that made it.
-pub fn analyze(path: &Path, text: &str, rules: &[Rule]) -> Result<Vec<(&'static str, Finding)>, Skip> {
+/// Parse `text` as the file at `path` and run `rules` on it, laying code out
+/// to `layout`. Each finding comes with the id of the rule that made it.
+pub fn analyze(path: &Path, text: &str, rules: &[Rule], layout: &Layout) -> Result<Vec<(&'static str, Finding)>, Skip> {
     let allocator = Allocator::default();
     let source_type = source_type(path).ok_or(Skip::UnknownExtension)?;
     // No ParenthesizedExpression nodes, as in the AST Oxlint gives JS
@@ -143,7 +216,7 @@ pub fn analyze(path: &Path, text: &str, rules: &[Rule]) -> Result<Vec<(&'static 
     // Rules walk parents, so the node table is needed; oxc leaves it off by
     // default.
     let built = SemanticBuilder::new().with_build_nodes(true).build(&parsed.program);
-    let context = Context { text, semantic: &built.semantic };
+    let context = Context { text, semantic: &built.semantic, layout };
     Ok(rules.iter().flat_map(|rule| (rule.check)(&context).into_iter().map(|finding| (rule.id, finding))).collect())
 }
 
@@ -188,10 +261,10 @@ pub const MAX_FIX_PASSES: usize = 10;
 
 /// Apply `rules`' fixes until none apply. Returns the fixed text, or the
 /// reason the file could not be analyzed.
-pub fn fix(path: &Path, text: &str, rules: &[Rule]) -> Result<String, Skip> {
+pub fn fix(path: &Path, text: &str, rules: &[Rule], layout: &Layout) -> Result<String, Skip> {
     let mut current = text.to_owned();
     for _ in 0..MAX_FIX_PASSES {
-        let edits = analyze(path, &current, rules)?.into_iter().filter_map(|(_, f)| f.edit).collect();
+        let edits = analyze(path, &current, rules, layout)?.into_iter().filter_map(|(_, f)| f.edit).collect();
         let (next, applied) = apply(&current, edits);
         if applied == 0 {
             break;
@@ -210,13 +283,48 @@ pub fn position(text: &str, offset: u32) -> (usize, usize) {
 }
 
 #[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::{Layout, OXFMT_DEFAULTS, POLICY};
+
+    /// The policy sets each layout key itself, whatever it is read over.
+    #[test]
+    fn the_policy_is_read_from_its_file() {
+        let unlike = Layout { line_width: 1, tab_width: 9, use_tabs: true };
+        assert_eq!(unlike.with(POLICY), Some(Layout { line_width: 100, tab_width: 2, use_tabs: false }));
+        assert_eq!(Layout::policy().indent(), "  ");
+    }
+
+    /// A rules folder's own configuration is the author's: the nearest one
+    /// above the file counts, and what it leaves out is Oxfmt's default.
+    #[test]
+    fn a_file_is_laid_out_to_the_nearest_configuration() {
+        let root = std::env::temp_dir().join(format!("meerkat-lint-layout-{}", std::process::id()));
+        let nested = root.join("rules").join("lib");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(root.join(".oxfmtrc.json"), r#"{ "printWidth": 120, "useTabs": true, "tabWidth": 4 }"#).unwrap();
+        fs::write(root.join("rules").join(".oxfmtrc.json"), r#"{ "printWidth": 80 }"#).unwrap();
+
+        assert_eq!(Layout::of(&nested.join("x.ts")), Layout { line_width: 80, ..OXFMT_DEFAULTS });
+        let top = Layout::of(&root.join("y.ts"));
+        assert_eq!(top, Layout { line_width: 120, tab_width: 4, use_tabs: true });
+        assert_eq!((top.indent(), top.width("\tab")), ("\t".to_owned(), 6));
+
+        fs::write(root.join("rules").join(".oxfmtrc.json"), "not json").unwrap();
+        assert_eq!(Layout::of(&nested.join("x.ts")), Layout::policy());
+        fs::remove_dir_all(&root).unwrap();
+    }
+}
+
+#[cfg(test)]
 pub mod testing {
     //! Run one rule the way tsmono's tests do: fix to a fixed point, and list
     //! the lines it reports.
 
     use std::path::Path;
 
-    use super::{analyze, fix, position};
+    use super::{Layout, analyze, fix, position};
     use crate::rules::{RULES, Rule};
 
     fn rule(id: &str) -> Rule {
@@ -224,14 +332,15 @@ pub mod testing {
     }
 
     pub fn fixed(id: &str, name: &str, source: &str) -> String {
-        let fixed = fix(Path::new(name), source, &[rule(id)]).expect("parses");
-        assert_eq!(fix(Path::new(name), &fixed, &[rule(id)]).expect("parses"), fixed, "not idempotent");
+        let layout = Layout::policy();
+        let fixed = fix(Path::new(name), source, &[rule(id)], &layout).expect("parses");
+        assert_eq!(fix(Path::new(name), &fixed, &[rule(id)], &layout).expect("parses"), fixed, "not idempotent");
         assert!(lines(id, name, &fixed).is_empty(), "fixed output still reported:\n{fixed}");
         fixed
     }
 
     pub fn lines(id: &str, name: &str, source: &str) -> Vec<usize> {
-        let findings = analyze(Path::new(name), source, &[rule(id)]).expect("parses");
+        let findings = analyze(Path::new(name), source, &[rule(id)], &Layout::policy()).expect("parses");
         let mut lines: Vec<usize> = findings.iter().map(|(_, f)| position(source, f.offset).0).collect();
         lines.sort_unstable();
         lines

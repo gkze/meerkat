@@ -24,7 +24,7 @@ final class DaemonSettings: Sendable {
     private let logger = Logger(subsystem: DaemonService.label, category: "settings")
 
     init(rulesDirectory: URL, catalog: EventCatalog) {
-        file = rulesDirectory.appendingPathComponent(MeerkatConfiguration.fileName)
+        file = DaemonPaths.configurationFile(in: rulesDirectory)
         self.catalog = catalog
         state = Mutex(
             ConfigurationStatus(
@@ -39,10 +39,7 @@ final class DaemonSettings: Sendable {
 
     var policy: MCPPolicy { MCPPolicy(current.mcp) }
 
-    var sampleLimits: SampleStore.Limits {
-        let samples = current.samples
-        return SampleStore.Limits(maxAgeDays: samples.maxAgeDays, maxMegabytes: samples.maxMegabytes)
-    }
+    var sampleLimits: SampleStore.Limits { SampleStore.Limits(current.samples) }
 
     /// The file's problem as a rule diagnostic, for `RulesReport`.
     var diagnostic: RuleDiagnostic? {
@@ -96,19 +93,9 @@ final class DaemonSettings: Sendable {
         }
     }
 
-    /// The file's JSON Schema in the rules directory's editor support, for
-    /// `$schema`. Written only when it changed, so the watcher sees no
-    /// change that is not one.
-    func writeSchema(rulesDirectory: URL) {
-        let url = rulesDirectory.appendingPathComponent(MeerkatConfiguration.schemaPath)
-        let text = MeerkatConfiguration.jsonSchema(catalog)
-        if (try? String(contentsOf: url, encoding: .utf8)) == text { return }
-        do {
-            try FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try text.write(to: url, atomically: true, encoding: .utf8)
-        } catch {
-            logger.error("could not write \(url.path, privacy: .public): \(error, privacy: .public)")
-        }
+    /// The file's JSON Schema and where the rules directory's editor
+    /// support keeps it, for `$schema` (`EditorSupport`).
+    var schema: (path: String, text: String) {
+        (MeerkatConfiguration.schemaPath, MeerkatConfiguration.jsonSchema(catalog))
     }
 }

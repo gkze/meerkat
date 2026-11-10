@@ -1171,6 +1171,9 @@ public func FfiConverterTypeRuntimeHost_lower(_ value: RuntimeHost) -> UInt64 {
 
 
 public struct EntryResult: Equatable, Hashable {
+    /**
+     * The entry's module, as `HostEntry.module` named it.
+     */
     public var entry: String
     /**
      * Each rule's definition with `handle` removed, as the author wrote it,
@@ -1181,7 +1184,10 @@ public struct EntryResult: Equatable, Hashable {
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
-    public init(entry: String, 
+    public init(
+        /**
+         * The entry's module, as `HostEntry.module` named it.
+         */entry: String, 
         /**
          * Each rule's definition with `handle` removed, as the author wrote it,
          * as JSON.
@@ -1360,6 +1366,66 @@ public func FfiConverterTypeHandlerError_lower(_ value: HandlerError) -> RustBuf
 
 
 /**
+ * An entry module and its file's name, which the daemon gives it (the
+ * module plus `.ts`): the host calls the file that in every `Fault`, every
+ * `Log` and the first part of each of its rules' ids, so the daemon's name
+ * for a file is the only one.
+ */
+public struct HostEntry: Equatable, Hashable {
+    public var module: String
+    public var file: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(module: String, file: String) {
+        self.module = module
+        self.file = file
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension HostEntry: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeHostEntry: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> HostEntry {
+        return
+            try HostEntry(
+                module: FfiConverterString.read(from: &buf), 
+                file: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: HostEntry, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.module, into: &buf)
+        FfiConverterString.write(value.file, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostEntry_lift(_ buf: RustBuffer) throws -> HostEntry {
+    return try FfiConverterTypeHostEntry.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeHostEntry_lower(_ value: HostEntry) -> RustBuffer {
+    return FfiConverterTypeHostEntry.lower(value)
+}
+
+
+/**
  * A compiled ES module, by its path relative to the rules directory without
  * the extension (`util`, `lib/paths`).
  */
@@ -1426,7 +1492,7 @@ public enum DaemonToHost: Equatable, Hashable {
      * top-level code has `entry_deadline_seconds` to finish; one that does
      * not fails alone. A host loads once.
      */
-    case load(modules: [HostModule], entries: [String], rejected: [String: String], entryDeadlineSeconds: Double, 
+    case load(modules: [HostModule], entries: [HostEntry], rejected: [String: String], entryDeadlineSeconds: Double, 
         /**
          * The daemon's effect table, as JSON: each effect's wire name, its
          * place on the handler context, how its arguments become request
@@ -1446,7 +1512,7 @@ public enum DaemonToHost: Equatable, Hashable {
      * host enforces `timeout_seconds` from the moment the handler starts,
      * not from when the message was sent.
      *
-     * `rule` is the rule's id: its file (the entry plus `.ts`), `#`, its
+     * `rule` is the rule's id: its file (`HostEntry.file`), `#`, its
      * name. The daemon forms it from the definition (`RuleDefinition.id`),
      * and the host from the definitions the file reported (host.rs,
      * `rule_id`), which it hands the rule's code.
@@ -1479,7 +1545,7 @@ public struct FfiConverterTypeDaemonToHost: FfiConverterRustBuffer {
         let variant: Int32 = try readInt(&buf)
         switch variant {
         
-        case 1: return .load(modules: try FfiConverterSequenceTypeHostModule.read(from: &buf), entries: try FfiConverterSequenceString.read(from: &buf), rejected: try FfiConverterDictionaryStringString.read(from: &buf), entryDeadlineSeconds: try FfiConverterDouble.read(from: &buf), effects: try FfiConverterString.read(from: &buf)
+        case 1: return .load(modules: try FfiConverterSequenceTypeHostModule.read(from: &buf), entries: try FfiConverterSequenceTypeHostEntry.read(from: &buf), rejected: try FfiConverterDictionaryStringString.read(from: &buf), entryDeadlineSeconds: try FfiConverterDouble.read(from: &buf), effects: try FfiConverterString.read(from: &buf)
         )
         
         case 2: return .permit(entry: try FfiConverterString.read(from: &buf), permissions: try FfiConverterTypeFilePermissions.read(from: &buf)
@@ -1502,7 +1568,7 @@ public struct FfiConverterTypeDaemonToHost: FfiConverterRustBuffer {
         case let .load(modules,entries,rejected,entryDeadlineSeconds,effects):
             writeInt(&buf, Int32(1))
             FfiConverterSequenceTypeHostModule.write(modules, into: &buf)
-            FfiConverterSequenceString.write(entries, into: &buf)
+            FfiConverterSequenceTypeHostEntry.write(entries, into: &buf)
             FfiConverterDictionaryStringString.write(rejected, into: &buf)
             FfiConverterDouble.write(entryDeadlineSeconds, into: &buf)
             FfiConverterString.write(effects, into: &buf)
@@ -1826,9 +1892,10 @@ public enum HostToDaemon: Equatable, Hashable {
      * file, and for an overrun the rule and invocation when that rule's
      * handler was running its own code (after an `await`, or in a timer,
      * the runtime knows only the file). Only an overrun names them: running
-     * out of heap, or a worker failing, is the file's alone, so a fault with
-     * an invocation is that invocation's overrun. `reason` follows the
-     * name: "held the JavaScript thread for 5.1 s".
+     * out of heap, or a worker failing, is the file's alone. `reason`
+     * follows the name: "held the JavaScript thread for 5.1 s". The host's
+     * `terminated` reason that follows is that sentence whole: the rule's id
+     * or the file, then `reason`.
      */
     case fault(file: String, rule: String?, invocation: UInt64?, kind: FaultKind, reason: String
     )
@@ -2086,6 +2153,31 @@ fileprivate struct FfiConverterSequenceTypeEntryResult: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeHostEntry: FfiConverterRustBuffer {
+    typealias SwiftType = [HostEntry]
+
+    public static func write(_ value: [HostEntry], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeHostEntry.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [HostEntry] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [HostEntry]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeHostEntry.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeHostModule: FfiConverterRustBuffer {
     typealias SwiftType = [HostModule]
 
@@ -2158,6 +2250,28 @@ public func maximumMessageTextBytes() -> UInt64  {
 })
 }
 /**
+ * `MAXIMUM_RULE_NAME`, for the daemon's check that its own bound on a
+ * rule's name is the same.
+ */
+public func maximumRuleNameBytes() -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meerkat_runtime_fn_func_maximum_rule_name_bytes(uniffiCallStatus
+    )
+})
+}
+/**
+ * `MAXIMUM_TEXT`, which the daemon holds its own rule log lines to, so a
+ * rule's log has one limit whoever wrote the line.
+ */
+public func maximumTextBytes() -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_meerkat_runtime_fn_func_maximum_text_bytes(uniffiCallStatus
+    )
+})
+}
+/**
  * The TypeScript declarations of the globals rule code runs with (composed
  * by build.rs).
  */
@@ -2188,6 +2302,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meerkat_runtime_checksum_func_maximum_message_text_bytes() != 12387) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meerkat_runtime_checksum_func_maximum_rule_name_bytes() != 51138) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_meerkat_runtime_checksum_func_maximum_text_bytes() != 41829) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_meerkat_runtime_checksum_func_runtime_declarations() != 47040) {

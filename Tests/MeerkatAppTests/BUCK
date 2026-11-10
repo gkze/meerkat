@@ -1,12 +1,14 @@
 load("//buck2/rules:meerkat.bzl", "meerkat_swift_test")
+load("//buck2/third_party/js:defs.bzl", "js_tool")
 
 # The rule sources the app writes are type-checked with the tsrs Meerkat.app
-# bundles.
+# bundles; the editor's indent is checked against the formatter's policy.
 meerkat_swift_test(
     name = "MeerkatAppTests",
     env = {
+        "MEERKAT_FORMAT_POLICY": "$(location //Sources/meerkat-lint:oxfmtrc)",
         "MEERKAT_RUNTIME_TYPES": "$(location //Sources/meerkat-rules:deno.d.ts)",
-        "MEERKAT_TSRS": "$(location //buck2/third_party/js:tsrs)/tsrs",
+        "MEERKAT_TSRS": js_tool("tsrs"),
     },
     deps = [
         "//Sources/MeerkatAgent:MeerkatAgent",

@@ -2,9 +2,11 @@ import Foundation
 
 // MARK: - Public output types
 //
-// Every type here is Codable so the CLI can emit JSON that meerkat ingests
-// without a translation layer. Each carries an explicit public initializer:
-// Swift's memberwise init is internal, which would hide these from clients.
+// What a sample produces. The types that leave the process (a delta, a
+// sample, churn) are Codable: the JSON the CLI prints and payloads carry.
+// Counters and snapshots stay in memory. Each carries an
+// explicit public initializer: Swift's memberwise init is internal, which
+// would hide these from clients.
 
 /// Absolute CPU/IO counters for a single process at one instant.
 public struct ProcessCounters: Sendable, Equatable {
@@ -63,6 +65,15 @@ public struct ProcessSnapshot: Sendable {
         self.takenAt = takenAt
         self.counters = counters
     }
+
+    /// Seconds since `previous`, never zero: what a window's totals are
+    /// rates over, even for two snapshots taken at one instant.
+    public func window(since previous: ProcessSnapshot) -> Double {
+        max(takenAt.timeIntervalSince(previous.takenAt), Self.shortestWindow)
+    }
+
+    /// The least window a rate is taken over, in seconds.
+    static let shortestWindow = 0.001
 }
 
 /// A process measured across a window: deltas plus the absolute footprint.
@@ -299,10 +310,19 @@ public enum MachTime {
     }
 }
 
-/// The sample store's default budget, which `meerkat.json` can change.
-public enum SampleBudget {
-    public static let maxAgeDays = 30
-    public static let maxMegabytes = 500
+/// The sample store's own budget, whoever records into it: `meerkat.json`'s
+/// `samples`, which the store keeps (`SampleStore.Limits`). A rule's
+/// `store.record({ retain })` bounds its own label within this.
+public struct SampleBudget: Codable, Sendable, Equatable {
+    /// Samples older than this are deleted.
+    public var maxAgeDays: Int
+    /// The store is trimmed, oldest first, when it grows past this.
+    public var maxMegabytes: Int
+
+    public init(maxAgeDays: Int = 30, maxMegabytes: Int = 500) {
+        self.maxAgeDays = maxAgeDays
+        self.maxMegabytes = maxMegabytes
+    }
 }
 
 extension [Double] {

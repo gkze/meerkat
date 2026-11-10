@@ -21,6 +21,13 @@ struct RuleDefinitionTests {
         #expect(!rule.includeOwn)
     }
 
+    /// An option given as null that has a default takes it, as the schema
+    /// admits every value from outside.
+    @Test func aNullOptionWithADefaultIsTheDefault() throws {
+        let rule = try decode(["name": "r", "on": "memory.pressure", "timeoutSeconds": .null, "includeOwn": .null])
+        #expect(rule.timeout == .seconds(5) && !rule.includeOwn)
+    }
+
     @Test func parametersAreNormalizedWithDefaults() throws {
         let rule = try decode(["name": "r", "on": "cpu.sample", "params": ["interval": 2]])
         #expect(rule.parameters.json == .object(["interval": 2]))
@@ -32,13 +39,22 @@ struct RuleDefinitionTests {
             (["name": "r", "on": "nope"], "\"on\": unknown event \"nope\""),
             (["name": "", "on": "timer"], "\"name\" must be a non-empty string"),
             (["name": "r", "on": "timer", "extra": 1], "unknown field \"extra\""),
+            (["name": "r#s", "on": "timer"], "\"name\" must not contain #"),
+            (
+                ["name": .string(String(repeating: "n", count: 257)), "on": "timer"],
+                "\"name\" is longer than 256 bytes"
+            ),
+            (
+                ["name": "r", "on": "timer", "params": ["every": 5], "rate": .null],
+                "rate: null where the schema expects a value"
+            ),
             (
                 ["name": "r", "on": "timer", "params": ["every": 0]],
-                "\"params\": invalid parameters: \"every\" must be between 1.0 and 604800.0 seconds, got 0.0"
+                "\"params\": invalid parameters: every: 0 is less than 1"
             ),
             (
                 ["name": "r", "on": "timer", "params": ["every": 5], "timeoutSeconds": 99],
-                "\"timeoutSeconds\" must be a number between 0.1 and 60.0"
+                "timeoutSeconds: 99 is more than 60"
             ),
             (
                 ["name": "r", "on": "timer", "params": ["every": 5], "capabilities": ["root": true]],
@@ -169,7 +185,8 @@ struct EffectRequestTests {
             "kind": "process.signal", "signal": "stop",
             "target": ["pid": 10, "startedAt": 1_700_000_000_000],
         ])
-        #expect(signal.action == .signal(target: ProcessIdentity(pid: 10, startedAt: 1_700_000_000_000), signal: .stop))
+        let target = try #require(ProcessIdentity(pid: 10, startedAt: 1_700_000_000_000))
+        #expect(signal.action == .signal(target: target, signal: .stop))
         #expect(throws: EffectError.self) {
             try EffectRequest(["kind": "process.signal", "signal": "stop", "target": ["pid": 10]])
         }

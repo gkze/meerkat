@@ -57,18 +57,19 @@ SwiftSearchPathTSet = transitive_set(args_projections = {"args": lambda value: v
 SwiftPluginTSet = transitive_set(args_projections = {"args": lambda value: value})
 
 SwiftModuleInfo = provider(fields = {
-    "module_name": str,
     "plugins": SwiftPluginTSet,
     "search_paths": SwiftSearchPathTSet,
 })
 
 # What a target is in SwiftPM's terms, for //buck2/conformance: its
-# module name, those of its direct dependencies (modules and macros), and
-# for a Swift target the settings Package.swift states as `swiftSettings`
-# (`warnings`, sorted `upcoming_features`); None for a C target or a binary
-# framework.
+# module name, those of its direct dependencies (modules and macros), what a
+# C target links that Package.swift states as `linkerSettings` (`-l<library>`
+# and `-framework <name>`, sorted), and for a Swift target the settings it
+# states as `swiftSettings` (`warnings`, sorted `upcoming_features`); None
+# for a C target or a binary framework.
 SwiftTargetInfo = provider(fields = {
     "deps": list[str],
+    "linker": list[str],
     "module_name": str,
     "swift_settings": dict[str, typing.Any] | None,
 })
@@ -93,7 +94,6 @@ def _resources(deps: list[Dependency], own: list[Artifact] = []) -> SwiftResourc
     return SwiftResourcesInfo(bundles = bundles.values())
 
 SwiftMacroInfo = provider(fields = {
-    "executable": Artifact,
     "module_name": str,
     # This plugin's node in `SwiftPluginTSet`.
     "plugin": SwiftPluginTSet,
@@ -114,10 +114,9 @@ def _plugins(ctx: AnalysisContext, deps: list[Dependency], macros: list[Dependen
     children += [dep[SwiftModuleInfo].plugins for dep in deps if SwiftModuleInfo in dep]
     return ctx.actions.tset(SwiftPluginTSet, children = children)
 
-def _compile_command(ctx: AnalysisContext, module_name: str, srcs: list, parse_as_library: bool, extra_flags: list) -> (cmd_args, SwiftSearchPathTSet, SwiftPluginTSet):
+def _compile_command(ctx: AnalysisContext, module_name: str, srcs: list, parse_as_library: bool, extra_flags: list) -> (cmd_args, SwiftPluginTSet):
     """swiftc with a module's settings and sources, and no output yet; also
-    the search paths of its dependencies and the plugins it loads (its own
-    `macros` and its dependencies')."""
+    the plugins it loads (its own `macros` and its dependencies')."""
     toolchain = _toolchain(ctx)
     dep_paths = _search_paths(ctx, ctx.attrs.deps)
     plugins = _plugins(ctx, ctx.attrs.deps, ctx.attrs.macros)
@@ -154,7 +153,7 @@ def _compile_command(ctx: AnalysisContext, module_name: str, srcs: list, parse_a
     cmd.add(extra_flags)
     cmd.add(dep_paths.project_as_args("args"))
     cmd.add(srcs)
-    return cmd, dep_paths, plugins
+    return cmd, plugins
 
 def _run_swiftc(ctx: AnalysisContext, cmd: cmd_args, category: str):
     # The driver keeps its intermediate objects in TMPDIR until the step
@@ -171,22 +170,22 @@ def _run_swiftc(ctx: AnalysisContext, cmd: cmd_args, category: str):
             cmd,
         ),
         category = category,
-        env = {"MEERKAT_XCODE_BUILD": _toolchain(ctx).xcode_build},
+        env = _toolchain(ctx).env,
         # The shared SDK module cache is written outside Buck's outputs.
         local_only = True,
     )
 
-def _compile(ctx: AnalysisContext, module_name: str, srcs: list, parse_as_library: bool, extra_flags: list = []) -> (Artifact, Artifact, SwiftSearchPathTSet, SwiftPluginTSet):
+def _compile(ctx: AnalysisContext, module_name: str, srcs: list, parse_as_library: bool, extra_flags: list = []) -> (Artifact, Artifact, SwiftPluginTSet):
     """Compiles one module into a static library. Returns the library, the
     directory holding its `.swiftmodule` (and `.swiftdoc`,
-    `.swiftsourceinfo`), and what `_compile_command` returns."""
+    `.swiftsourceinfo`), and the plugins it loads."""
     # A static library rather than objects: its sources are known only when
     # the action runs (`srcs_dir`), and in debug the driver compiles them in
     # parallel batches (SwiftPM's default), so their objects are not known
     # either. Whole-module optimization is release's (`compile_flags`).
     library = ctx.actions.declare_output("lib{}.a".format(module_name))
     modules = ctx.actions.declare_output("modules", dir = True)
-    cmd, dep_paths, plugins = _compile_command(ctx, module_name, srcs, parse_as_library, extra_flags)
+    cmd, plugins = _compile_command(ctx, module_name, srcs, parse_as_library, extra_flags)
     cmd.add(
         "-emit-library",
         "-static",
@@ -197,7 +196,7 @@ def _compile(ctx: AnalysisContext, module_name: str, srcs: list, parse_as_librar
         cmd_args(modules.as_output(), format = "{}/" + module_name + ".swiftmodule"),
     )
     _run_swiftc(ctx, cmd, "swift_compile")
-    return library, modules, dep_paths, plugins
+    return library, modules, plugins
 
 def _force_load(libraries: list[Artifact]) -> cmd_args:
     """Links every member of each library, as SwiftPM links a module's
@@ -271,13 +270,13 @@ def _compile_attrs() -> dict:
 def _module_name(ctx: AnalysisContext) -> str:
     return ctx.attrs.module_name or ctx.label.name
 
-def _target_info(ctx: AnalysisContext, module_name: str) -> SwiftTargetInfo:
+def _target_info(ctx: AnalysisContext, module_name: str, linker: list[str] = []) -> SwiftTargetInfo:
     deps = [dep[SwiftTargetInfo].module_name for dep in ctx.attrs.deps if SwiftTargetInfo in dep]
     deps += [macro[SwiftMacroInfo].module_name for macro in getattr(ctx.attrs, "macros", [])]
     settings = None
     if hasattr(ctx.attrs, "upcoming_features"):
         settings = {"upcoming_features": sorted(ctx.attrs.upcoming_features), "warnings": ctx.attrs.warnings}
-    return SwiftTargetInfo(module_name = module_name, deps = sorted(deps), swift_settings = settings)
+    return SwiftTargetInfo(module_name = module_name, deps = sorted(deps), linker = sorted(linker), swift_settings = settings)
 
 def _swift_library_impl(ctx: AnalysisContext) -> list[Provider]:
     module_name = _module_name(ctx)
@@ -286,7 +285,7 @@ def _swift_library_impl(ctx: AnalysisContext) -> list[Provider]:
         entry = ["-Xfrontend", "-entry-point-function-name", "-Xfrontend", ctx.attrs.entry_point]
     bundle = ctx.attrs.resource_bundle[SwiftResourceBundleInfo] if ctx.attrs.resource_bundle else None
     srcs = _srcs(ctx) + ([bundle.accessor] if bundle else [])
-    obj, modules, _, plugins = _compile(ctx, module_name, srcs, parse_as_library = True, extra_flags = entry)
+    obj, modules, plugins = _compile(ctx, module_name, srcs, parse_as_library = True, extra_flags = entry)
     search_paths = _search_paths(ctx, ctx.attrs.deps, own = cmd_args("-I", modules))
     return [
         _resources(ctx.attrs.deps, [bundle.bundle] if bundle else []),
@@ -294,7 +293,7 @@ def _swift_library_impl(ctx: AnalysisContext) -> list[Provider]:
             "library": [DefaultInfo(default_output = obj)],
             "swiftmodule": [DefaultInfo(default_output = modules)],
         }),
-        SwiftModuleInfo(module_name = module_name, plugins = plugins, search_paths = search_paths),
+        SwiftModuleInfo(plugins = plugins, search_paths = search_paths),
         _target_info(ctx, module_name),
         _link_info(ctx, [obj], ctx.attrs.linker_flags),
     ]
@@ -355,7 +354,7 @@ def _link(ctx: AnalysisContext, name: str, libraries: list[Artifact], extra_flag
             inputs,
         ),
         category = "swift_link",
-        env = {"MEERKAT_XCODE_BUILD": toolchain.xcode_build},
+        env = toolchain.env,
     )
     return output
 
@@ -370,7 +369,7 @@ def _swift_binary_impl(ctx: AnalysisContext) -> list[Provider]:
         # One swiftc compiles and links: as an executable, a `main.swift`'s
         # top-level code is the entry point, which it cannot be in a library.
         executable = ctx.actions.declare_output(ctx.label.name)
-        cmd, _, _ = _compile_command(ctx, _module_name(ctx), _srcs(ctx), not _has_main_file(ctx), [])
+        cmd, _ = _compile_command(ctx, _module_name(ctx), _srcs(ctx), not _has_main_file(ctx), [])
         # With `-g`, the driver also emits the module for the debugger. Give
         # it a declared path: without one it writes `<Module>-1.swiftmodule`
         # and its siblings into the working directory, the repository root.
@@ -400,7 +399,7 @@ swift_binary = rule(
 
 def _swift_macro_impl(ctx: AnalysisContext) -> list[Provider]:
     module_name = _module_name(ctx)
-    obj, _, _, _ = _compile(ctx, module_name, _srcs(ctx), parse_as_library = True)
+    obj, _, _ = _compile(ctx, module_name, _srcs(ctx), parse_as_library = True)
     executable = _link(ctx, module_name, [obj])
     plugin = ctx.actions.tset(
         SwiftPluginTSet,
@@ -409,7 +408,7 @@ def _swift_macro_impl(ctx: AnalysisContext) -> list[Provider]:
     return [
         DefaultInfo(default_output = executable),
         RunInfo(args = [executable]),
-        SwiftMacroInfo(executable = executable, module_name = module_name, plugin = plugin),
+        SwiftMacroInfo(module_name = module_name, plugin = plugin),
         _target_info(ctx, module_name),
     ]
 
@@ -435,7 +434,7 @@ def _swift_test_impl(ctx: AnalysisContext) -> list[Provider]:
     module_name = _module_name(ctx)
     main = ctx.actions.write("SwiftTestingRunner.swift", _TEST_MAIN)
     testing = ["-F", toolchain.platform_frameworks]
-    obj, _, _, _ = _compile(
+    obj, _, _ = _compile(
         ctx, module_name, _srcs(ctx) + [main], parse_as_library = True,
         extra_flags = testing + ["-plugin-path", toolchain.testing_plugins],
     )
@@ -487,13 +486,27 @@ def _clang_module_impl(ctx: AnalysisContext) -> list[Provider]:
     search_paths = _search_paths(ctx, ctx.attrs.deps, own = cmd_args("-Xcc", cmd_args(directory, format = "-I{}")))
     providers = [
         DefaultInfo(default_output = directory),
-        SwiftModuleInfo(module_name = module_name, plugins = _plugins(ctx, ctx.attrs.deps), search_paths = search_paths),
-        _target_info(ctx, module_name),
+        SwiftModuleInfo(plugins = _plugins(ctx, ctx.attrs.deps), search_paths = search_paths),
+        _target_info(ctx, module_name, _linked(ctx.attrs.link, ctx.attrs.linker_flags)),
     ]
     merged = [dep[MergedLinkInfo] for dep in ctx.attrs.deps if MergedLinkInfo in dep]
-    if merged:
+    if ctx.attrs.linker_flags:
+        info = LinkInfo(name = ctx.label.name, post_flags = ctx.attrs.linker_flags)
+        infos = LinkInfos(default = info, stripped = info)
+        cxx = ctx.attrs._cxx_toolchain[CxxToolchainInfo]
+        providers.append(create_merged_link_info(ctx, cxx.pic_behavior, link_infos = {style: infos for style in LibOutputStyle}, deps = merged))
+    elif merged:
         providers.append(create_merged_link_info_for_propagation(ctx, merged))
     return providers
+
+def _linked(link: list[str], linker_flags: list[str]) -> list[str]:
+    """What a clang module's importers link, as SwiftPM's `linkedLibrary`
+    and `linkedFramework` read: `-l<library>`, `-framework <name>`."""
+    linked = ["-l" + library for library in link]
+    for index, flag in enumerate(linker_flags):
+        if flag != "-framework":
+            linked.append("-framework " + flag if index > 0 and linker_flags[index - 1] == "-framework" else flag)
+    return linked
 
 # A C target (or system library) as a clang module Swift can `import`: a
 # generated module map over `headers`, or a package's own `include_dir`. The
@@ -510,6 +523,9 @@ clang_module = rule(
         "include_dir": attrs.option(attrs.source(allow_directory = True), default = None),
         # Libraries the generated module map autolinks (`link "icucore"`).
         "link": attrs.list(attrs.string(), default = []),
+        # What every executable that links the module links too (`-lz`,
+        # `-framework Metal`), as its own link node.
+        "linker_flags": attrs.list(attrs.string(), default = []),
         "module_name": attrs.option(attrs.string(), default = None),
         "_cxx_toolchain": attrs.toolchain_dep(default = "toolchains//:cxx", providers = [CxxToolchainInfo]),
     },
@@ -575,7 +591,7 @@ def _swift_resource_bundle_impl(ctx: AnalysisContext) -> list[Provider]:
     ctx.actions.run(
         cmd_args("/bin/sh", "-c", "\n".join(script), "--", bundle.as_output(), plist, args),
         category = "swift_resource_bundle",
-        env = {"DEVELOPER_DIR": toolchain.developer_dir, "MEERKAT_XCODE_BUILD": toolchain.xcode_build},
+        env = toolchain.env,
     )
     accessor = ctx.actions.write(name + "+resource_bundle_accessor.swift", _ACCESSOR.format(name = name))
     return [DefaultInfo(default_output = bundle), SwiftResourceBundleInfo(accessor = accessor, bundle = bundle)]
@@ -610,11 +626,11 @@ def _prebuilt_framework_impl(ctx: AnalysisContext) -> list[Provider]:
     return [
         DefaultInfo(default_output = unpacked),
         SwiftModuleInfo(
-            module_name = ctx.attrs.framework,
             plugins = ctx.actions.tset(SwiftPluginTSet),
             search_paths = ctx.actions.tset(SwiftSearchPathTSet, value = search),
         ),
-        SwiftTargetInfo(module_name = _module_name(ctx), deps = [], swift_settings = None),
+        # The package's target name, which importers' SwiftPM dependencies name.
+        SwiftTargetInfo(module_name = ctx.label.name, deps = [], linker = [], swift_settings = None),
         create_merged_link_info(ctx, cxx.pic_behavior, link_infos = {style: infos for style in LibOutputStyle}),
     ]
 
@@ -628,7 +644,6 @@ prebuilt_framework = rule(
         "archive": attrs.source(),
         "framework": attrs.string(),
         "library": attrs.string(),
-        "module_name": attrs.option(attrs.string(), default = None),
         "_cxx_toolchain": attrs.toolchain_dep(default = "toolchains//:cxx", providers = [CxxToolchainInfo]),
     },
 )
