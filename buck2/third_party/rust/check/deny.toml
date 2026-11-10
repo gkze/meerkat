@@ -38,6 +38,17 @@ ignore = [
   # already holds the key it uses.
   { id = "RUSTSEC-2023-0071", reason = "rsa Marvin timing side channel: no outside party can query or time a rule's RSA operations" },
   { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 (elliptic-curve 0.13) timing variability: no outside party can query or time a rule's EC operations" },
+  # libsqlite3-sys 0.38.2 (bundled SQLite 3.53.2), through rusqlite 0.40 in
+  # deno_cache, deno_webstorage, deno_kv and deno_node_sqlite; the fix is
+  # rusqlite 0.41. Rule code never opens an SQLite file: node:sqlite's
+  # DatabaseSync and backup are refused (runtime.js; op_node_database_backup
+  # is off), Deno KV's op_kv_database_open is off, and the worker is given no
+  # cache or origin storage folder, so the Cache API and localStorage throw
+  # unsupported and sessionStorage is in memory. The runtime's tests hold
+  # each: apis_writing_around_the_guarded_file_system_are_off (KV, the Cache
+  # API, localStorage) and
+  # apis_writing_around_the_guard_are_refused_by_every_route (node:sqlite).
+  { id = "RUSTSEC-2026-0459", reason = "stale page-cache bytes from a crafted database and -wal pair: rules cannot open an SQLite file (node:sqlite refused, Deno KV off, no storage folders)" },
   # Unmaintained, with no known vulnerability.
   { id = "RUSTSEC-2026-0374", reason = "basic-toml: read by askama's derive macro at build time, in the UniFFI bindings generator; not shipped" },
   { id = "RUSTSEC-2024-0436", reason = "paste: a proc macro of v8's, run at build time; not shipped" },

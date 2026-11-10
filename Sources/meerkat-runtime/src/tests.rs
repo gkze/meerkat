@@ -1055,7 +1055,9 @@ fn web_locks_are_not_shared_across_files() {
 }
 
 /// Deno KV and Unix socket listeners write files outside the file system
-/// that holds protected paths to their real paths, so they are off.
+/// that holds protected paths to their real paths, so they are off. The
+/// Cache API and `localStorage` would too, in SQLite databases, given a
+/// folder; the worker gets none, so they are unsupported.
 #[test]
 fn apis_writing_around_the_guarded_file_system_are_off() {
     let directory = scratch("unguarded");
@@ -1070,6 +1072,8 @@ fn apis_writing_around_the_guarded_file_system_are_off() {
           for (const [what, run] of [
             ["kv", () => Deno.openKv("{kv}")],
             ["unix", () => Deno.listen({{ transport: "unix", path: "{socket}" }})],
+            ["cache", () => caches.open("c")],
+            ["local storage", () => localStorage.setItem("k", "v")],
           ]) {{
             try {{ await run(); console.log(what, "returned"); }} catch (e) {{ console.log(what, "threw"); }}
           }}
@@ -1084,7 +1088,7 @@ fn apis_writing_around_the_guarded_file_system_are_off() {
     let all = directory.to_str().unwrap();
     harness.permit("around", granting(&[all], &[all]));
     harness.invoke(1, "around.ts#a", json!({}), 10.0);
-    assert_eq!(harness.logs_until_done(1), ["kv threw", "unix threw"]);
+    assert_eq!(harness.logs_until_done(1), ["kv threw", "unix threw", "cache threw", "local storage threw"]);
     assert!(!directory.join("kv").exists() && !directory.join("socket").exists());
 }
 
