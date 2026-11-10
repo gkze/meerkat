@@ -42,9 +42,15 @@ struct EngineLifecycleTests {
         await engine.reload()
         try fixture.write("lib/gate.ts", "export const open: boolean = false;\n")
         await engine.reload()
-        let failing = await engine.report().rules
+        let failingReport = await engine.report()
+        let failing = failingReport.rules
         let failed = failing.filter { $0.state == .failed }.map(\.file).sorted()
         #expect(failed == ["odd#name.ts", "plain.ts"], "\(failing)")
+        // The loader's diagnostic gives the thrown message once, with its
+        // stack, though V8's stack starts with the message too.
+        let thrown = failingReport.diagnostics.first { $0.tool == .loader && $0.file == "plain.ts" }?.message ?? ""
+        #expect(thrown.components(separatedBy: "Error: closed").count == 2, "\(thrown)")
+        #expect(thrown.contains("\n    at "), "\(thrown)")
         try fixture.write("lib/gate.ts", "export const open: boolean = true;\n")
         await engine.reload()
 

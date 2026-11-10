@@ -483,9 +483,12 @@ extension HandlerHost.LoadedEntry {
 }
 
 extension HandlerError {
-    /// The message with its stack, as the engine reports a failed load.
+    /// The message with its stack, as the engine reports a failed load. V8's
+    /// stack already starts with the message (`Error: text`), so that one is
+    /// the stack alone; a stack the rule replaced keeps the message above it.
     var report: String {
-        stack.map { "\(message)\n\($0)" } ?? message
+        guard let stack else { return message }
+        return stack.hasPrefix(message) ? stack : "\(message)\n\(stack)"
     }
 }
 
