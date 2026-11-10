@@ -62,14 +62,15 @@ Developer ID and notarized by Apple.
 1. Download `Meerkat-<version>.zip` from
    [Releases](https://github.com/gkze/meerkat/releases) and open it.
 2. Move `Meerkat.app` to `/Applications` (or `~/Applications`) and open it.
-3. Install the agent: the dashboard's **Install Agent** button, or
-   `meerkat agent install`. macOS lists it under Login Items.
-4. Put the CLI on your `PATH`:
+3. Put the CLI on your `PATH`; the command below assumes `/Applications`, so
+   use `~/Applications` there if you moved the app:
 
    ```bash
    ln -sf /Applications/Meerkat.app/Contents/MacOS/meerkat ~/.local/bin/meerkat
    ```
 
+4. Install the agent: the dashboard's **Install Agent** button, or
+   `meerkat agent install`. macOS lists it under Login Items.
 5. Write a rule in `~/.config/meerkat/rules` ([Rules](docs/rules.md)). macOS asks
    for a privacy permission only when a rule subscribes to an event that
    needs one ([Events that need a permission](docs/rules.md#events-that-need-a-permission)).
