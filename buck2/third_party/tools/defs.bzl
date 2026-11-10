@@ -14,6 +14,9 @@
 # asset's `url` and `strip_prefix` is the tool's version, so the hosts cannot
 # run different releases. A tool with no `linux-arm64` asset fails to
 # configure on Linux, which only a check outside `portable` names.
+
+load("//buck2/platforms:defs.bzl", "HOSTS")
+
 TOOLS = {
     # Shell formatting.
     "shfmt": dict(
@@ -199,10 +202,7 @@ TOOLS = {
 }
 
 # The hosts an asset can be for, as //buck2/platforms config settings.
-_HOSTS = {
-    "macos-arm64": "//buck2/platforms:macos-arm64",
-    "linux-arm64": "//buck2/platforms:linux-arm64",
-}
+_HOSTS = {host: "//buck2/platforms:" + host for host in HOSTS}
 
 def _by_host(pin: dict, field: str):
     """A select() of the asset `field` (with `{version}` filled in) by host,

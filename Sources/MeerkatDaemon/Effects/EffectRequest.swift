@@ -5,27 +5,24 @@ import MeerkatKit
 ///
 /// The host is untrusted (it runs user code). The request is first checked
 /// against its schema in the effect catalog (`EffectCatalog`): its fields,
-/// their types and bounds, and nothing undeclared. The typed decode below
-/// then adds the checks a schema cannot express. `EffectExecutor` looks at
-/// grants only after both.
+/// their types, bounds and lengths, and nothing undeclared; then the
+/// schema's defaults fill what it left out. The typed decode below adds only
+/// the checks a schema cannot express. `EffectAuthorizer` looks at grants
+/// only after both.
 struct EffectRequest: Sendable, Equatable {
-    /// The effect's catalog entry.
     let descriptor: EffectDescriptor
     /// What an allow-list or path-list grant is checked against: the request
     /// field `descriptor.grant` names, as the rule meant it. Nil for any
     /// other grant.
     let subject: String?
+    /// The path the effect acts on, from the field its descriptor declares
+    /// (`EffectDescriptor.Traits.path`); nil for an effect without one.
+    let path: String?
+    /// The request's fields, defaults included.
+    let fields: [String: JSONValue]
     let action: Action
 
     var kind: String { descriptor.kind }
-
-    /// Whether the effect acts on the directory entry its path names rather
-    /// than on what a symlink there leads to: moving to the Trash moves the
-    /// link itself. Its path is checked in that form (`CapabilityGrants.entry`),
-    /// against grants and protected paths both.
-    var actsOnEntry: Bool {
-        if case .trash = action { true } else { false }
-    }
 
     init(_ raw: JSONValue, home: String = NSHomeDirectory()) throws {
         guard var fields = raw.objectValue, let kind = fields.removeValue(forKey: "kind")?.stringValue else {
@@ -33,23 +30,31 @@ struct EffectRequest: Sendable, Equatable {
         }
         let catalog = EffectCatalog.standard
         guard let descriptor = catalog.effect(kind) else { throw EffectError.invalid("unknown effect \"\(kind)\"") }
-        let violations = SchemaValidator.violations(of: .object(fields), against: descriptor.request, at: "request")
-        guard violations.isEmpty else {
-            throw EffectError.invalid("\(kind): " + violations.joined(separator: "; "))
+        let admitted: [String: JSONValue]
+        do {
+            admitted = try descriptor.request.admit(.object(fields), at: "request")
+        } catch {
+            throw EffectError.invalid("\(kind): \(error)")
         }
-        let reader = FieldReader(fields: fields, context: kind, home: home)
+        let reader = FieldReader(fields: admitted, context: kind, home: home)
         self.descriptor = descriptor
-        action = try Action(kind: kind, reader: reader)
-        if case .listed(let key, let field) = descriptor.grant {
-            subject = catalog.grant(key)?.shape == .pathList ? try reader.path(field) : try reader.string(field)
-        } else {
+        self.fields = reader.fields
+        path = try descriptor.traits.path.map { try reader.path($0.field) }
+        action = try Action(descriptor.id, reader, path: path)
+        switch descriptor.grant {
+        case .listed(let key, _) where catalog.grant(key)?.shape == .pathList:
+            // The catalog has a path grant name the path the effect acts
+            // on, checked in the form protected paths are checked in.
+            subject = path
+        case .listed(_, let field):
+            subject = try reader.string(field)
+        case .none, .flag:
             subject = nil
         }
     }
 }
 
 extension EffectRequest {
-    /// What the effect does, typed.
     enum Action: Sendable, Equatable {
         case stateGet(key: String)
         case stateSet(key: String, value: JSONValue)
@@ -84,115 +89,101 @@ extension EffectRequest {
         case setWindow(WindowChange)
         case darkMode(on: Bool)
 
-        fileprivate init(kind: String, reader: FieldReader) throws {
+        /// `path` is the request's (`EffectRequest.path`), decoded once from
+        /// the field its descriptor declares.
+        fileprivate init(_ kind: EffectKind, _ reader: FieldReader, path: String?) throws {
+            func declaredPath() throws -> String {
+                guard let path else { throw EffectError.invalid("\(kind.rawValue): declares no path to act on") }
+                return path
+            }
             switch kind {
-            case "state.get":
-                self = .stateGet(key: try reader.key())
-            case "state.set":
-                let value = reader.fields["value"] ?? .null
-                guard value.canonicalString.utf8.count <= 1 << 20 else {
-                    throw EffectError.invalid("state.set: values are limited to 1 MiB of JSON")
-                }
-                self = .stateSet(key: try reader.key(), value: value)
-            case "state.delete":
-                self = .stateDelete(key: try reader.key())
-            case "notify":
+            case .stateGet:
+                self = .stateGet(key: try reader.string("key"))
+            case .stateSet:
+                self = .stateSet(
+                    key: try reader.string("key"), value: try reader.value("value", limit: EffectLimits.valueBytes))
+            case .stateDelete:
+                self = .stateDelete(key: try reader.string("key"))
+            case .notify:
                 self = .notify(try NotificationSpec(reader))
-            case "notify.withdraw":
-                self = .withdrawNotification(id: try reader.notificationID("id"))
-            case "process.signal":
+            case .notifyWithdraw:
+                self = .withdrawNotification(id: try reader.string("id"))
+            case .processSignal:
                 self = .signal(target: try reader.target(), signal: try reader.choice("signal"))
-            case "process.priority":
+            case .processPriority:
                 self = .priority(target: try reader.target(), priority: try reader.choice("priority"))
-            case "process.nice":
-                self = .nice(target: try reader.target(), nice: Int32(try reader.number("nice")))
-            case "exec":
+            case .processNice:
+                self = .nice(target: try reader.target(), nice: try reader.int32("nice"))
+            case .exec:
                 self = .exec(try ExecSpec(reader))
-            case "http":
+            case .http:
                 self = .http(try HTTPSpec(reader))
-            case "store.record":
+            case .storeRecord:
                 self = .record(try RecordSpec(reader))
-            case "power.preventSleep":
+            case .preventSleep:
                 self = .preventSleep(try PreventSleepSpec(reader))
-            case "power.allowSleep":
-                self = .allowSleep(id: try reader.identifier("id"))
-            case "audio.setDefaultDevice":
-                self = .audioDefaultDevice(uid: try reader.string("device"), scope: try reader.scope())
-            case "audio.setVolume":
+            case .allowSleep:
+                self = .allowSleep(id: try reader.string("id"))
+            case .audioDefaultDevice:
+                self = .audioDefaultDevice(uid: try reader.string("device"), scope: try reader.choice("direction"))
+            case .audioVolume:
                 self = .audioVolume(
-                    volume: try reader.number("volume"), scope: try reader.scope(),
+                    volume: try reader.number("volume"), scope: try reader.choice("direction"),
                     device: try reader.optionalString("device"))
-            case "audio.setMute":
+            case .audioMute:
                 self = .audioMute(
-                    muted: try reader.bool("muted"), scope: try reader.scope(),
+                    muted: try reader.bool("muted"), scope: try reader.choice("direction"),
                     device: try reader.optionalString("device"))
-            case "apps.open":
-                self = .openApplication(
-                    bundleId: try reader.bundleId(), activate: try reader.optionalBool("activate") ?? true)
-            case "apps.activate":
+            case .appsOpen:
+                self = .openApplication(bundleId: try reader.bundleId(), activate: try reader.bool("activate"))
+            case .appsActivate:
                 self = .controlApplication(bundleId: try reader.bundleId(), action: .activate)
-            case "apps.hide":
+            case .appsHide:
                 self = .controlApplication(bundleId: try reader.bundleId(), action: .hide)
-            case "apps.unhide":
+            case .appsUnhide:
                 self = .controlApplication(bundleId: try reader.bundleId(), action: .unhide)
-            case "apps.quit":
+            case .appsQuit:
                 self = .controlApplication(
-                    bundleId: try reader.bundleId(), action: .quit(force: try reader.optionalBool("force") ?? false))
-            case "urls.open":
+                    bundleId: try reader.bundleId(), action: .quit(force: try reader.bool("force")))
+            case .urlsOpen:
                 let text = try reader.string("url")
                 guard let url = URL(string: text), url.scheme != nil else {
                     throw EffectError.invalid("urls.open: \"\(text)\" is not a URL with a scheme")
                 }
                 self = .openURL(url)
-            case "volumes.eject":
-                self = .ejectVolume(path: try reader.path("path"))
-            case "files.trash":
-                self = .trash(path: try reader.path("path"))
-            case "files.setTags":
-                let tags = try reader.optionalStrings("tags") ?? []
-                guard tags.count <= 64, tags.allSatisfy({ !$0.isEmpty && $0.count <= 255 && !$0.contains("\n") }) else {
-                    throw EffectError.invalid("files.setTags: at most 64 tags of 1–255 characters, without line breaks")
-                }
-                self = .setTags(path: try reader.path("path"), tags: tags)
-            case "defaults.read":
-                self = .readDefault(domain: try reader.identifier("domain"), key: try reader.identifier("key"))
-            case "defaults.write":
-                let value = reader.fields["value"] ?? .null
-                guard value != .null, value.canonicalString.utf8.count <= 1 << 20 else {
-                    throw EffectError.invalid("defaults.write: value must be non-null JSON of at most 1 MiB")
-                }
-                self = .writeDefault(
-                    domain: try reader.identifier("domain"), key: try reader.identifier("key"), value: value)
-            case "defaults.delete":
-                self = .deleteDefault(domain: try reader.identifier("domain"), key: try reader.identifier("key"))
-            case "shortcuts.run":
+            case .volumesEject:
+                self = .ejectVolume(path: try declaredPath())
+            case .filesTrash:
+                self = .trash(path: try declaredPath())
+            case .filesSetTags:
+                self = .setTags(path: try declaredPath(), tags: try reader.strings("tags"))
+            case .defaultsRead:
+                self = .readDefault(domain: try reader.string("domain"), key: try reader.string("key"))
+            case .defaultsWrite:
+                let value = try reader.value("value", limit: EffectLimits.valueBytes)
+                guard value != .null else { throw EffectError.invalid("defaults.write: value must not be null") }
+                self = .writeDefault(domain: try reader.string("domain"), key: try reader.string("key"), value: value)
+            case .defaultsDelete:
+                self = .deleteDefault(domain: try reader.string("domain"), key: try reader.string("key"))
+            case .shortcutsRun:
                 self = .runShortcut(try ShortcutSpec(reader))
-            case "wifi.setPower":
+            case .wifiPower:
                 self = .wifiPower(on: try reader.bool("on"))
-            case "clipboard.read":
+            case .clipboardRead:
                 self = .readClipboard
-            case "clipboard.write":
-                let text = try reader.string("text")
-                guard text.utf8.count <= 1 << 20 else {
-                    throw EffectError.invalid("clipboard.write: text is limited to 1 MiB")
-                }
-                self = .writeClipboard(text: text)
-            case "windows.list":
+            case .clipboardWrite:
+                self = .writeClipboard(text: try reader.string("text"))
+            case .windowsList:
                 self = .listWindows(bundleId: try reader.bundleId())
-            case "windows.set":
+            case .windowsSet:
                 self = .setWindow(
                     WindowChange(
-                        bundleId: try reader.bundleId(), index: Int(try reader.number("index")),
-                        x: try reader.optionalNumber("x"),
-                        y: try reader.optionalNumber("y"), width: try reader.optionalNumber("width"),
-                        height: try reader.optionalNumber("height"), minimized: try reader.optionalBool("minimized"),
-                        raise: try reader.optionalBool("raise") ?? false))
-            case "appearance.setDark":
+                        bundleId: try reader.bundleId(), index: try reader.integer("index"),
+                        x: try reader.optionalNumber("x"), y: try reader.optionalNumber("y"),
+                        width: try reader.optionalNumber("width"), height: try reader.optionalNumber("height"),
+                        minimized: try reader.optionalBool("minimized"), raise: try reader.bool("raise")))
+            case .appearanceDark:
                 self = .darkMode(on: try reader.bool("on"))
-            default:
-                // In the catalog but not decoded here: a test keeps the two in
-                // step, so this is a daemon bug, not a rule's.
-                throw EffectError.invalid("\(kind) is not implemented by this daemon")
             }
         }
     }
@@ -205,12 +196,9 @@ struct PreventSleepSpec: Sendable, Equatable {
     let timeout: Double
 
     fileprivate init(_ reader: FieldReader) throws {
-        id = try reader.identifier("id")
+        id = try reader.string("id")
         reason = try reader.string("reason")
-        guard !reason.isEmpty, reason.count <= 256 else {
-            throw EffectError.invalid("power.preventSleep: reason must be 1–256 characters")
-        }
-        display = try reader.optionalBool("display") ?? false
+        display = try reader.bool("display")
         timeout = try reader.number("timeoutSeconds")
     }
 }
@@ -221,12 +209,9 @@ struct ShortcutSpec: Sendable, Equatable {
     let timeout: Double
 
     fileprivate init(_ reader: FieldReader) throws {
-        name = try reader.identifier("name")
+        name = try reader.string("name")
         input = try reader.optionalString("input")
-        guard (input?.utf8.count ?? 0) <= 1 << 20 else {
-            throw EffectError.invalid("shortcuts.run: input is limited to 1 MiB")
-        }
-        timeout = try reader.optionalNumber("timeoutSeconds") ?? 10
+        timeout = try reader.number("timeoutSeconds")
     }
 }
 
@@ -245,8 +230,8 @@ struct ExecSpec: Sendable, Equatable {
 
     fileprivate init(_ reader: FieldReader) throws {
         path = try reader.string("path")
-        arguments = try reader.optionalStrings("args") ?? []
-        timeout = try reader.optionalNumber("timeoutSeconds") ?? 10
+        arguments = try reader.strings("args")
+        timeout = try reader.number("timeoutSeconds")
         stdin = try reader.optionalString("stdin")
     }
 }
@@ -264,10 +249,10 @@ struct HTTPSpec: Sendable, Equatable {
             throw EffectError.invalid("http: \"\(text)\" is not an absolute URL")
         }
         self.url = url
-        method = try reader.optionalChoice("method") ?? .get
-        headers = try reader.optionalStringMap("headers") ?? [:]
+        method = try reader.choice("method")
+        headers = try reader.stringMap("headers")
         body = try reader.optionalString("body")
-        timeout = try reader.optionalNumber("timeoutSeconds") ?? 10
+        timeout = try reader.number("timeoutSeconds")
     }
 }
 
@@ -286,9 +271,6 @@ struct NotificationSpec: Sendable, Equatable {
     /// Returned with the response, so a responder needs no lookup.
     let data: JSONValue?
 
-    static let actionLimit = 4
-    static let dataLimit = 4096
-
     init(
         title: String, subtitle: String? = nil, body: String? = nil, id: String? = nil, group: String? = nil,
         sound: Bool = false, actions: [NotificationAction] = [], data: JSONValue? = nil
@@ -305,29 +287,19 @@ struct NotificationSpec: Sendable, Equatable {
 
     fileprivate init(_ reader: FieldReader) throws {
         title = try reader.string("title")
-        guard !title.isEmpty, title.count <= 256 else {
-            throw EffectError.invalid("notify: title must be 1–256 characters")
-        }
         subtitle = try reader.optionalString("subtitle")
         body = try reader.optionalString("body")
-        id = try reader.optionalNotificationID("id")
-        group = try reader.optionalNotificationID("group")
-        sound = try reader.optionalBool("sound") ?? false
-        actions = try (reader.optionalObjects("actions") ?? []).map(NotificationAction.init)
-        guard actions.count <= Self.actionLimit else {
-            throw EffectError.invalid("notify: at most \(Self.actionLimit) actions")
-        }
+        id = try reader.optionalString("id")
+        group = try reader.optionalString("group")
+        sound = try reader.bool("sound")
+        actions = try reader.objects("actions").map(NotificationAction.init)
         guard Set(actions.map(\.id)).count == actions.count else {
             throw EffectError.invalid("notify: action ids must be unique")
         }
-        switch reader.fields["data"] {
-        case nil, .null?: data = nil
-        case let value?:
-            guard value.canonicalString.utf8.count <= Self.dataLimit else {
-                throw EffectError.invalid("notify: data is limited to \(Self.dataLimit) bytes of JSON")
-            }
-            data = value
-        }
+        // Null carries nothing back, so it is left out as an absent field is.
+        data =
+            (reader.fields["data"] ?? .null) == .null
+            ? nil : try reader.value("data", limit: EffectLimits.notificationDataBytes)
     }
 }
 
@@ -345,10 +317,6 @@ struct NotificationAction: Sendable, Hashable, Codable {
         let placeholder: String?
     }
 
-    /// The action names a response uses for the click on the notification
-    /// itself and for dismissing it.
-    static let reservedIDs: Set<String> = ["default", "dismiss"]
-
     init(id: String, title: String, destructive: Bool = false, input: TextInput? = nil) {
         self.id = id
         self.title = title
@@ -358,16 +326,12 @@ struct NotificationAction: Sendable, Hashable, Codable {
 
     fileprivate init(_ reader: FieldReader) throws {
         id = try reader.string("id")
-        guard !id.isEmpty, id.utf8.count <= 64, !Self.reservedIDs.contains(id) else {
+        guard !NotificationResponse.reserved.contains(id) else {
             throw EffectError.invalid(
-                "notify: an action id must be 1–64 bytes and not \(Self.reservedIDs.sorted().joined(separator: " or "))"
-            )
+                "notify: an action id may not be \(NotificationResponse.reserved.joined(separator: " or "))")
         }
         title = try reader.string("title")
-        guard !title.isEmpty, title.count <= 64 else {
-            throw EffectError.invalid("notify: an action title must be 1–64 characters")
-        }
-        destructive = try reader.optionalBool("destructive") ?? false
+        destructive = try reader.bool("destructive")
         input = try reader.optionalObject("input").map { TextInput(placeholder: try $0.optionalString("placeholder")) }
     }
 }
@@ -381,11 +345,10 @@ struct RecordSpec: Sendable, Equatable {
 
     fileprivate init(_ reader: FieldReader) throws {
         label = try reader.string("label")
-        guard !label.isEmpty else { throw EffectError.invalid("store.record: label must not be empty") }
-        window = try reader.optionalNumber("windowSeconds") ?? 20
-        top = Int(try reader.optionalNumber("top") ?? 20)
-        systemOnly = try reader.optionalBool("systemOnly") ?? false
-        retain = try reader.optionalNumber("retain").map(Int.init)
+        window = try reader.number("windowSeconds")
+        top = try reader.integer("top")
+        systemOnly = try reader.bool("systemOnly")
+        retain = reader.fields["retain"] == nil ? nil : try reader.integer("retain")
     }
 }
 
@@ -403,15 +366,16 @@ enum EffectError: Error, CustomStringConvertible, Equatable {
     }
 }
 
-/// Typed reads of request fields with error messages that name the effect.
+/// Typed reads of request fields.
 ///
-/// `SchemaValidator` has proved each field's type, bounds and enumeration by
-/// the time a reader exists, so a value that does not read means the catalog
+/// `SchemaValidator` has proved each field's type, bounds and length by the
+/// time a reader exists, so a value that does not read means the catalog
 /// and this decode disagree. That still refuses the request.
 private struct FieldReader {
+    /// Defaults filled at every depth (`ObjectSchema.admit`).
     let fields: [String: JSONValue]
     let context: String
-    var home: String = NSHomeDirectory()
+    let home: String
 
     private func mismatch(_ key: String) -> EffectError {
         .invalid("\(context): \(key) does not match the effect catalog")
@@ -432,99 +396,94 @@ private struct FieldReader {
     func bool(_ key: String) throws -> Bool { try required(key, \.boolValue) }
     func string(_ key: String) throws -> String { try required(key, \.stringValue) }
 
+    /// A whole number; `Int(exactly:)` is nil rather than a trap for one out
+    /// of range, though the schema's bounds keep it in.
+    func integer(_ key: String) throws -> Int { try required(key) { $0.numberValue.flatMap { Int(exactly: $0) } } }
+    func int32(_ key: String) throws -> Int32 { try required(key) { $0.numberValue.flatMap { Int32(exactly: $0) } } }
+
     func choice<T: RawRepresentable>(_ key: String) throws -> T where T.RawValue == String {
         try required(key) { $0.stringValue.flatMap(T.init(rawValue:)) }
-    }
-
-    func optionalChoice<T: RawRepresentable>(_ key: String) throws -> T? where T.RawValue == String {
-        try optional(key) { $0.stringValue.flatMap(T.init(rawValue:)) }
     }
 
     func optionalNumber(_ key: String) throws -> Double? { try optional(key, \.numberValue) }
     func optionalBool(_ key: String) throws -> Bool? { try optional(key, \.boolValue) }
     func optionalString(_ key: String) throws -> String? { try optional(key, \.stringValue) }
 
-    func optionalStrings(_ key: String) throws -> [String]? {
-        try optional(key) { $0.arrayValue?.compactMap(\.stringValue) }
-    }
-
-    func optionalStringMap(_ key: String) throws -> [String: String]? {
-        try optional(key) { $0.objectValue?.compactMapValues(\.stringValue) }
-    }
-
-    func optionalObject(_ key: String) throws -> FieldReader? {
-        try optional(key) { $0.objectValue.map { FieldReader(fields: $0, context: context) } }
-    }
-
-    func optionalObjects(_ key: String) throws -> [FieldReader]? {
-        try optional(key) { value in
-            value.arrayValue?.compactMap { $0.objectValue.map { FieldReader(fields: $0, context: context) } }
+    func strings(_ key: String) throws -> [String] {
+        try required(key) { value in
+            value.arrayValue.flatMap { items in
+                let strings = items.compactMap(\.stringValue)
+                return strings.count == items.count ? strings : nil
+            }
         }
     }
 
-    /// A rule-chosen name: an assertion id, a defaults domain or key, a
-    /// shortcut name.
-    func identifier(_ key: String) throws -> String {
-        let value = try string(key)
-        guard !value.isEmpty, value.utf8.count <= 256, !value.contains("\0") else {
-            throw EffectError.invalid("\(context): \(key) must be 1–256 bytes")
+    func stringMap(_ key: String) throws -> [String: String] {
+        try required(key) { value in
+            value.objectValue.flatMap { object in
+                let strings = object.compactMapValues(\.stringValue)
+                return strings.count == object.count ? strings : nil
+            }
+        }
+    }
+
+    /// A JSON value, absent being null, within `limit` bytes as stored.
+    func value(_ key: String, limit: Int) throws -> JSONValue {
+        let value = fields[key] ?? .null
+        guard value.canonicalString.utf8.count <= limit else {
+            throw EffectError.invalid("\(context): \(key) is limited to \(TextBounds.size(limit)) of JSON")
         }
         return value
     }
 
+    private func reader(_ fields: [String: JSONValue]) -> FieldReader {
+        FieldReader(fields: fields, context: context, home: home)
+    }
+
+    func optionalObject(_ key: String) throws -> FieldReader? {
+        try optional(key) { $0.objectValue.map(reader) }
+    }
+
+    func objects(_ key: String) throws -> [FieldReader] {
+        try required(key) { value in
+            value.arrayValue.flatMap { items in
+                let objects = items.compactMap(\.objectValue)
+                return objects.count == items.count ? objects.map(reader) : nil
+            }
+        }
+    }
+
     func bundleId() throws -> String {
-        let value = try identifier("bundleId")
+        let value = try string("bundleId")
         guard value.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" }) else {
             throw EffectError.invalid("\(context): \"\(value)\" is not a bundle identifier")
         }
         return value
     }
 
-    func scope() throws -> AudioScope { try optionalChoice("direction") ?? .output }
-
-    /// An absolute path, or one starting with `~/`; `..` is refused rather
-    /// than resolved, so the grant check sees the path the rule meant.
-    func path(_ key: String) throws -> String {
-        var path = try string(key)
+    /// The effect's path, from the field its descriptor declares: absolute,
+    /// or starting with `~/`; `..` is refused rather than resolved, so the
+    /// grant and protected-path checks see the path the rule meant. Only
+    /// that field is read, so an effect cannot act on a path those checks
+    /// never see.
+    func path(_ pathField: String) throws -> String {
+        var path = try string(pathField)
         if path.hasPrefix("~/") { path = home + path.dropFirst(1) }
         let components = path.split(separator: "/", omittingEmptySubsequences: false)
         guard path.hasPrefix("/"), path.count > 1, !components.contains(".."), !path.contains("\0") else {
-            throw EffectError.invalid("\(context): \(key) must be an absolute path without ..")
+            throw EffectError.invalid("\(context): \(pathField) must be an absolute path without ..")
         }
         return path
-    }
-
-    /// A rule-chosen notification id or group: short, so the identifiers
-    /// built from it stay within what the notification center stores.
-    func notificationID(_ key: String) throws -> String {
-        let value = try string(key)
-        guard !value.isEmpty, value.utf8.count <= 256 else {
-            throw EffectError.invalid("\(context): \(key) must be 1–256 bytes")
-        }
-        return value
-    }
-
-    func optionalNotificationID(_ key: String) throws -> String? {
-        fields[key] == nil ? nil : try notificationID(key)
-    }
-
-    func key() throws -> String {
-        let key = try string("key")
-        guard !key.isEmpty, key.utf8.count <= 512 else {
-            throw EffectError.invalid("\(context): key must be 1–512 bytes")
-        }
-        return key
     }
 
     /// A process instance; both fields are required so a reused pid can never
     /// be targeted.
     func target() throws -> ProcessIdentity {
-        guard let target = fields["target"]?.objectValue,
-            let pid = target["pid"]?.numberValue, pid > 0, pid == pid.rounded(), pid <= Double(Int32.max),
-            let startedAt = target["startedAt"]?.numberValue, ProcessIdentity.startedAtRange.contains(startedAt)
-        else {
-            throw EffectError.invalid("\(context): target must be { pid, startedAt } from an event")
-        }
-        return ProcessIdentity(pid: pid_t(pid), startedAt: startedAt)
+        let refusal = EffectError.invalid("\(context): target must be { pid, startedAt } from an event")
+        guard let target = try optionalObject("target") else { throw refusal }
+        guard let pid = Int32(exactly: try target.number("pid")), pid > 0,
+            let identity = ProcessIdentity(pid: pid, startedAt: try target.number("startedAt"))
+        else { throw refusal }
+        return identity
     }
 }

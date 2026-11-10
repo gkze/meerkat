@@ -3,11 +3,12 @@ load("//buck2/rules:rust.bzl", "meerkat_rust_crate")
 # meerkat-lint: the meerkat/* lint rules (see README.md). Bundled into
 # Meerkat.app next to Oxlint and Oxfmt (Contents/Resources/lint/bin).
 
-# Clippy's pedantic group warns, and the checks fail on any warning
-# (Tools/check's `-D warnings`).
+# Clippy's pedantic group warns, and :clippy fails on any warning.
 meerkat_rust_crate(
     name = "meerkat-lint",
     crate = "meerkat_lint",
+    # Compiled in: the layout for a file with no .oxfmtrc.json of its own.
+    extra_srcs = ["policy/oxfmtrc.json"],
     deps = ["//buck2/third_party/rust:oxc"],
     visibility = ["PUBLIC"],
 )

@@ -66,7 +66,7 @@ struct ObservationCatalogTests {
     /// The fields of `schema` that name a process or a user, by path.
     static func processFields(_ schema: TypeSchema, at path: String = "") -> [String] {
         switch schema {
-        case .array(let element), .record(let element):
+        case .array(let element, _), .record(let element):
             return processFields(element, at: path + "[]")
         case .object(let object), .named(_, let object):
             return object.fields.flatMap { field -> [String] in

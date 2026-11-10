@@ -1,4 +1,3 @@
-import DiskArbitration
 import Foundation
 import Synchronization
 import Testing
@@ -43,8 +42,12 @@ struct MeerkatKitTests {
         #expect(m.freeMB < 100_000)
     }
 
+    private func ownCounters() throws -> ProcessCounters {
+        try #require(ProcessTable.record(pid: getpid()).flatMap(ProcessSampler.counters(for:)))
+    }
+
     @Test func countersForOwnProcess() throws {
-        let counters = try #require(ProcessSampler.counters(for: getpid()))
+        let counters = try ownCounters()
         #expect(counters.pid == getpid())
         #expect(try #require(counters.usage).footprintBytes > 0)
     }
@@ -52,7 +55,7 @@ struct MeerkatKitTests {
     /// `name` is a short name for every row; the path lives in `path`.
     /// Classifying by name once hid every Apple agent running as the user.
     @Test func countersSeparateNameFromPath() throws {
-        let counters = try #require(ProcessSampler.counters(for: getpid()))
+        let counters = try ownCounters()
         let expected = try #require(Bundle.main.executableURL).resolvingSymlinksInPath().path
         #expect(counters.path == expected)
         #expect(!counters.name.contains("/"))
@@ -107,7 +110,7 @@ struct MeerkatKitTests {
     @Test func processDeltaDecodesWithoutPath() throws {
         let json = """
             {"pid":1,"name":"launchd","cpuPct":0,"cpuSeconds":0,"windowSeconds":1,
-             "footprintMB":0,"diskReadMB":0,"diskWriteMB":0,"energyJoules":0,"startedAt":0,"uid":0}
+             "footprintMB":0,"diskReadMB":0,"diskWriteMB":0,"energyJoules":0,"startedAt":1,"uid":0}
             """
         let row = try JSONDecoder().decode(ProcessDelta.self, from: Data(json.utf8))
         #expect(row.path == nil)
@@ -115,7 +118,9 @@ struct MeerkatKitTests {
     }
 
     @Test func deltaWindowRespectsTopLimit() throws {
-        let rows = try ProcessSampler.measure(window: 0.3, top: 5)
+        let before = try ProcessSampler.snapshot()
+        Thread.sleep(forTimeInterval: 0.3)
+        let rows = ProcessSampler.deltas(previous: before, current: try ProcessSampler.snapshot(), top: 5)
         #expect(rows.count <= 5)
         #expect(rows.allSatisfy { $0.cpuPct >= 0 && ($0.footprintMB ?? 0) >= 0 })
     }
@@ -145,7 +150,7 @@ struct MeerkatKitTests {
         writer.start()
         defer { measuring.store(false, ordering: .releasing) }
 
-        let (result, _) = try monitor.measure { Thread.sleep(forTimeInterval: 2.0) }
+        let (result, _) = try monitor.measure(topBuckets: 12) { Thread.sleep(forTimeInterval: 2.0) }
         #expect(result.totalEvents > 0, "FSEvents should observe the writes")
         #expect(!result.buckets.isEmpty)
     }
@@ -161,7 +166,7 @@ struct MeerkatKitTests {
         defer { try? FileManager.default.removeItem(at: dir) }
 
         let monitor = PathChurnMonitor(root: dir.path, depth: 5, home: "/Users/example")
-        let (result, _) = try monitor.measure {
+        let (result, _) = try monitor.measure(topBuckets: 12) {
             // Well after the stream's start, which nothing reports.
             Thread.sleep(forTimeInterval: 1.0)
             try? "x".write(to: dir.appendingPathComponent("first.txt"), atomically: false, encoding: .utf8)
@@ -172,25 +177,6 @@ struct MeerkatKitTests {
             Thread.sleep(forTimeInterval: 0.2)
         }
         #expect(result.created >= 21, "every file of a burst 0.2 s before the end is in the window")
-    }
-}
-
-struct EjectTargetTests {
-    /// Only removable media, or a disk that isn't internal, may be ejected;
-    /// what the description leaves out counts against it.
-    @Test func onlyRemovableOrExternalVolumesAreEjected() {
-        func allowed(_ description: [CFString: Any]) -> Bool { EjectTarget(description: description).isAllowed }
-        // The boot disk and its data volume.
-        #expect(!allowed([kDADiskDescriptionDeviceInternalKey: true, kDADiskDescriptionMediaRemovableKey: false]))
-        // An external drive.
-        #expect(allowed([kDADiskDescriptionDeviceInternalKey: false]))
-        // A card in the built-in reader.
-        #expect(allowed([kDADiskDescriptionDeviceInternalKey: true, kDADiskDescriptionMediaRemovableKey: true]))
-        #expect(allowed([kDADiskDescriptionDeviceInternalKey: true, kDADiskDescriptionMediaEjectableKey: true]))
-        // A network share has no device: refused, as is a description with
-        // nothing in it.
-        #expect(!allowed([kDADiskDescriptionVolumeNetworkKey: true]))
-        #expect(!allowed([:]))
     }
 }
 
@@ -232,10 +218,96 @@ struct WindowRequestTests {
         let effect = try #require(EffectCatalog.standard.effects.first { $0.kind == "windows.set" })
         func violations(_ fields: [String: JSONValue]) -> [String] {
             SchemaValidator.violations(
-                of: .object(fields.merging(["bundleId": "com.example", "index": 0]) { $1 }), against: effect.request)
+                of: .object(fields.merging(["bundleId": "com.example", "index": 0]) { $1 }),
+                against: .object(effect.request))
         }
         #expect(!violations(["width": -50]).isEmpty)
         #expect(!violations(["height": 0]).isEmpty)
         #expect(violations(["width": 1, "height": 800, "x": -1_200, "y": 0]).isEmpty)
+    }
+}
+
+/// Waits on things that may never answer: a daemon that takes a request and
+/// says nothing, a language server that stops replying.
+struct DeadlineTests {
+    private struct Refused: Error {}
+
+    @Test func aResultInTimeIsTheResult() async throws {
+        #expect(try await withDeadline(.seconds(5)) { 7 } == 7)
+    }
+
+    @Test func anErrorInTimeIsTheError() async {
+        await #expect(throws: Refused.self) {
+            try await withDeadline(.seconds(5)) { () async throws -> Int in throw Refused() }
+        }
+    }
+
+    /// The case it is for: an operation that ignores cancellation and never
+    /// returns still lets the caller go at the deadline.
+    @Test func aCallThatNeverReturnsEndsAtTheDeadline() async {
+        let started = ContinuousClock.now
+        await #expect(throws: DeadlineExceeded.self) {
+            try await withDeadline(.milliseconds(100)) { await neverReturns() }
+        }
+        #expect(started.duration(to: .now) < .seconds(5))
+    }
+
+    @Test func theCallersCancellationEndsTheWait() async {
+        let waiting = Task { try await withDeadline(.seconds(3600)) { await neverReturns() } }
+        try? await Task.sleep(for: .milliseconds(50))
+        waiting.cancel()
+        await #expect(throws: CancellationError.self) { try await waiting.value }
+    }
+
+    @Test func aCallerCancelledBeforeItWaitsDoesntWait() async {
+        let waiting = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await withDeadline(.seconds(3600)) { await neverReturns() }
+        }
+        await #expect(throws: CancellationError.self) { try await waiting.value }
+    }
+}
+
+/// Never returns, and ignores cancellation, like an XPC reply that never
+/// comes.
+private func neverReturns() async -> Int {
+    await withUnsafeContinuation { (_: UnsafeContinuation<Int, Never>) in }
+}
+
+/// What crosses from another process: a row whose start time no process
+/// can have names no process, rather than trap where it is used.
+struct ProcessDeltaDecodingTests {
+    private static func row(startedAt: Double) -> Data {
+        Data(
+            """
+            {"pid":7,"name":"x","cpuPct":0,"cpuSeconds":0,"windowSeconds":1,"startedAt":\(startedAt),"uid":0}
+            """.utf8)
+    }
+
+    @Test(arguments: [0, -1, 1e300, 9.1e12])
+    func aStartTimeNoProcessCanHaveNamesNoProcess(startedAt: Double) throws {
+        let row = try JSONDecoder().decode(ProcessDelta.self, from: Self.row(startedAt: startedAt))
+        #expect(row.identity == nil)
+        #expect(ProcessIdentity(pid: 7, startedAt: startedAt) == nil)
+    }
+
+    @Test func aRowRoundTripsWithItsIdentity() throws {
+        let row = try JSONDecoder().decode(ProcessDelta.self, from: Self.row(startedAt: 1_792_870_301_000))
+        #expect(row.identity == ProcessIdentity(pid: 7, startedAt: 1_792_870_301_000))
+        #expect(try JSONDecoder().decode(ProcessDelta.self, from: JSONEncoder().encode(row)) == row)
+    }
+}
+
+struct LogLineTests {
+    /// The runtime counts a line's limit in UTF-8 bytes; a cut never splits
+    /// a character, even one of several scalars.
+    @Test func aLineIsCutToBytesOnACharacterBoundary() {
+        #expect("abc".prefix(utf8Bytes: 3) == "abc")
+        #expect("abcd".prefix(utf8Bytes: 3) == "abc")
+        // "é" is 2 bytes, the flag 8.
+        #expect("aé".prefix(utf8Bytes: 2) == "a")
+        #expect("a🇨🇦b".prefix(utf8Bytes: 8) == "a")
+        #expect("a🇨🇦b".prefix(utf8Bytes: 9) == "a🇨🇦")
+        #expect("".prefix(utf8Bytes: 0) == "")
     }
 }

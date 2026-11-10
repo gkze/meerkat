@@ -40,14 +40,13 @@ struct ReleaseVersionTests {
 
     @Test func untaggedVersionIsPublished() throws {
         let version = try SemanticVersion("0.2.0-alpha.2")
-        #expect(try ReleasePlan(version: version, tags: ["v0.2.0-alpha.1", "spike", "v0.1.0"]) == .publish(version))
-        #expect(try ReleasePlan(version: version, tags: []) == .publish(version))
+        #expect(try ReleasePlan(version: version, tags: ["v0.2.0-alpha.1", "spike", "v0.1.0"]) == .publish)
+        #expect(try ReleasePlan(version: version, tags: []) == .publish)
     }
 
     @Test func taggedVersionIsANoOp() throws {
         let version = try SemanticVersion("0.2.0-alpha.1")
-        #expect(
-            try ReleasePlan(version: version, tags: ["v0.2.0-alpha.1", "v0.2.0-alpha.2"]) == .alreadyReleased(version))
+        #expect(try ReleasePlan(version: version, tags: ["v0.2.0-alpha.1", "v0.2.0-alpha.2"]) == .alreadyReleased)
     }
 
     @Test func versionBelowTheLatestReleaseFails() throws {
@@ -60,6 +59,6 @@ struct ReleaseVersionTests {
     /// Tags that are not releases neither publish nor block one.
     @Test func nonReleaseTagsAreIgnored() throws {
         let version = try SemanticVersion("0.1.0")
-        #expect(try ReleasePlan(version: version, tags: ["9.9.9", "v9.9", "vnext", "v9.9.9+x"]) == .publish(version))
+        #expect(try ReleasePlan(version: version, tags: ["9.9.9", "v9.9", "vnext", "v9.9.9+x"]) == .publish)
     }
 }

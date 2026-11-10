@@ -7,13 +7,14 @@ import CoreWLAN
 import DiskArbitration
 import Foundation
 import IOKit.pwr_mgt
+import MeerkatKit
 
 /// The macOS calls behind the tier A and B effects (docs/design/effects.md).
 ///
 /// Grants, targets and request limits are the daemon's to check before it
 /// calls here; these only act, and say plainly when macOS refuses. Tests use
 /// a recording fake, so they never change the machine they run on.
-public protocol SystemControls: Sendable {
+protocol SystemControls: Sendable {
     /// A power assertion that macOS releases after `timeout` seconds, or when
     /// this process exits. Returns its id.
     func preventSleep(name: String, reason: String, display: Bool, timeout: Double) throws -> UInt32
@@ -28,8 +29,8 @@ public protocol SystemControls: Sendable {
     func open(_ url: URL) async throws
 
     func ejectVolume(path: String) async throws
-    /// Returns where the item is in the Trash.
-    func trash(path: String) throws -> String
+    /// Returns where the item is in the Trash, when macOS says.
+    func trash(path: String) throws -> String?
     func setTags(path: String, tags: [String]) throws
 
     func readDefault(domain: String, key: String) throws -> JSONValue?
@@ -45,53 +46,29 @@ public protocol SystemControls: Sendable {
     func windows(bundleId: String) throws -> [WindowInfo]
     func setWindow(_ change: WindowChange) throws
 
+    /// Throws unless Meerkat may send `target` Apple Events. The executor
+    /// asks it for every effect whose descriptor names a target
+    /// (`EffectDescriptor.automation`), before the effect runs.
+    func requireAutomation(of target: AutomationTarget) async throws
     func setDarkMode(_ on: Bool) async throws
 }
 
-public enum AudioScope: String, Sendable, CaseIterable, SchemaDescribed {
-    case output, input
-}
-
-public enum AppAction: Sendable, Equatable {
+enum AppAction: Sendable, Equatable {
     case activate, hide, unhide
     case quit(force: Bool)
 }
 
-public struct WindowInfo: Sendable, Equatable, Codable {
-    public let index: Int
-    public let title: String?
-    public let x: Double
-    public let y: Double
-    public let width: Double
-    public let height: Double
-    public let minimized: Bool
-    public let main: Bool
+struct WindowChange: Sendable, Equatable {
+    let bundleId: String
+    let index: Int
+    let x: Double?
+    let y: Double?
+    let width: Double?
+    let height: Double?
+    let minimized: Bool?
+    let raise: Bool
 
-    public init(
-        index: Int, title: String?, x: Double, y: Double, width: Double, height: Double, minimized: Bool, main: Bool
-    ) {
-        self.index = index
-        self.title = title
-        self.x = x
-        self.y = y
-        self.width = width
-        self.height = height
-        self.minimized = minimized
-        self.main = main
-    }
-}
-
-public struct WindowChange: Sendable, Equatable {
-    public let bundleId: String
-    public let index: Int
-    public let x: Double?
-    public let y: Double?
-    public let width: Double?
-    public let height: Double?
-    public let minimized: Bool?
-    public let raise: Bool
-
-    public init(
+    init(
         bundleId: String, index: Int, x: Double? = nil, y: Double? = nil, width: Double? = nil, height: Double? = nil,
         minimized: Bool? = nil, raise: Bool = false
     ) {
@@ -108,19 +85,17 @@ public struct WindowChange: Sendable, Equatable {
 
 /// macOS refused, or the target was not there. The message is the rule's to
 /// read.
-public struct SystemControlError: Error, CustomStringConvertible, Equatable {
-    public let description: String
-    public init(_ description: String) { self.description = description }
+struct SystemControlError: Error, CustomStringConvertible, Equatable {
+    let description: String
+    init(_ description: String) { self.description = description }
 }
 
 // MARK: - macOS
 
-public struct MacSystemControls: SystemControls {
-    public init() {}
-
+struct MacSystemControls: SystemControls {
     // MARK: Power
 
-    public func preventSleep(name: String, reason: String, display: Bool, timeout: Double) throws -> UInt32 {
+    func preventSleep(name: String, reason: String, display: Bool, timeout: Double) throws -> UInt32 {
         // IOPMLib's assertion type and timeout action constants are CFSTR
         // macros, which Swift does not import; these are their values.
         let type = display ? "PreventUserIdleDisplaySleep" : "PreventUserIdleSystemSleep"
@@ -134,7 +109,7 @@ public struct MacSystemControls: SystemControls {
         return id
     }
 
-    public func allowSleep(_ assertion: UInt32) {
+    func allowSleep(_ assertion: UInt32) {
         IOPMAssertionRelease(assertion)
     }
 
@@ -183,7 +158,7 @@ public struct MacSystemControls: SystemControls {
         guard status == noErr else { throw SystemControlError("setting the \(what) failed (OSStatus \(status))") }
     }
 
-    public func setDefaultAudioDevice(uid: String, scope: AudioScope) throws {
+    func setDefaultAudioDevice(uid: String, scope: AudioScope) throws {
         let id = try Self.device(uid, scope: scope)
         guard (P.channels(id, Self.halScope(scope)) ?? 0) > 0 else {
             throw SystemControlError("\(uid) has no \(scope.rawValue) channels")
@@ -191,7 +166,7 @@ public struct MacSystemControls: SystemControls {
         try Self.set(P.system, Self.defaultSelector(scope), kAudioObjectPropertyScopeGlobal, id, "default device")
     }
 
-    public func setVolume(_ volume: Double, scope: AudioScope, device uid: String?) throws {
+    func setVolume(_ volume: Double, scope: AudioScope, device uid: String?) throws {
         // The virtual main volume is what the system volume control sets,
         // also on devices that only have per-channel volume.
         try Self.set(
@@ -199,7 +174,7 @@ public struct MacSystemControls: SystemControls {
             Self.halScope(scope), Float32(volume), "volume")
     }
 
-    public func setMute(_ muted: Bool, scope: AudioScope, device uid: String?) throws {
+    func setMute(_ muted: Bool, scope: AudioScope, device uid: String?) throws {
         try Self.set(
             try Self.device(uid, scope: scope), kAudioDevicePropertyMute, Self.halScope(scope), UInt32(muted ? 1 : 0),
             "mute")
@@ -207,7 +182,7 @@ public struct MacSystemControls: SystemControls {
 
     // MARK: Applications and URLs
 
-    public func openApplication(bundleId: String, activate: Bool) async throws {
+    func openApplication(bundleId: String, activate: Bool) async throws {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) else {
             throw SystemControlError("no application with bundle identifier \(bundleId) is installed")
         }
@@ -220,7 +195,7 @@ public struct MacSystemControls: SystemControls {
         }
     }
 
-    public func control(bundleId: String, action: AppAction) async throws {
+    func control(bundleId: String, action: AppAction) async throws {
         try await MainActor.run {
             let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId)
             guard !running.isEmpty else { throw SystemControlError("\(bundleId) is not running") }
@@ -237,14 +212,14 @@ public struct MacSystemControls: SystemControls {
         }
     }
 
-    public func open(_ url: URL) async throws {
+    func open(_ url: URL) async throws {
         let opened = await MainActor.run { NSWorkspace.shared.open(url) }
         guard opened else { throw SystemControlError("no application opened \(url.absoluteString)") }
     }
 
     // MARK: Volumes and files
 
-    public func ejectVolume(path: String) async throws {
+    func ejectVolume(path: String) async throws {
         guard let session = DASessionCreate(kCFAllocatorDefault) else {
             throw SystemControlError("DiskArbitration is not available")
         }
@@ -273,17 +248,17 @@ public struct MacSystemControls: SystemControls {
         }
     }
 
-    public func trash(path: String) throws -> String {
+    func trash(path: String) throws -> String? {
         var result: NSURL?
         do {
             try FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: &result)
         } catch {
             throw SystemControlError("moving \(path) to the Trash failed: \(error.localizedDescription)")
         }
-        return result?.path ?? ""
+        return result?.path
     }
 
-    public func setTags(path: String, tags: [String]) throws {
+    func setTags(path: String, tags: [String]) throws {
         var url = URL(fileURLWithPath: path)
         var values = URLResourceValues()
         values.tagNames = tags
@@ -296,7 +271,7 @@ public struct MacSystemControls: SystemControls {
 
     // MARK: Defaults
 
-    public func readDefault(domain: String, key: String) throws -> JSONValue? {
+    func readDefault(domain: String, key: String) throws -> JSONValue? {
         guard let value = CFPreferencesCopyAppValue(key as CFString, domain as CFString) else { return nil }
         // Strictly: a rule may write what it read back, so a value with any
         // part JSON cannot hold (a non-finite number) is refused whole, not
@@ -307,7 +282,7 @@ public struct MacSystemControls: SystemControls {
         return json
     }
 
-    public func writeDefault(domain: String, key: String, value: JSONValue) throws {
+    func writeDefault(domain: String, key: String, value: JSONValue) throws {
         guard let propertyList = value.propertyList else {
             throw SystemControlError("a user default cannot hold null; use defaults.delete")
         }
@@ -317,7 +292,7 @@ public struct MacSystemControls: SystemControls {
         }
     }
 
-    public func deleteDefault(domain: String, key: String) throws {
+    func deleteDefault(domain: String, key: String) throws {
         CFPreferencesSetAppValue(key as CFString, nil, domain as CFString)
         guard CFPreferencesAppSynchronize(domain as CFString) else {
             throw SystemControlError("writing \(domain) failed")
@@ -326,7 +301,7 @@ public struct MacSystemControls: SystemControls {
 
     // MARK: Wi-Fi
 
-    public func setWiFiPower(_ on: Bool) throws {
+    func setWiFiPower(_ on: Bool) throws {
         guard let interface = CWWiFiClient.shared().interface() else {
             throw SystemControlError("this Mac has no Wi-Fi interface")
         }
@@ -339,11 +314,11 @@ public struct MacSystemControls: SystemControls {
 
     // MARK: Clipboard
 
-    public func readClipboard() async -> String? {
+    func readClipboard() async -> String? {
         await MainActor.run { NSPasteboard.general.string(forType: .string) }
     }
 
-    public func writeClipboard(_ text: String) async {
+    func writeClipboard(_ text: String) async {
         await MainActor.run {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
@@ -386,7 +361,7 @@ public struct MacSystemControls: SystemControls {
         return windows
     }
 
-    public func windows(bundleId: String) throws -> [WindowInfo] {
+    func windows(bundleId: String) throws -> [WindowInfo] {
         try Self.axWindows(bundleId).enumerated().map { index, window in
             var point = CGPoint.zero
             var size = CGSize.zero
@@ -400,7 +375,7 @@ public struct MacSystemControls: SystemControls {
         }
     }
 
-    public func setWindow(_ change: WindowChange) throws {
+    func setWindow(_ change: WindowChange) throws {
         let windows = try Self.axWindows(change.bundleId)
         guard windows.indices.contains(change.index) else {
             throw SystemControlError(
@@ -436,33 +411,30 @@ public struct MacSystemControls: SystemControls {
 
     // MARK: Appearance (Apple Events)
 
-    public func setDarkMode(_ on: Bool) async throws {
-        try await Self.requestAutomation(of: "com.apple.systemevents", name: "System Events")
+    func setDarkMode(_ on: Bool) async throws {
+        let target = AutomationTarget.systemEvents
         // A fixed script: the effect names the action, never script text
         // (docs/design/effects.md, "Apple Events as fixed actions").
         let source =
-            "tell application id \"com.apple.systemevents\" to tell appearance preferences to set dark mode to \(on)"
+            "tell application id \"\(target.bundleId)\" to tell appearance preferences to set dark mode to \(on)"
         let failure: String? = await MainActor.run {
             var error: NSDictionary?
             _ = NSAppleScript(source: source)?.executeAndReturnError(&error)
             guard let error else { return nil }
-            if error[NSAppleScript.errorNumber] as? Int == -1743 {
-                return
-                    "Meerkat may not control System Events: turn on System Events under Meerkat in System Settings › Privacy & Security › Automation"
-            }
-            return "System Events refused: \(error[NSAppleScript.errorMessage] as? String ?? "\(error)")"
+            // Refused after all (errAEEventNotPermitted).
+            if error[NSAppleScript.errorNumber] as? Int == -1743 { return Self.denial(of: target) }
+            return "\(target.name) refused: \(error[NSAppleScript.errorMessage] as? String ?? "\(error)")"
         }
         if let failure { throw SystemControlError(failure) }
     }
 
-    private static func requestAutomation(of bundleId: String, name: String) async throws {
-        switch await AutomationPermission.request(bundleId) {
+    func requireAutomation(of target: AutomationTarget) async throws {
+        let name = target.name
+        switch await AutomationPermission.request(target.bundleId) {
         case .granted:
             return
         case .denied:
-            throw SystemControlError(
-                "Meerkat may not control \(name): turn on \(name) under Meerkat in System Settings › Privacy & Security › Automation, or allow it from Meerkat › Settings"
-            )
+            throw SystemControlError(Self.denial(of: target))
         case .notDetermined:
             // A background process cannot raise the prompt; only the app can.
             throw SystemControlError(
@@ -471,63 +443,9 @@ public struct MacSystemControls: SystemControls {
             throw SystemControlError("asking to control \(name) failed (OSStatus \(status))")
         }
     }
-}
 
-// MARK: - Automation
-
-/// Whether Meerkat may send Apple Events to an app (Privacy & Security ›
-/// Automation).
-///
-/// macOS decides for the app a process belongs to: meerkatd's requests are
-/// Meerkat's (`com.gkze.meerkat`), so one decision covers the app and the
-/// daemon. Only a foreground app may raise the prompt; for meerkatd, macOS
-/// refuses without asking ("Policy disallows prompt"), so the app asks on
-/// the daemon's behalf (Settings › Automation).
-public enum AutomationPermission {
-    public enum Status: Sendable, Equatable {
-        case granted
-        case denied
-        /// Nobody has decided; only the app can ask.
-        case notDetermined
-        /// The check itself failed, with this OSStatus.
-        case unavailable(Int32)
-    }
-
-    /// The decision, without prompting.
-    public static func status(_ bundleId: String) async -> Status {
-        await determine(bundleId, ask: false)
-    }
-
-    /// The decision, asking the user when nobody has decided and this
-    /// process may prompt. Waits for the answer.
-    public static func request(_ bundleId: String) async -> Status {
-        await determine(bundleId, ask: true)
-    }
-
-    private static func determine(_ bundleId: String, ask: Bool) async -> Status {
-        // The check needs the target running; start it in the background.
-        if NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).isEmpty,
-            let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId)
-        {
-            let configuration = NSWorkspace.OpenConfiguration()
-            configuration.activates = false
-            _ = try? await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
-        }
-        // It blocks until a prompt is answered, so it runs off the
-        // concurrency pool.
-        let status = await withCheckedContinuation { (continuation: CheckedContinuation<OSStatus, Never>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let target = NSAppleEventDescriptor(bundleIdentifier: bundleId)
-                continuation.resume(
-                    returning: AEDeterminePermissionToAutomateTarget(target.aeDesc, typeWildCard, typeWildCard, ask))
-            }
-        }
-        switch status {
-        case noErr: return .granted
-        case OSStatus(errAEEventNotPermitted): return .denied
-        case OSStatus(errAEEventWouldRequireUserConsent): return .notDetermined
-        default: return .unavailable(status)
-        }
+    private static func denial(of target: AutomationTarget) -> String {
+        "Meerkat may not control \(target.name): turn on \(target.name) under Meerkat in System Settings › Privacy & Security › Automation, or allow it from Meerkat › Settings"
     }
 }
 

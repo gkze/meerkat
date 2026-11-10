@@ -233,34 +233,27 @@ public struct IOKitServiceParameters: EventParameters {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
             className: try container.decode(String.self, forKey: .className),
-            properties: try container.decodeIfPresent([String].self, forKey: .properties) ?? [])
+            properties: try container.decode([String].self, forKey: .properties))
     }
 
-    public func validate() throws {
-        // IOKit class names are C++ identifiers.
-        guard className.range(of: #"^[A-Za-z_][A-Za-z0-9_]{0,127}$"#, options: .regularExpression) != nil else {
-            throw EventError.invalidParameters("\"className\" must be an IOKit class name, got \"\(className)\"")
-        }
-        guard properties.count <= Self.maximumProperties, !properties.contains(where: \.isEmpty) else {
-            throw EventError.invalidParameters(
-                "\"properties\" must list at most \(Self.maximumProperties) non-empty keys")
-        }
-    }
-
-    public static var schema: TypeSchema {
-        .object(
-            ObjectSchema([
-                .field(
-                    "className", String.self,
-                    doc:
-                        "IOKit class to match, subclasses included, e.g. \"IOThunderboltSwitch\" or \"IOPCIDevice\"; `ioreg -l` lists them. A class that does not exist matches nothing."
-                ),
-                .optional(
-                    "properties", [String].self,
-                    doc:
-                        "Registry properties to include, at most \(maximumProperties); duplicates are ignored. Default none."
-                ),
-            ]))
+    public static var objectSchema: ObjectSchema {
+        ObjectSchema([
+            ObjectSchema.Field(
+                // IOKit class names are C++ identifiers.
+                "className",
+                .text(
+                    TextBounds(
+                        1...128,
+                        pattern: TextBounds.Pattern(
+                            "^[A-Za-z_][A-Za-z0-9_]*$", refusal: "must be an IOKit class name")
+                    )),
+                doc:
+                    "IOKit class to match, subclasses included, e.g. \"IOThunderboltSwitch\" or \"IOPCIDevice\"; `ioreg -l` lists them. A class that does not exist matches nothing."
+            ),
+            ObjectSchema.Field(
+                "properties", .array(.text(.name(128)), .atMost(maximumProperties, distinct: true)), default: [],
+                doc: "Registry properties to include; duplicates are ignored"),
+        ])
     }
 
     public static var examples: [Self] {
@@ -279,10 +272,8 @@ extension IOKitServicePayload {
                 properties[key] = value
             }
         }
-        var name = [CChar](repeating: 0, count: 128)  // io_name_t
-        let named = IORegistryEntryGetName(service, &name) == KERN_SUCCESS
         return Self(
-            className: IORegistry.className(service), name: named ? String(nulTerminated: name) : nil,
+            className: IORegistry.className(service), name: IORegistry.name(service),
             registryEntryId: IORegistry.entryID(service), properties: properties)
     }
 }

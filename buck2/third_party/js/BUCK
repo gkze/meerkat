@@ -10,7 +10,7 @@
 # Sources/meerkat-rules/package.json moves.
 
 load("//buck2/rules:conformance.bzl", "npm_pins_test")
-load(":defs.bzl", "npm_package")
+load(":defs.bzl", "RELEASE_PLATFORM", "js_tool_subtargets", "npm_package")
 
 NPM_PACKAGES = {
     # The compiler: tsrs, the Rust port of TypeScript 7, and the lib.*.d.ts
@@ -20,12 +20,8 @@ NPM_PACKAGES = {
     "tsrslint": ("@maschwenk/tsrslint-darwin-arm64", "0.1.6", "b72101bbbc6700c164a5adff20ea74b0d12444c0c49863ed98545a0acc645ae8"),
 }
 
-_PATHS = {
-    "tsrslint": ["tsrslint"],
-}
-
 [
-    npm_package(name = name, package = package, version = version, sha256 = sha256, paths = _PATHS.get(name, []))
+    npm_package(name = name, package = package, version = version, sha256 = sha256, paths = js_tool_subtargets(name))
     for name, (package, version, sha256) in NPM_PACKAGES.items()
 ]
 
@@ -41,9 +37,9 @@ RELEASES = {
 [
     http_archive(
         name = tool,
-        urls = ["https://github.com/oxc-project/oxc/releases/download/{0}_v{1}/{0}-aarch64-apple-darwin.tar.gz".format(tool, version)],
+        urls = ["https://github.com/oxc-project/oxc/releases/download/{0}_v{1}/{0}-{2}.tar.gz".format(tool, version, RELEASE_PLATFORM)],
         sha256 = sha256,
-        sub_targets = [tool + "-aarch64-apple-darwin"],
+        sub_targets = js_tool_subtargets(tool),
         visibility = ["PUBLIC"],
     )
     for tool, (version, sha256) in RELEASES.items()

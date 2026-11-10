@@ -11,10 +11,11 @@ public struct EventEnvelope: Sendable, Codable, Equatable {
     public let origin: EventOrigin
     /// True when the event is the current value of a `state` event rather
     /// than a change observed after the subscriber subscribed: either replayed
-    /// from a source that was already running, or the first value a push
-    /// `state` source reports when it starts (its documented "current value
-    /// first"). Polled and derived `state` kinds have no such value: their
-    /// first event is a measurement.
+    /// from a source that was already running, or the value a push `state`
+    /// source reads as it starts (`Emitter.current`, its documented "current
+    /// value first"). A source with no value to read then marks nothing, so
+    /// its first change is a change. Polled and derived `state` kinds have no
+    /// such value: their first event is a measurement.
     public let replayed: Bool
     public let payload: JSONValue
 
@@ -193,6 +194,11 @@ public struct SourceStatistics: Sendable, Codable, Equatable {
     /// The source's own note on how it runs, e.g. the predicate `log`
     /// applies for `log.entry`. Absent when the source has none.
     public let detail: String?
+    /// Payloads the source made that JSON cannot carry (a NaN or infinite
+    /// number), left out rather than delivered.
+    public let unencodable: UInt64
+    /// Why the latest of them could not be encoded.
+    public let lastUnencodable: String?
 }
 
 /// Routes events from sources to subscribers.
@@ -249,6 +255,7 @@ public final class EventHub: Sendable {
         var subscribers: [UInt64: Subscriber] = [:]
         var delivered: UInt64 = 0
         var dropped: UInt64 = 0
+        var unencodable: (count: UInt64, reason: String)?
         /// `dropped`, by who missed the events.
         var droppedBy: [EventSubscriber: UInt64] = [:]
 
@@ -307,14 +314,21 @@ public final class EventHub: Sendable {
         }
 
         /// Puts the next event in the ring; returns the waiters it wakes.
+        ///
+        /// A reported value equal to the latest is no change, whether the
+        /// source read it twice as it started or the OS notified without
+        /// one, and is left out. Only a push `state` kind's current value is
+        /// `replayed`, and only as the source's first event: a polled kind's
+        /// first event is a measurement, and a read that a change beat to
+        /// the ring reports what came after that change.
         mutating func append(
-            payload: JSONValue, origin: EventOrigin, time: Double
+            payload: JSONValue, origin: EventOrigin, value: Emission.ReportedValue?, time: Double
         ) -> [(CheckedContinuation<EventEnvelope?, Never>, EventEnvelope)] {
-            let sequence = ring.newest + 1
-            let isCurrentValue = isState && kind.descriptor.mechanism == .push && sequence == 1
+            if value != nil, let latest = ring.latest, latest.payload == payload, latest.origin == origin { return [] }
+            let current = value == .current && ring.newest == 0 && isState && kind.descriptor.mechanism == .push
             let envelope = EventEnvelope(
-                kind: kind.name, sequence: sequence, time: time,
-                origin: origin, replayed: isCurrentValue, payload: payload)
+                kind: kind.name, sequence: ring.newest + 1, time: time,
+                origin: origin, replayed: current, payload: payload)
             if let evicted = ring.append(envelope) { self.evicted(evicted) }
             return Array(subscribers.keys).compactMap { wake($0) }
         }
@@ -425,8 +439,8 @@ public final class EventHub: Sendable {
                     fail: { [weak self] reason in
                         self?.fail(key: key, token: token, reason: reason)
                     },
-                    sink: { [weak self] payload, origin in
-                        self?.deliver(key: key, token: token, payload: payload, origin: origin)
+                    sink: { [weak self] emission in
+                        self?.deliver(key: key, token: token, emission)
                     })
                 try source.start()
                 let keep = state.withLock { state -> Bool in
@@ -548,7 +562,9 @@ public final class EventHub: Sendable {
             subscribers: instance.subscribers.count,
             delivered: instance.delivered,
             dropped: instance.dropped,
-            detail: instance.source?.detail
+            detail: instance.source?.detail,
+            unencodable: instance.unencodable?.count ?? 0,
+            lastUnencodable: instance.unencodable?.reason
         )
     }
 
@@ -577,14 +593,22 @@ public final class EventHub: Sendable {
         }
     }
 
-    private func deliver(key: String, token: UInt64, payload: JSONValue, origin: EventOrigin) {
-        let now = Date().timeIntervalSince1970 * 1000
+    private func deliver(key: String, token: UInt64, _ emission: Emission) {
+        let now = nowMilliseconds()
         let woken = state.withLock { state -> [(CheckedContinuation<EventEnvelope?, Never>, EventEnvelope)] in
             guard state.instances[key]?.token == token else { return [] }
-            // Appending under the lock keeps every subscriber's order equal
-            // to the sequence order; waiters resume after the lock is
-            // released.
-            return state.instances[key]?.append(payload: payload, origin: origin, time: now) ?? []
+            switch emission {
+            case .event(let payload, let origin, let value):
+                // Appending under the lock keeps every subscriber's order
+                // equal to the sequence order; waiters resume after the
+                // lock is released.
+                return state.instances[key]?.append(payload: payload, origin: origin, value: value, time: now)
+                    ?? []
+            case .unencodable(let reason):
+                let count = (state.instances[key]?.unencodable?.count ?? 0) + 1
+                state.instances[key]?.unencodable = (count, reason)
+                return []
+            }
         }
         for (waiter, envelope) in woken { waiter.resume(returning: envelope) }
     }

@@ -796,9 +796,11 @@ declare module "meerkat" {
   }
 
   export interface NotificationAction {
-    /** Comes back as the response's `action`; not "default" or "dismiss", which mean a click on the notification and closing it. */
+    /** Comes back as the response's `action`; not "default" or "dismiss", which mean a click on the notification and closing it. 1–64 bytes. */
     id: string;
+    /** 1–256 bytes. */
     title: string;
+    /** Default false. */
     destructive?: boolean;
     /** Makes the action a reply field; the typed text comes back as the response's `text`. */
     input?: {
@@ -807,31 +809,35 @@ declare module "meerkat" {
   }
 
   export interface NotificationRequest {
+    /** 1–1024 bytes. */
     title: string;
     subtitle?: string;
     body?: string;
-    /** Posting the same id again replaces the notification; `notify.withdraw(id)` removes it. Ids are the rule's own: another rule's never collide. */
+    /** Posting the same id again replaces the notification; `notify.withdraw(id)` removes it. Ids are the rule's own: another rule's never collide. 1–256 bytes. */
     id?: string;
-    /** Groups the rule's notifications further; they are always grouped by rule. */
+    /** Groups the rule's notifications further; they are always grouped by rule. 1–256 bytes. */
     group?: string;
     /** Play the default sound. Default false. */
     sound?: boolean;
-    /** At most 4. A click arrives as a `meerkat.notification` event, delivered only to rules in this file. */
+    /** A click arrives as a `meerkat.notification` event, delivered only to rules in this file. At most 4. Default []. */
     actions?: NotificationAction[];
-    /** Returned in the response event; at most 4096 bytes of JSON. */
+    /** Returned in the response event; at most 4 KiB of JSON. */
     data?: JSONValue;
   }
 
   export interface ProcessTarget {
+    /** 1–2147483647. */
     pid: number;
+    /** 1–9000000000000. */
     startedAt: number;
   }
 
   export interface ExecRequest {
     /** Must be listed in `capabilities.exec.allow`. */
     path: string;
+    /** Default []. */
     args?: string[];
-    /** Default 10. */
+    /** 0.1–60. Default 10. */
     timeoutSeconds?: number;
     stdin?: string;
   }
@@ -850,10 +856,12 @@ declare module "meerkat" {
 
   export interface HttpRequest {
     url: string;
+    /** Default "GET". */
     method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";
+    /** Default {}. */
     headers?: Record<string, string>;
     body?: string;
-    /** Default 10. */
+    /** 0.1–60. Default 10. */
     timeoutSeconds?: number;
   }
 
@@ -865,35 +873,35 @@ declare module "meerkat" {
   }
 
   export interface RecordRequest {
-    /** Label stored with the sample, as `meerkat sample --label`. */
+    /** Label stored with the sample, as `meerkat sample --label`. 1–1024 bytes. */
     label: string;
-    /** CPU and I/O window, less than the rule's `timeoutSeconds`. Default 20. */
+    /** CPU and I/O window, less than the rule's `timeoutSeconds`, 1–120. Default 20. */
     windowSeconds?: number;
-    /** Processes kept. Default 20. */
+    /** Processes kept, 1–200. Default 20. */
     top?: number;
-    /** Only processes whose executable ships with macOS. */
+    /** Only processes whose executable ships with macOS. Default false. */
     systemOnly?: boolean;
-    /** Keep only the newest N samples under this label afterwards; other labels are untouched. */
+    /** Keep only the newest N samples under this label afterwards; other labels are untouched. 1–10000000. */
     retain?: number;
   }
 
   export interface PreventSleepRequest {
-    /** The rule's own name for the assertion; reusing it replaces it. */
+    /** The rule's own name for the assertion; reusing it replaces it. 1–256 bytes. */
     id: string;
-    /** Shown by `pmset -g assertions`. */
+    /** Shown by `pmset -g assertions`. 1–1024 bytes. */
     reason: string;
     /** Keep the display on too. Default false. */
     display?: boolean;
-    /** macOS releases the assertion after this long. */
+    /** macOS releases the assertion after this long. 1–86400. */
     timeoutSeconds: number;
   }
 
   export interface ShortcutRequest {
-    /** Must be listed in `capabilities.shortcuts.allow`. */
+    /** Must be listed in `capabilities.shortcuts.allow`. 1–256 bytes. */
     name: string;
-    /** Text passed to the shortcut as its input. */
+    /** Text passed to the shortcut as its input. At most 1 MiB. */
     input?: string;
-    /** Default 10. */
+    /** 0.1–60. Default 10. */
     timeoutSeconds?: number;
   }
 
@@ -911,15 +919,20 @@ declare module "meerkat" {
   }
 
   export interface WindowChange {
+    /** 1–256 bytes. */
     bundleId: string;
-    /** From `windows.list`. */
+    /** From `windows.list`. 0–100000. */
     index: number;
+    /** -100000–100000. */
     x?: number;
+    /** -100000–100000. */
     y?: number;
+    /** 1–100000. */
     width?: number;
+    /** 1–100000. */
     height?: number;
     minimized?: boolean;
-    /** Bring it to the front of its app. */
+    /** Bring it to the front of its app. Default false. */
     raise?: boolean;
   }
 
@@ -1011,7 +1024,7 @@ declare module "meerkat" {
     "app.unhidden": Application;
     /** The active Space (desktop) changed. Which Space, and on which display, is not reported. (push, occurrence, loss: none; NSWorkspace.activeSpaceDidChangeNotification) */
     "space.changed": {};
-    /** The frontmost app, its focused window, or that window's title changed. The current state is delivered first. Position, size, minimized and full-screen are read at each change but moving or resizing alone does not produce an event. Some apps expose no windows to Accessibility (the Electron-based Claude desktop app, checked on macOS 27); for them `window` is absent. With no window open, Finder reports the desktop. Needs the Accessibility permission; window titles can contain document names and web page titles. (push, state, loss: coalesced, needs the accessibility permission, rules need `capabilities: { observe: { allow: ["window.focused"] } }`; AXObserver kAXFocusedWindowChanged, kAXMainWindowChanged, kAXTitleChanged on the frontmost app; NSWorkspace.didActivateApplicationNotification) */
+    /** The frontmost app, its focused window, or that window's title changed. The current state is delivered first. Position, size, minimized and full-screen are read at each change but moving or resizing alone does not produce an event. Some apps expose no windows to Accessibility (the Electron-based Claude desktop app, checked on macOS 27); for them `window` is absent. With no window open, Finder reports the desktop. Window titles can contain document names and web page titles. (push, state, loss: coalesced, needs the Accessibility permission, rules need `capabilities: { observe: { allow: ["window.focused"] } }`; AXObserver kAXFocusedWindowChanged, kAXMainWindowChanged, kAXTitleChanged on the frontmost app; NSWorkspace.didActivateApplicationNotification) */
     "window.focused": FocusedWindowState;
     /** Whether the default network path is usable, and over which interfaces, changed. The current path is delivered first. Wi-Fi network names and addresses are not reported (see network.configuration). (push, state, loss: coalesced; NWPathMonitor) */
     "network.path": NetworkPath;
@@ -1021,7 +1034,7 @@ declare module "meerkat" {
     "network.hostname": HostNames;
     /** A network interface's link went up or down (a cable plugged in or pulled, Wi-Fi associating or dropping), or an interface with a link state appeared or went away. The current links are delivered first. (push, state, loss: coalesced; SCDynamicStore State:/Network/Interface/*\/Link) */
     "network.link": NetworkLinks;
-    /** Wi-Fi was turned on or off, joined or left a network, roamed to another access point, or changed channel or mode; with `signal`, also every signal change. The current state is delivered first. The network name and access point need the Location permission (asked for when a rule first subscribes); without it they are absent and everything else is reported. (push, state, loss: coalesced, needs the location permission, rules need `capabilities: { observe: { allow: ["network.wifi"] } }`; CoreWLAN CWEventDelegate (power, SSID, BSSID, link, link quality, mode, country code); CLLocationManager authorization) */
+    /** Wi-Fi was turned on or off, joined or left a network, roamed to another access point, or changed channel or mode; with `signal`, also every signal change. The current state is delivered first. The network name and access point need the Location permission (asked for when a rule first subscribes); without it they are absent and everything else is reported. (push, state, loss: coalesced, reports more with the Location Services permission, rules need `capabilities: { observe: { allow: ["network.wifi"] } }`; CoreWLAN CWEventDelegate (power, SSID, BSSID, link, link quality, mode, country code); CLLocationManager authorization) */
     "network.wifi": WiFi;
     /** The default input, output, or system (alert) output device changed; every event carries all three. The current defaults are delivered first. (push, state, loss: coalesced; CoreAudio kAudioHardwarePropertyDefaultInputDevice, DefaultOutputDevice, DefaultSystemOutputDevice listeners) */
     "audio.defaultDevice": AudioDefaultDevices;
@@ -1041,7 +1054,7 @@ declare module "meerkat" {
     "hid.attached": HIDDevice;
     /** A HID device was disconnected. Match it to its `hid.attached` event by `registryEntryId`. (push, occurrence, loss: none; IOServiceAddMatchingNotification(kIOTerminatedNotification, IOHIDDevice)) */
     "hid.detached": HIDDevice;
-    /** A paired Bluetooth device connected or disconnected; pairing changes and Bluetooth being turned on or off are noticed within 15 seconds. The current state is delivered first. Needs the Bluetooth permission. Devices that are not paired with the Mac are not reported. (push, state, loss: coalesced, needs the bluetooth permission, rules need `capabilities: { observe: { allow: ["bluetooth.devices"] } }`; IOBluetoothDevice connect and disconnect notifications, pairedDevices; IOBluetoothHostController powerState (checked every 15 s)) */
+    /** A paired Bluetooth device connected or disconnected; pairing changes and Bluetooth being turned on or off are noticed within 15 seconds. The current state is delivered first. Devices that are not paired with the Mac are not reported. (push, state, loss: coalesced, needs the Bluetooth permission, rules need `capabilities: { observe: { allow: ["bluetooth.devices"] } }`; IOBluetoothDevice connect and disconnect notifications, pairedDevices; IOBluetoothHostController powerState (checked every 15 s)) */
     "bluetooth.devices": BluetoothDevices;
     /** The system clock was set, by the user or by network time. The size of the jump is not reported. (push, occurrence, loss: none; NSSystemClockDidChange) */
     "time.clockSet": {};
@@ -1066,7 +1079,7 @@ declare module "meerkat" {
     "pasteboard.changed": PasteboardChange;
     /** The user became idle (no keyboard, mouse or trackpad input for `threshold` seconds) or active again. The current state is delivered first. Checked every threshold/10 seconds (1–10 s), so a transition is reported up to that late. Which keys or buttons were used is never observed. (poll, state, loss: lossy; CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateHIDSystemState)) */
     "input.idle": InputIdle;
-    /** How much keyboard, mouse and trackpad input arrived during each interval: counts of key presses, clicks and scrolls, and pointer distance. The first report arrives one interval after subscribing. Key codes, characters and pointer positions are never kept or reported. Needs the Input Monitoring permission. (derived, state, loss: coalesced, needs the inputMonitoring permission, rules need `capabilities: { observe: { allow: ["input.activity"] } }`; CGEventTap (listen-only, session) for key down, mouse down, scroll wheel and mouse moved events) */
+    /** How much keyboard, mouse and trackpad input arrived during each interval: counts of key presses, clicks and scrolls, and pointer distance. The first report arrives one interval after subscribing. Key codes, characters and pointer positions are never kept or reported. (derived, state, loss: coalesced, needs the Input Monitoring permission, rules need `capabilities: { observe: { allow: ["input.activity"] } }`; CGEventTap (listen-only, session) for key down, mouse down, scroll wheel and mouse moved events) */
     "input.activity": InputActivity;
     /** A notify(3) name in `names` was posted. notify(3) coalesces posts that arrive before the previous one was handled, and `state` is read when handled, so it may be newer than the post. (push, occurrence, loss: coalesced, rules need `capabilities: { observe: { allow: ["darwin.notification"] } }`; notify_register_dispatch, notify_get_state) */
     "darwin.notification": DarwinNotification;
@@ -1090,19 +1103,19 @@ declare module "meerkat" {
   export interface EventParameters {
     "memory.pressure": {};
     "memory.sample": {
-      /** Seconds between samples, 0.25–3600.0. Default 1.0. */
+      /** Seconds between samples, 0.25–3600. Default 1. */
       interval?: number;
     };
     "cpu.sample": {
-      /** Seconds between samples, 0.1–3600.0. Default 1.0. */
+      /** Seconds between samples, 0.1–3600. Default 1. */
       interval?: number;
     };
     "disk.sample": {
-      /** Seconds between samples, 0.25–3600.0. Default 1.0. */
+      /** Seconds between samples, 0.25–3600. Default 1. */
       interval?: number;
     };
     "network.sample": {
-      /** Seconds between samples, 0.25–3600.0. Default 1.0. */
+      /** Seconds between samples, 0.25–3600. Default 1. */
       interval?: number;
     };
     "process.spawned": {};
@@ -1111,9 +1124,9 @@ declare module "meerkat" {
     "process.hot": {
       /** Which per-process value to watch. Rates are per second over the sample window. */
       metric: "cpuPercent" | "diskWriteMBps" | "diskReadMBps" | "footprintMB" | "energyWatts";
-      /** Threshold; the episode starts when the value stays above it. */
+      /** Threshold; the episode starts when the value stays above it. At least 0. */
       above: number;
-      /** How long the value must stay above `above`. Default 0 (one sample). */
+      /** How long the value must stay above `above`; 0 is one sample, 0–86400. Default 0. */
       sustainSeconds?: number;
       /** Seconds between process-table samples, 1–3600. Default 5. */
       interval?: number;
@@ -1121,47 +1134,47 @@ declare module "meerkat" {
     "process.top": {
       /** Seconds between refreshes of the ranked rows, 0.5–60. Default 1. */
       interval?: number;
-      /** Seconds between full re-rankings, at least `interval`. Default 5. */
+      /** Seconds between full re-rankings, at least `interval`, 0.5–600. Default 5. */
       rankInterval?: number;
       /** Rows ranked by CPU, 1–100. Default 5. */
       count?: number;
       /** Rows ranked by disk I/O, 0–100. Default 3. */
       ioCount?: number;
-      /** Rows ranked by memory footprint, 0–100. Default 0. Only processes whose footprint this user can read (their own) rank. */
+      /** Rows ranked by memory footprint. Only processes whose footprint this user can read (their own) rank. 0–100. Default 0. */
       memoryCount?: number;
     };
     "process.list": {
-      /** Seconds between samples, 0.5–600.0. Default 5.0. */
+      /** Seconds between samples, 0.5–600. Default 5. */
       interval?: number;
     };
     "process.sample": {
-      /** The process to follow. */
+      /** The process to follow. 1–2147483647. */
       pid: number;
-      /** Its start time, epoch milliseconds (ProcessUsage.startedAt), so a reused pid is not followed. */
+      /** Its start time, epoch milliseconds (ProcessUsage.startedAt), so a reused pid is not followed. 1–9000000000000. */
       startedAt: number;
       /** Seconds between samples, 0.5–60. Default 1. */
       interval?: number;
     };
     "fs.change": {
-      /** Directories to watch recursively; absolute or starting with ~. */
+      /** Directories to watch recursively; absolute or starting with ~. At least 1. */
       paths: string[];
-      /** FSEvents coalescing window in seconds, 0–60. Default 1. Lower costs more. */
+      /** FSEvents coalescing window in seconds; lower costs more, 0–60. Default 1. */
       latency?: number;
-      /** Replay history after this event id (from a previous event's `eventId`), then continue live. */
+      /** Replay history after this event id (from a previous event's `eventId`), then continue live. 0–9007199254740992.0. */
       sinceEventId?: number;
     };
     "fs.churn": {
       /** Directory to measure. Default: the daemon's file scope, meerkat.json files.root (the whole startup volume) less files.exclude. */
       root?: string;
-      /** Absolute or ~ paths whose events are not counted, on top of the scope's own. Default none. */
+      /** Absolute or ~ paths whose events are not counted, on top of the scope's own, at most 256. Default []. */
       exclude?: string[];
-      /** Seconds each measurement listens for. Default 4. */
+      /** Seconds each measurement listens for, 0.5–3600. Default 4. */
       window?: number;
-      /** Seconds between the starts of measurements, at least `window`. Default 25. */
+      /** Seconds between the starts of measurements, at least `window`, 0.5–86400. Default 25. */
       every?: number;
-      /** Path components per bucket, counted from /. Default 5. */
+      /** Path components per bucket, counted from /, 1–64. Default 5. */
       depth?: number;
-      /** Buckets reported. Default 12. */
+      /** Buckets reported, 1–500. Default 12. */
       top?: number;
     };
     "volume.mounted": {};
@@ -1178,12 +1191,12 @@ declare module "meerkat" {
     "thermal.state": {};
     "thermal.pressure": {};
     "power.assertions": {
-      /** Seconds between samples, 0.5–300.0. Default 2.0. */
+      /** Seconds between samples, 0.5–300. Default 2. */
       interval?: number;
     };
     "power.lid": {};
     "battery.sample": {
-      /** Seconds between samples, 5.0–3600.0. Default 30.0. */
+      /** Seconds between samples, 5–3600. Default 30. */
       interval?: number;
     };
     "display.sleep": {};
@@ -1205,7 +1218,7 @@ declare module "meerkat" {
     "network.hostname": {};
     "network.link": {};
     "network.wifi": {
-      /** Also report every change in signal strength and transmit rate (several a minute). Default false: those fields are read only when something else changes. */
+      /** Also report every change in signal strength and transmit rate (several a minute). Without it, those fields are read only when something else changes. Default false. */
       signal?: boolean;
     };
     "audio.defaultDevice": {};
@@ -1230,39 +1243,39 @@ declare module "meerkat" {
     "accessibility.display": {};
     "locale.changed": {};
     "pasteboard.changed": {
-      /** Seconds between samples, 0.25–60.0. Default 1.0. */
+      /** Seconds between samples, 0.25–60. Default 1. */
       interval?: number;
     };
     "input.idle": {
-      /** Seconds without input before the user counts as idle, 5.0–86400.0. Default 300.0. */
+      /** Seconds without input before the user counts as idle, 5–86400. Default 300. */
       threshold?: number;
     };
     "input.activity": {
-      /** Seconds between samples, 1.0–3600.0. Default 60.0. */
+      /** Seconds between samples, 1–3600. Default 60. */
       interval?: number;
     };
     "darwin.notification": {
-      /** Notification names to observe, 1–64; duplicates are ignored. */
+      /** Notification names to observe; duplicates are ignored. 1–64. */
       names: string[];
     };
     "distributed.notification": {
-      /** Notification names to observe, 1–64; duplicates are ignored. */
+      /** Notification names to observe; duplicates are ignored. 1–64. */
       names: string[];
     };
     "iokit.attached": {
-      /** IOKit class to match, subclasses included, e.g. "IOThunderboltSwitch" or "IOPCIDevice"; `ioreg -l` lists them. A class that does not exist matches nothing. */
+      /** IOKit class to match, subclasses included, e.g. "IOThunderboltSwitch" or "IOPCIDevice"; `ioreg -l` lists them. A class that does not exist matches nothing. 1–128 bytes. */
       className: string;
-      /** Registry properties to include, at most 32; duplicates are ignored. Default none. */
+      /** Registry properties to include; duplicates are ignored, at most 32. Default []. */
       properties?: string[];
     };
     "iokit.detached": {
-      /** IOKit class to match, subclasses included, e.g. "IOThunderboltSwitch" or "IOPCIDevice"; `ioreg -l` lists them. A class that does not exist matches nothing. */
+      /** IOKit class to match, subclasses included, e.g. "IOThunderboltSwitch" or "IOPCIDevice"; `ioreg -l` lists them. A class that does not exist matches nothing. 1–128 bytes. */
       className: string;
-      /** Registry properties to include, at most 32; duplicates are ignored. Default none. */
+      /** Registry properties to include; duplicates are ignored, at most 32. Default []. */
       properties?: string[];
     };
     "log.entry": {
-      /** `log stream --predicate` filter, e.g. `subsystem == "com.apple.bluetooth" AND messageType == error`. Required: the full log is thousands of entries a second. */
+      /** `log stream --predicate` filter, e.g. `subsystem == "com.apple.bluetooth" AND messageType == error`. Required: the full log is thousands of entries a second. 1–16384 bytes. */
       predicate: string;
       /** Lowest level streamed: "default" (also error and fault), "info", or "debug". Default "default". */
       level?: "default" | "info" | "debug";
@@ -1317,12 +1330,12 @@ declare module "meerkat" {
     "app.hidden": { mechanism: "push"; semantics: "occurrence"; loss: "none"; stability: "documented"; permission: null; observation: "processes" };
     "app.unhidden": { mechanism: "push"; semantics: "occurrence"; loss: "none"; stability: "documented"; permission: null; observation: "processes" };
     "space.changed": { mechanism: "push"; semantics: "occurrence"; loss: "none"; stability: "documented"; permission: null; observation: "open" };
-    "window.focused": { mechanism: "push"; semantics: "state"; loss: "coalesced"; stability: "documented"; permission: "accessibility"; observation: "named" };
+    "window.focused": { mechanism: "push"; semantics: "state"; loss: "coalesced"; stability: "documented"; permission: { permission: "accessibility"; without: "refused" }; observation: "named" };
     "network.path": { mechanism: "push"; semantics: "state"; loss: "coalesced"; stability: "documented"; permission: null; observation: "open" };
     "network.configuration": { mechanism: "push"; semantics: "state"; loss: "coalesced"; stability: "documented"; permission: null; observation: "open" };
     "network.hostname": { mechanism: "push"; semantics: "state"; loss: "coalesced"; stability: "documented"; permission: null; observation: "open" };
     "network.link": { mechanism: "push"; semantics: "state"; loss: "coalesced"; stability: "documented"; permission: null; observation: "open" };
-    "network.wifi": { mechanism: "push"; semantics: "state"; loss: "coalesced"; stability: "documented"; permission: "location"; observation: "named" };
+    "network.wifi": { mechanism: "push"; semantics: "state"; loss: "coalesced"; stability: "documented"; permission: { permission: "location"; without: "reportsLess" }; observation: "named" };
     "audio.defaultDevice": { mechanism: "push"; semantics: "state"; loss: "coalesced"; stability: "documented"; permission: null; observation: "open" };
     "audio.devices": { mechanism: "push"; semantics: "state"; loss: "coalesced"; stability: "documented"; permission: null; observation: "open" };
     "audio.inUse": { mechanism: "push"; semantics: "state"; loss: "coalesced"; stability: "documented"; permission: null; observation: "named" };
@@ -1332,7 +1345,7 @@ declare module "meerkat" {
     "usb.detached": { mechanism: "push"; semantics: "occurrence"; loss: "none"; stability: "documented"; permission: null; observation: "open" };
     "hid.attached": { mechanism: "push"; semantics: "occurrence"; loss: "none"; stability: "documented"; permission: null; observation: "open" };
     "hid.detached": { mechanism: "push"; semantics: "occurrence"; loss: "none"; stability: "documented"; permission: null; observation: "open" };
-    "bluetooth.devices": { mechanism: "push"; semantics: "state"; loss: "coalesced"; stability: "documented"; permission: "bluetooth"; observation: "named" };
+    "bluetooth.devices": { mechanism: "push"; semantics: "state"; loss: "coalesced"; stability: "documented"; permission: { permission: "bluetooth"; without: "refused" }; observation: "named" };
     "time.clockSet": { mechanism: "push"; semantics: "occurrence"; loss: "none"; stability: "documented"; permission: null; observation: "open" };
     "time.zone": { mechanism: "push"; semantics: "state"; loss: "none"; stability: "documented"; permission: null; observation: "open" };
     "time.dayChanged": { mechanism: "push"; semantics: "occurrence"; loss: "coalesced"; stability: "documented"; permission: null; observation: "open" };
@@ -1343,7 +1356,7 @@ declare module "meerkat" {
     "locale.changed": { mechanism: "push"; semantics: "state"; loss: "none"; stability: "documented"; permission: null; observation: "open" };
     "pasteboard.changed": { mechanism: "poll"; semantics: "occurrence"; loss: "lossy"; stability: "documented"; permission: null; observation: "named" };
     "input.idle": { mechanism: "poll"; semantics: "state"; loss: "lossy"; stability: "documented"; permission: null; observation: "open" };
-    "input.activity": { mechanism: "derived"; semantics: "state"; loss: "coalesced"; stability: "documented"; permission: "inputMonitoring"; observation: "named" };
+    "input.activity": { mechanism: "derived"; semantics: "state"; loss: "coalesced"; stability: "documented"; permission: { permission: "inputMonitoring"; without: "refused" }; observation: "named" };
     "darwin.notification": { mechanism: "push"; semantics: "occurrence"; loss: "coalesced"; stability: "documented"; permission: null; observation: "named" };
     "distributed.notification": { mechanism: "push"; semantics: "occurrence"; loss: "none"; stability: "documented"; permission: null; observation: "named" };
     "iokit.attached": { mechanism: "push"; semantics: "occurrence"; loss: "none"; stability: "documented"; permission: null; observation: "named" };
@@ -1544,11 +1557,11 @@ declare module "meerkat" {
   // ---------------------------------------------------------------- rate
 
   export interface Rate {
-    /** At most one invocation per window; the first event wins. */
+    /** At most one invocation per window of this many seconds; the first event wins, more than 0, at most 86400. */
     throttleSeconds?: number;
-    /** Invoke with the last event once no event arrived for this long. */
+    /** Invoke with the last event once no event arrived for this many seconds, more than 0, at most 86400. */
     debounceSeconds?: number;
-    /** Drop events beyond this many invocations per rolling minute. */
+    /** Drop events beyond this many invocations per rolling minute, 1–10000. */
     maxPerMinute?: number;
   }
 
@@ -1594,7 +1607,10 @@ declare module "meerkat" {
     {} extends EventObservation[K] ? {} : { capabilities: EventObservation[K] };
 
   export type RuleDefinition<K extends EventName, G extends Grants> = {
-    /** Unique within the entry file that exports the rule; the rule id is `<file>#<name>`. */
+    /**
+     * Unique within the entry file that exports the rule, at most
+     * 256 bytes and without `#`; the rule id is `<file>#<name>`.
+     */
     name: string;
     on: K;
     match?: Match<Events[K]>;
@@ -1606,11 +1622,7 @@ declare module "meerkat" {
     capabilities?: G & OnlyGrants<G, Grants>;
     /** Also receive events caused by this daemon's own effects. Default false. */
     includeOwn?: boolean;
-    /**
-     * Deadline per invocation, 0.1–60 seconds, from when the handler starts.
-     * Default 5. A promise still pending then is abandoned; synchronous code
-     * still running then stops the handler host.
-     */
+    /** Seconds each invocation may run, from when the handler starts; past it a promise still pending is abandoned, and synchronous code still running stops the handler host, 0.1–60. Default 5. */
     timeoutSeconds?: number;
     handle(event: Events[K], ctx: Context<G>, meta: EventMeta<K>): void | Promise<void>;
   } & ParamsField<K> & ObservationField<K>;
@@ -1701,11 +1713,11 @@ declare module "meerkat" {
       write?: boolean;
     };
     windows?: {
-      /** List, move, resize, minimize and raise other applications' windows (Accessibility permission). */
+      /** List, move, resize, minimize and raise other applications' windows. Needs the Accessibility permission. */
       control?: boolean;
     };
     appearance?: {
-      /** Switch between light and dark mode (Automation permission for System Events). */
+      /** Switch between light and dark mode. Needs Automation permission for System Events. */
       set?: boolean;
     };
   }
@@ -1715,7 +1727,7 @@ declare module "meerkat" {
     state: {
       /** Read a value from the rule's persistent storage. */
       get<T extends JSONValue = JSONValue>(key: string): Promise<T | undefined>;
-      /** Store a JSON value in the rule's persistent storage: at most 1024 keys and 8 MiB of JSON, 1 MiB per value. */
+      /** Store a JSON value in the rule's persistent storage: at most 1024 keys and 8 MiB of JSON. */
       set(key: string, value?: JSONValue): Promise<void>;
       /** Remove a value from the rule's persistent storage. */
       delete(key: string): Promise<void>;
@@ -1733,7 +1745,7 @@ declare module "meerkat" {
       & (G extends { process: { priority: true } } ? {
       /** Move one of your own processes to background priority (CPU and I/O) or back. */
       setPriority(target: ProcessTarget, priority: "background" | "normal"): Promise<void>;
-      /** Set the nice value of one of your own processes, 0–20. Only lowering priority (raising the value) is allowed. */
+      /** Set the nice value of one of your own processes. Only lowering priority (raising the value) is allowed. */
       setNice(target: ProcessTarget, nice: number): Promise<void>;
     } : {});
     exec: (G extends { exec: { allow: readonly string[] } } ? {
@@ -1764,7 +1776,7 @@ declare module "meerkat" {
       }): Promise<void>;
       /** Set a device's volume. */
       setVolume(request: {
-        /** 0 to 1. */
+        /** 0–1. */
         volume: number;
         /** Default "output". */
         direction?: "output" | "input";
@@ -1783,6 +1795,7 @@ declare module "meerkat" {
     apps: (G extends { apps: { open: true } } ? {
       /** Open an application, or bring it to the front. */
       open(request: {
+        /** 1–256 bytes. */
         bundleId: string;
         /** Bring it to the front. Default true. */
         activate?: boolean;
@@ -1807,9 +1820,10 @@ declare module "meerkat" {
       eject(path: string): Promise<void>;
     } : {});
     files: (G extends { files: { trash: readonly string[] } } ? {
-      /** Move a file or folder to the Trash. */
+      /** Move a file or folder to the Trash; a symlink is moved, not what it leads to. */
       trash(path: string): Promise<{
-        trashedPath: string;
+        /** Absent when macOS does not say. */
+        trashedPath?: string;
       }>;
     } : {})
       & (G extends { files: { tag: readonly string[] } } ? {
@@ -1841,13 +1855,13 @@ declare module "meerkat" {
       write(text: string): Promise<void>;
     } : {});
     windows: (G extends { windows: { control: true } } ? {
-      /** The windows of a running application, front to back. Needs the accessibility permission. */
+      /** The windows of a running application, front to back. Needs the Accessibility permission. */
       list(bundleId: string): Promise<WindowInfo[]>;
-      /** Move, resize, minimize, restore or raise one window. Coordinates are global, top-left origin. Needs the accessibility permission. */
+      /** Move, resize, minimize, restore or raise one window. Coordinates are global, top-left origin. Needs the Accessibility permission. */
       set(request: WindowChange): Promise<void>;
     } : {});
     appearance: (G extends { appearance: { set: true } } ? {
-      /** Switch to dark mode, or back to light mode, through System Events. */
+      /** Switch to dark mode, or back to light mode, through System Events. Needs Automation permission for System Events. */
       setDark(on: boolean): Promise<void>;
     } : {});
   }

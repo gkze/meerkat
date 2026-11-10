@@ -17,7 +17,7 @@ struct JSONSchemaTests {
             let problems = SubsetValidator(payload).violations(of: example)
             #expect(problems.isEmpty, "\(name) payload: \(problems)")
         }
-        let parameters = JSONSchema.document(kind.parametersSchema)
+        let parameters = JSONSchema.document(.object(kind.parametersSchema))
         for example in try kind.parameterExamples() {
             let problems = SubsetValidator(parameters).violations(of: example)
             #expect(problems.isEmpty, "\(name) parameters: \(problems)")
@@ -29,7 +29,7 @@ struct JSONSchemaTests {
     @Test(arguments: EventCatalog.standard.kinds.map(\.name))
     func parametersAreObjectSchemas(_ name: String) throws {
         let kind = try #require(EventCatalog.standard.kind(named: name))
-        #expect(JSONSchema.document(kind.parametersSchema)["type"] == "object")
+        #expect(JSONSchema.document(.object(kind.parametersSchema))["type"] == "object")
     }
 
     static let sample = TypeSchema.named(
@@ -41,6 +41,9 @@ struct JSONSchemaTests {
             .init("again", .array(.named("Inner", ObjectSchema([.init("count", .number)])))),
             .init("tags", .record(.boolean)),
             .init("anything", .json, optional: true),
+            .init("label", .text(TextBounds(1...8)), default: "x"),
+            .init("few", .array(.string, .atMost(2)), optional: true),
+            .init("wait", .bounded(.positive(atMost: 5)), optional: true),
         ]))
 
     @Test func shapeOfProjection() {
@@ -54,6 +57,16 @@ struct JSONSchemaTests {
         #expect(document["properties"]?["again"]?["items"] == ["$ref": "#/$defs/Inner"])
         #expect(document["$defs"]?.objectValue?.keys.sorted() == ["Inner"])
         #expect(document["properties"]?["anything"] == .object([:]))
+        // Bounds and defaults have keywords; the description stays the doc.
+        #expect(document["properties"]?["label"] == ["type": "string", "minLength": 1, "maxLength": 8, "default": "x"])
+        #expect(document["properties"]?["few"]?["maxItems"] == 2)
+        // A maximum counted over distinct items is not JSON Schema's, which
+        // counts duplicates: the projection leaves it out, staying looser.
+        let distinct = JSONSchema.document(
+            .object(ObjectSchema([.init("names", .array(.string, ItemBounds(1, 4, distinct: true)))])))
+        #expect(distinct["properties"]?["names"]?["minItems"] == 1)
+        #expect(distinct["properties"]?["names"]?["maxItems"] == nil)
+        #expect(document["properties"]?["wait"]?["exclusiveMinimum"] == 0)
     }
 
     @Test func projectionAgreesWithSchemaValidator() {
@@ -72,6 +85,11 @@ struct JSONSchemaTests {
             // Wrong type inside a reference and inside a record.
             ["name": "x", "inner": ["count": "1"], "again": [], "tags": [:]],
             ["name": "x", "inner": ["count": 1], "again": [], "tags": ["a": 1]],
+            // Out of a string's, a list's and a number's bounds.
+            ["name": "x", "inner": ["count": 1], "again": [], "tags": [:], "label": ""],
+            ["name": "x", "inner": ["count": 1], "again": [], "tags": [:], "label": "ninechars"],
+            ["name": "x", "inner": ["count": 1], "again": [], "tags": [:], "few": ["a", "b", "c"]],
+            ["name": "x", "inner": ["count": 1], "again": [], "tags": [:], "wait": 0],
         ]
         let validator = SubsetValidator(JSONSchema.document(Self.sample))
         #expect(validator.violations(of: valid).isEmpty)
@@ -101,7 +119,8 @@ private struct SubsetValidator {
 
     static let keywords: Set<String> = [
         "type", "properties", "required", "additionalProperties", "items", "enum", "$ref", "$defs",
-        "description", "minimum", "maximum", "$schema", "title",
+        "description", "minimum", "maximum", "$schema", "title", "minLength", "maxLength", "minItems", "maxItems",
+        "exclusiveMinimum", "default", "pattern",
     ]
 
     func violations(of value: JSONValue) -> [String] { check(value, against: root, at: "$") }
@@ -123,14 +142,34 @@ private struct SubsetValidator {
             return ["\(path): \(value) is not one of \(cases)"]
         }
         switch (keywords["type"], value) {
-        case (nil, _), ("string"?, .string), ("boolean"?, .bool):
+        case ("string"?, .string(let text)):
+            // JSON Schema counts code points.
+            let length = Double(text.unicodeScalars.count)
+            if let minimum = keywords["minLength"]?.numberValue, length < minimum { return ["\(path): too short"] }
+            if let maximum = keywords["maxLength"]?.numberValue, length > maximum { return ["\(path): too long"] }
+            if let pattern = keywords["pattern"]?.stringValue,
+                text.range(of: pattern, options: .regularExpression) == nil
+            {
+                return ["\(path): does not match \(pattern)"]
+            }
+            return []
+        case (nil, _), ("boolean"?, .bool):
             return []
         case ("number"?, .number(let number)), ("integer"?, .number(let number)):
             if keywords["type"] == "integer", number.rounded() != number { return ["\(path): \(number) is not whole"] }
             if let minimum = keywords["minimum"]?.numberValue, number < minimum { return ["\(path): below minimum"] }
+            if let minimum = keywords["exclusiveMinimum"]?.numberValue, number <= minimum {
+                return ["\(path): not above exclusiveMinimum"]
+            }
             if let maximum = keywords["maximum"]?.numberValue, number > maximum { return ["\(path): above maximum"] }
             return []
         case ("array"?, .array(let items)):
+            if let maximum = keywords["maxItems"]?.numberValue, Double(items.count) > maximum {
+                return ["\(path): too many items"]
+            }
+            if let minimum = keywords["minItems"]?.numberValue, Double(items.count) < minimum {
+                return ["\(path): too few items"]
+            }
             guard let element = keywords["items"] else { return [] }
             return items.enumerated().flatMap { check($1, against: element, at: "\(path)[\($0)]") }
         case ("object"?, .object(let fields)):
@@ -150,5 +189,34 @@ private struct SubsetValidator {
         default:
             return ["\(path): \(value) does not have type \(keywords["type"] ?? .null)"]
         }
+    }
+}
+
+/// The generated declarations state a field's bounds and default from the
+/// schema, so neither is written in its doc.
+struct FieldDocumentationTests {
+    typealias Field = ObjectSchema.Field
+
+    @Test func boundsAndDefaultFollowTheDoc() {
+        #expect(
+            Field("interval", .bounded(NumberBounds(1...3600)), default: 5, doc: "Seconds between samples")
+                .documentation
+                == "Seconds between samples, 1–3600. Default 5.")
+        #expect(
+            Field("id", .text(.name(256)), doc: "The rule's own name.").documentation
+                == "The rule's own name. 1–256 bytes, one line.")
+        #expect(Field("sound", .boolean, default: false).documentation == "Default false.")
+        #expect(Field("wait", .bounded(.positive(atMost: 30))).documentation == "More than 0, at most 30.")
+        #expect(Field("plain", .string).documentation == nil)
+    }
+
+    @Test func textBoundsCountBytesAndRefuseNUL() {
+        let bounds = TextBounds(1...4)
+        #expect(bounds.violation("abcd") == nil)
+        #expect(bounds.violation("é é") != nil)
+        #expect(bounds.violation("") != nil)
+        #expect(bounds.violation("a\u{0}") != nil)
+        #expect(TextBounds.name(8).violation("a\nb") != nil)
+        #expect(TextBounds(1...8).violation("a\nb") == nil)
     }
 }

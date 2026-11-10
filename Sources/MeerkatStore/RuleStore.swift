@@ -78,12 +78,8 @@ public final class RuleStore: Sendable {
         return try JSONDecoder().decode(JSONValue.self, from: Data(stored.utf8))
     }
 
-    /// A rule's state is bounded, so a looping or hostile rule cannot fill
-    /// the disk with it: at most `stateKeyLimit` keys and `stateByteLimit`
-    /// bytes of JSON across them.
-    public static let stateKeyLimit = 1024
-    public static let stateByteLimit = 8 << 20
-
+    /// A rule's state is bounded (`EffectLimits.stateKeys`, `stateBytes`),
+    /// so a looping or hostile rule cannot fill the disk with it.
     public func setValue(_ value: JSONValue, rule: String, key: String) throws {
         let row = RuleStateRow(
             ruleID: rule, key: key, value: value.canonicalString,
@@ -99,9 +95,9 @@ public final class RuleStore: Sendable {
                 arguments: [rule, key])
             let keys: Int = others?["keys"] ?? 0
             let bytes: Int = others?["bytes"] ?? 0
-            guard keys < Self.stateKeyLimit else { throw RuleStateLimitError.keys(Self.stateKeyLimit) }
-            guard bytes + row.value.utf8.count <= Self.stateByteLimit else {
-                throw RuleStateLimitError.bytes(Self.stateByteLimit)
+            guard keys < EffectLimits.stateKeys else { throw RuleStateLimitError.keys(EffectLimits.stateKeys) }
+            guard bytes + row.value.utf8.count <= EffectLimits.stateBytes else {
+                throw RuleStateLimitError.bytes(EffectLimits.stateBytes)
             }
             try RuleStateRow.insert {
                 row
@@ -122,10 +118,11 @@ public final class RuleStore: Sendable {
 
     // MARK: - Logs
 
-    public func appendLog(rule: String?, level: String, message: String, at time: Date = Date()) throws {
+    public func appendLog(rule: String?, level: LogLevel, message: String) throws {
         try dbQueue.write { db in
             try RuleLogRow.insert {
-                RuleLogRow.Draft(ruleID: rule, atUnix: time.timeIntervalSince1970, level: level, message: message)
+                RuleLogRow.Draft(
+                    ruleID: rule, atUnix: Date().timeIntervalSince1970, level: level.rawValue, message: message)
             }.execute(db)
             // Trim in batches of 1% so most inserts skip the delete.
             let id = db.lastInsertedRowID
@@ -157,7 +154,7 @@ public enum RuleStateLimitError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .keys(let limit): "a rule's state holds at most \(limit) keys; delete some first"
-        case .bytes(let limit): "a rule's state holds at most \(limit >> 20) MiB of JSON; delete some first"
+        case .bytes(let limit): "a rule's state holds at most \(TextBounds.size(limit)) of JSON; delete some first"
         }
     }
 }

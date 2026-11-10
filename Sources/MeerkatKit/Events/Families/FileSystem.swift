@@ -69,7 +69,7 @@ private func kernelName(ofDirectory path: String) -> String? {
     defer { close(descriptor) }
     var name = [CChar](repeating: 0, count: Int(MAXPATHLEN))
     guard fcntl(descriptor, F_GETPATH, &name) != -1 else { return nil }
-    return String(decoding: name.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
+    return String(nulTerminated: name)
 }
 
 /// The data volume's names for a canonical `path`: under its mount point
@@ -128,7 +128,9 @@ public struct FSChangeParameters: PathObservingParameters {
     public var latency: Double
     public var sinceEventId: Double?
 
-    public init(paths: [String], latency: Double = 1, sinceEventId: Double? = nil) {
+    public static let defaultLatency = 1.0
+
+    public init(paths: [String], latency: Double = defaultLatency, sinceEventId: Double? = nil) {
         self.paths = paths
         self.latency = latency
         self.sinceEventId = sinceEventId
@@ -137,34 +139,26 @@ public struct FSChangeParameters: PathObservingParameters {
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         paths = try container.decode([String].self, forKey: .paths).map { try absolutePath($0, field: "paths") }
-        latency = try container.decodeIfPresent(Double.self, forKey: .latency) ?? 1
+        latency = try container.decode(Double.self, forKey: .latency)
         sinceEventId = try container.decodeIfPresent(Double.self, forKey: .sinceEventId)
     }
 
     public var observedPaths: ObservedPaths { ObservedPaths(paths: paths) }
 
-    public func validate() throws {
-        guard !paths.isEmpty else { throw EventError.invalidParameters("\"paths\" must not be empty") }
-        try requireInterval(latency, name: "latency", in: 0...60)
-        // JSON numbers are exact up to 2^53, and `FSEventStreamEventId(_:)`
-        // traps past 2^64.
-        if let sinceEventId, !(0...0x20_0000_0000_0000).contains(sinceEventId) || sinceEventId != sinceEventId.rounded()
-        {
-            throw EventError.invalidParameters("\"sinceEventId\" must be an integer between 0 and 2^53")
-        }
-    }
-
-    public static var schema: TypeSchema {
-        .object(
-            ObjectSchema([
-                .field("paths", [String].self, doc: "Directories to watch recursively; absolute or starting with ~."),
-                .optional(
-                    "latency", Double.self,
-                    doc: "FSEvents coalescing window in seconds, 0–60. Default 1. Lower costs more."),
-                .optional(
-                    "sinceEventId", Double.self,
-                    doc: "Replay history after this event id (from a previous event's `eventId`), then continue live."),
-            ]))
+    public static var objectSchema: ObjectSchema {
+        ObjectSchema([
+            ObjectSchema.Field(
+                "paths", .array(.string, ItemBounds(1)),
+                doc: "Directories to watch recursively; absolute or starting with ~."),
+            ObjectSchema.Field(
+                "latency", .bounded(NumberBounds(0...60)), default: .number(defaultLatency),
+                doc: "FSEvents coalescing window in seconds; lower costs more"),
+            // JSON numbers are exact up to 2^53, and
+            // `FSEventStreamEventId(_:)` traps past 2^64.
+            ObjectSchema.Field(
+                "sinceEventId", .bounded(.integer(0...0x20_0000_0000_0000)), optional: true,
+                doc: "Replay history after this event id (from a previous event's `eventId`), then continue live."),
+        ])
     }
 
     public static var examples: [Self] {
@@ -312,8 +306,6 @@ public struct FSChurnParameters: PathObservingParameters {
     public static let defaultEvery = 25.0
     public static let defaultDepth = 5
     public static let defaultTop = 12
-    static let depthRange = 1...64
-    static let topRange = 1...500
 
     public init(
         root: String? = nil, exclude: [String] = [], window: Double = defaultWindow, every: Double = defaultEvery,
@@ -330,21 +322,17 @@ public struct FSChurnParameters: PathObservingParameters {
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         root = try container.decodeIfPresent(String.self, forKey: .root).map { try absolutePath($0, field: "root") }
-        exclude = try (container.decodeIfPresent([String].self, forKey: .exclude) ?? []).map {
-            try eventPath($0, field: "exclude")
-        }
-        window = try container.decodeIfPresent(Double.self, forKey: .window) ?? Self.defaultWindow
-        every = try container.decodeIfPresent(Double.self, forKey: .every) ?? Self.defaultEvery
-        depth = try container.decodeIfPresent(Int.self, forKey: .depth) ?? Self.defaultDepth
-        top = try container.decodeIfPresent(Int.self, forKey: .top) ?? Self.defaultTop
+        exclude = try container.decode([String].self, forKey: .exclude).map { try eventPath($0, field: "exclude") }
+        window = try container.decode(Double.self, forKey: .window)
+        every = try container.decode(Double.self, forKey: .every)
+        depth = try container.decode(Int.self, forKey: .depth)
+        top = try container.decode(Int.self, forKey: .top)
     }
 
-    public func validate() throws {
-        try requireInterval(window, name: "window", in: 0.5...3600)
-        try requireInterval(every, name: "every", in: window...86_400)
-        try requireCount(depth, name: "depth", in: Self.depthRange)
-        try requireCount(top, name: "top", in: Self.topRange)
-        guard exclude.count <= 256 else { throw EventError.invalidParameters("\"exclude\" takes at most 256 paths") }
+    public func validateRelations() throws {
+        guard every >= window else {
+            throw EventError.invalidParameters("every must be at least window (\(NumberBounds.format(window)))")
+        }
     }
 
     public var observedPaths: ObservedPaths { ObservedPaths(paths: root.map { [$0] }, exclude: exclude) }
@@ -358,29 +346,29 @@ public struct FSChurnParameters: PathObservingParameters {
         return FileScope(root: root, exclude: exclude)
     }
 
-    public static var schema: TypeSchema {
-        .object(
-            ObjectSchema([
-                .optional(
-                    "root", String.self,
-                    doc:
-                        "Directory to measure. Default: the daemon's file scope, meerkat.json files.root (the whole startup volume) less files.exclude."
-                ),
-                .optional(
-                    "exclude", [String].self,
-                    doc: "Absolute or ~ paths whose events are not counted, on top of the scope's own. Default none."),
-                .optional(
-                    "window", Double.self,
-                    doc: "Seconds each measurement listens for. Default \(NumberBounds.format(defaultWindow))."),
-                .optional(
-                    "every", Double.self,
-                    doc:
-                        "Seconds between the starts of measurements, at least `window`. Default \(NumberBounds.format(defaultEvery))."
-                ),
-                .optional(
-                    "depth", Int.self, doc: "Path components per bucket, counted from /. Default \(defaultDepth)."),
-                .optional("top", Int.self, doc: "Buckets reported. Default \(defaultTop)."),
-            ]))
+    public static var objectSchema: ObjectSchema {
+        typealias Field = ObjectSchema.Field
+        return ObjectSchema([
+            .optional(
+                "root", String.self,
+                doc:
+                    "Directory to measure. Default: the daemon's file scope, meerkat.json files.root (the whole startup volume) less files.exclude."
+            ),
+            Field(
+                "exclude", .array(.string, .atMost(256)), default: [],
+                doc: "Absolute or ~ paths whose events are not counted, on top of the scope's own"),
+            Field(
+                "window", .bounded(NumberBounds(0.5...3600)), default: .number(defaultWindow),
+                doc: "Seconds each measurement listens for"),
+            Field(
+                "every", .bounded(NumberBounds(0.5...86_400)), default: .number(defaultEvery),
+                doc: "Seconds between the starts of measurements, at least `window`"),
+            Field(
+                "depth", .bounded(.integer(1...64)), default: .number(Double(defaultDepth)),
+                doc: "Path components per bucket, counted from /"),
+            Field(
+                "top", .bounded(.integer(1...500)), default: .number(Double(defaultTop)), doc: "Buckets reported"),
+        ])
     }
 
     public static var examples: [Self] { [Self(), Self(root: "/Users/example/Library")] }

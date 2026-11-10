@@ -13,10 +13,11 @@ public struct EventDescriptor: Sendable, Codable, Hashable {
     public let semantics: Semantics
     public let loss: Loss
     public let stability: Stability
-    /// The privacy permission the event needs to deliver what it documents;
-    /// nil for events any unprivileged process can observe. Most such sources
-    /// fail to start without it; the summary says when one degrades instead.
-    public let permission: Permission?
+    /// The privacy permission the event needs, and what it does without it;
+    /// nil for events any unprivileged process can observe. Rendered by
+    /// `PermissionNeed.note` and gated by `PermissionNeed.require` and
+    /// `clientRefusal` (Permissions.swift), wherever a subscription starts.
+    public let permission: PermissionNeed?
     /// What a rule must declare in its `capabilities` to observe the kind
     /// (docs/design/effects.md, "Observation"). The permission is the
     /// daemon's; this grant is the rule's, and a kind behind both needs both.
@@ -28,22 +29,30 @@ public struct EventDescriptor: Sendable, Codable, Hashable {
         String(name.split(separator: ".", maxSplits: 1).first ?? Substring(name))
     }
 
-    /// The grant observing this kind needs, by its `capabilities` key, with
-    /// the entry the least grant adds (nil for a path, which only the rule
-    /// knows); nil for an open kind. `EffectCatalog.grantText` renders it.
-    public var observationGrant: (key: String, entry: String?)? {
+    /// The grant observing this kind needs, with the entry the least grant
+    /// adds; nil for an open kind. `EffectCatalog.grantText` renders it.
+    public var observationGrant: ObservationGrant? {
         switch observation {
         case .open: nil
-        case .paths: ("fs.read", nil)
-        case .processes: ("process.observe", "own")
-        case .named: ("observe", name)
+        case .paths: ObservationGrant(grant: .fsRead, entry: nil)
+        case .processes: ObservationGrant(grant: .processObserve, entry: GrantDescriptor.ProcessLevel.own.rawValue)
+        case .named: ObservationGrant(grant: .observe, entry: name)
         }
+    }
+
+    public struct ObservationGrant: Sendable, Equatable {
+        /// The catalog's grant itself, not its name, so the two cannot part.
+        public let grant: GrantDescriptor
+        /// Nil for a path, which only the rule knows.
+        public let entry: String?
+
+        public var key: String { grant.key }
     }
 
     public init(
         _ name: String, _ summary: String, mechanism: Mechanism, semantics: Semantics,
-        loss: Loss, stability: Stability = .documented, permission: Permission? = nil, observation: Observation,
-        source: String
+        loss: Loss, stability: Stability = .documented, permission: PermissionNeed? = nil,
+        observation: Observation, source: String
     ) {
         self.name = name
         self.summary = summary
@@ -92,14 +101,34 @@ public struct EventDescriptor: Sendable, Codable, Hashable {
         case undocumented
     }
 
-    /// A TCC (Privacy & Security) permission. Sources that need one check it
-    /// when they start, which happens only when a rule subscribes: no rule,
-    /// no prompt. See `Permissions.swift`.
+    /// A TCC (Privacy & Security) permission. It is checked, and asked for,
+    /// only when a source starts, which happens only when something
+    /// subscribes: no subscription, no prompt. See `Permissions.swift`.
     public enum Permission: String, Sendable, Codable, CaseIterable, SchemaDescribed {
         case accessibility
         case inputMonitoring
         case location
         case bluetooth
+    }
+
+    /// A permission a kind needs, and what it does without it.
+    public struct PermissionNeed: Sendable, Codable, Hashable {
+        public let permission: Permission
+        public let without: Absence
+
+        public enum Absence: String, Sendable, Codable, CaseIterable, SchemaDescribed {
+            /// The subscription is refused.
+            case refused
+            /// The source runs and reports less, as the summary says.
+            case reportsLess
+        }
+
+        public static func required(_ permission: Permission) -> Self {
+            Self(permission: permission, without: .refused)
+        }
+        public static func improves(_ permission: Permission) -> Self {
+            Self(permission: permission, without: .reportsLess)
+        }
     }
 
     /// The grant a rule needs to observe a kind. Rules run inside meerkatd
@@ -132,16 +161,43 @@ public protocol EventPayload: Codable, Sendable, SchemaDescribed {
 
 /// Source configuration for a subscription: which paths, which interval.
 ///
-/// Subscribers whose normalized parameters are equal share one source.
+/// Subscribers whose normalized parameters are equal share one source. The
+/// schema is the authority for each field's bounds and default: decoding
+/// fills the defaults from it and checks the bounds against it.
 public protocol EventParameters: Codable, Sendable, Hashable, SchemaDescribed {
+    /// Parameters are always an object, so their schema is one: what
+    /// decodes them reads its fields with nothing to unwrap.
+    static var objectSchema: ObjectSchema { get }
     static var examples: [Self] { get }
-    /// Range and consistency checks that `Codable` cannot express. Throw
+    /// Checks between fields, which a schema cannot express. Throw
     /// `EventError.invalidParameters` with a message a rule author can act on.
-    func validate() throws
+    func validateRelations() throws
 }
 
 extension EventParameters {
-    public func validate() throws {}
+    public static var schema: TypeSchema { .object(objectSchema) }
+
+    public func validateRelations() throws {}
+
+    /// Whether a subscription accepts these parameters: the schema's bounds,
+    /// then the checks between fields. For parameters built in Swift; those
+    /// a rule sends are checked as they decode (`AnyEventKind.normalized`).
+    public func validate() throws {
+        let value: JSONValue
+        do {
+            value = try JSONValue(encoding: self)
+        } catch {
+            // Only a NaN or infinite number fails to encode.
+            throw EventError.invalidParameters("a number is not finite")
+        }
+        try Self.checkSchema(value)
+        try validateRelations()
+    }
+
+    static func checkSchema(_ value: JSONValue) throws {
+        let problems = SchemaValidator.violations(of: value, against: schema, at: "")
+        guard problems.isEmpty else { throw EventError.invalidParameters(problems.joined(separator: "; ")) }
+    }
 }
 
 /// Parameters of a kind a rule observes through its `fs.read` grant
@@ -169,7 +225,8 @@ public struct ObservedPaths: Sendable, Equatable {
 /// Parameters that name one process, so a rule that may observe only its
 /// user's processes can be refused at load rather than filtered.
 public protocol ProcessObservingParameters: EventParameters {
-    var observedProcess: ProcessIdentity { get }
+    /// Nil when the parameters name no process that can exist.
+    var observedProcess: ProcessIdentity? { get }
 }
 
 /// What one rule may see of an event.
@@ -197,22 +254,10 @@ public protocol RuleViewedPayload: EventPayload {
     func viewed(by view: RuleView) -> Self?
 }
 
-/// For events that take no parameters. Decodes from `{}` and from `null`.
+/// For events that take no parameters.
 public struct NoParameters: EventParameters {
     public init() {}
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if container.decodeNil() { return }
-        let fields = try container.decode([String: JSONValue].self)
-        guard fields.isEmpty else {
-            throw EventError.invalidParameters("this event takes no parameters, got \(fields.keys.sorted())")
-        }
-    }
-    public func encode(to encoder: any Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode([String: JSONValue]())
-    }
-    public static var schema: TypeSchema { .object(ObjectSchema([])) }
+    public static var objectSchema: ObjectSchema { ObjectSchema([]) }
     public static var examples: [NoParameters] { [NoParameters()] }
 }
 
@@ -273,19 +318,48 @@ public enum EventOrigin: String, Sendable, Codable, CaseIterable, SchemaDescribe
     case meerkat
 }
 
+/// What an emitter hands the hub.
+public enum Emission: Sendable, Equatable {
+    /// - Parameter value: set when the payload is a value the source
+    ///   reports, not an occurrence or a measurement: the hub leaves out one
+    ///   equal to the latest, and marks a push `state` kind's current value
+    ///   `replayed`.
+    case event(JSONValue, origin: EventOrigin, value: ReportedValue?)
+    /// A payload JSON cannot carry, such as one with a NaN or infinite
+    /// number: a measurement gone wrong, which the hub counts in the
+    /// source's statistics instead of losing it unseen.
+    case unencodable(String)
+
+    public enum ReportedValue: Sendable, Equatable {
+        /// What the source read as it started (its documented "current
+        /// value first").
+        case current
+        /// What it read after observing a change.
+        case change
+    }
+}
+
 /// Delivers typed payloads from a source into the hub.
 public struct Emitter<Payload: EventPayload>: Sendable {
-    let sink: @Sendable (JSONValue, EventOrigin) -> Void
+    let sink: @Sendable (Emission) -> Void
     let failure: @Sendable (String) -> Void
 
     /// The hub passes both; a test that drives a source directly may leave
     /// out `fail`.
     public init(
-        sink: @escaping @Sendable (JSONValue, EventOrigin) -> Void,
+        sink: @escaping @Sendable (Emission) -> Void,
         fail: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.sink = sink
         failure = fail
+    }
+
+    /// For a test that drives a source directly: each payload, as JSON, and
+    /// its origin; a payload JSON cannot carry is left out.
+    public init(_ received: @escaping @Sendable (JSONValue, EventOrigin) -> Void) {
+        self.init(sink: { emission in
+            if case .event(let value, let origin, _) = emission { received(value, origin) }
+        })
     }
 
     /// Reports that the source stopped observing for good, after a
@@ -297,10 +371,28 @@ public struct Emitter<Payload: EventPayload>: Sendable {
         failure(reason)
     }
 
+    /// An occurrence or a measurement.
     public func callAsFunction(_ payload: Payload, origin: EventOrigin = .system) {
-        // Payloads are plain Codable values; encoding cannot fail for them.
-        guard let value = try? JSONValue(encoding: payload) else { return }
-        sink(value, origin)
+        send(payload, origin: origin, value: nil)
+    }
+
+    /// The value a source read as it started.
+    public func current(_ payload: Payload) {
+        send(payload, origin: .system, value: .current)
+    }
+
+    /// The value a source read after observing a change, which may turn out
+    /// to be the value it already reported.
+    public func changed(_ payload: Payload) {
+        send(payload, origin: .system, value: .change)
+    }
+
+    private func send(_ payload: Payload, origin: EventOrigin, value: Emission.ReportedValue?) {
+        do {
+            sink(.event(try JSONValue(encoding: payload), origin: origin, value: value))
+        } catch {
+            sink(.unencodable("\(error)"))
+        }
     }
 }
 
@@ -358,17 +450,21 @@ public struct NormalizedParameters: Sendable, Equatable {
     public let observedProcess: ProcessIdentity?
     fileprivate let instantiate:
         @Sendable (
-            SourceEnvironment, @escaping @Sendable (JSONValue, EventOrigin) -> Void,
-            @escaping @Sendable (String) -> Void
+            SourceEnvironment, @escaping @Sendable (Emission) -> Void, @escaping @Sendable (String) -> Void
         ) throws -> any EventSource
 
     fileprivate init<K: EventKind>(_ parameters: K.Parameters, of kind: K.Type) throws {
         self.kind = K.descriptor.name
         json = try JSONValue(encoding: parameters)
         observedPaths = (parameters as? any PathObservingParameters)?.observedPaths
-        observedProcess = (parameters as? any ProcessObservingParameters)?.observedProcess
+        observedProcess = (parameters as? any ProcessObservingParameters).flatMap(\.observedProcess)
         instantiate = { environment, sink, fail in
-            try K.makeSource(parameters, environment: environment, emit: Emitter(sink: sink, fail: fail))
+            // Before the source exists, on the one path to every source:
+            // some touch the framework the permission guards as they are
+            // made, and touching IOBluetooth without its usage description
+            // kills the process.
+            try K.descriptor.permission?.require(for: K.descriptor.name)
+            return try K.makeSource(parameters, environment: environment, emit: Emitter(sink: sink, fail: fail))
         }
     }
 
@@ -381,15 +477,12 @@ public struct AnyEventKind: Sendable {
     public let descriptor: EventDescriptor
     public let audience: EventAudience
     public let payloadSchema: TypeSchema
-    public let parametersSchema: TypeSchema
+    public let parametersSchema: ObjectSchema
     public let payloadExamples: @Sendable () throws -> [JSONValue]
     public let parameterExamples: @Sendable () throws -> [JSONValue]
     /// Whether this kind's parameters watch paths, and so whether
     /// `NormalizedParameters.observedPaths` is set for it.
     public let watchesPaths: Bool
-    /// Whether this kind's parameters name one process
-    /// (`NormalizedParameters.observedProcess`).
-    public let namesProcess: Bool
     /// For a kind whose payloads a rule may see only part of: what a rule
     /// with that view sees of a payload, nil for nothing. A payload that does
     /// not decode is nothing, so a broken source cannot show more.
@@ -400,11 +493,10 @@ public struct AnyEventKind: Sendable {
         descriptor = K.descriptor
         audience = K.audience
         payloadSchema = K.Payload.schema
-        parametersSchema = K.Parameters.schema
+        parametersSchema = K.Parameters.objectSchema
         payloadExamples = { try K.Payload.examples.map { try JSONValue(encoding: $0) } }
         parameterExamples = { try K.Parameters.examples.map { try JSONValue(encoding: $0) } }
         watchesPaths = K.Parameters.self is any PathObservingParameters.Type
-        namesProcess = K.Parameters.self is any ProcessObservingParameters.Type
         view = (K.Payload.self as? any RuleViewedPayload.Type).map { Self.viewer($0) }
         normalizeParameters = { raw in
             try NormalizedParameters(Self.decodeParameters(K.Parameters.self, raw), of: K.self)
@@ -420,17 +512,12 @@ public struct AnyEventKind: Sendable {
         try normalizeParameters(parameters)
     }
 
-    /// `normalized(_:)`'s JSON: equal results mean the same source.
-    public func normalize(_ parameters: JSONValue) throws -> JSONValue {
-        try normalized(parameters).json
-    }
-
     /// `fail` may be left out by a test that drives a source directly, as
     /// with `Emitter`.
     func makeSource(
         _ parameters: NormalizedParameters, environment: SourceEnvironment,
         fail: @escaping @Sendable (String) -> Void = { _ in },
-        sink: @escaping @Sendable (JSONValue, EventOrigin) -> Void
+        sink: @escaping @Sendable (Emission) -> Void
     ) throws -> any EventSource {
         try parameters.instantiate(environment, sink, fail)
     }
@@ -442,53 +529,15 @@ public struct AnyEventKind: Sendable {
         }
     }
 
+    /// A rule without `params` sends null, which means "all defaults".
     private static func decodeParameters<P: EventParameters>(_ type: P.Type, _ given: JSONValue) throws -> P {
-        // A rule without `params` sends null; that means "all defaults".
-        let raw = given == .null ? JSONValue.object([:]) : given
-        // Codable ignores keys it does not know, so a misspelt parameter would
-        // silently fall back to its default.
-        if case .object(let fields) = raw, let object = P.schema.objectSchema {
-            let declared = Set(object.fields.map(\.name))
-            let unknown = fields.keys.filter { !declared.contains($0) }.sorted()
-            guard unknown.isEmpty else {
-                throw EventError.invalidParameters(
-                    "unknown parameter\(unknown.count == 1 ? "" : "s") \(unknown.map { "\"\($0)\"" }.joined(separator: ", "))"
-                )
-            }
-        }
         let parameters: P
         do {
-            parameters = try raw.decode(as: P.self)
-        } catch let error as EventError {
-            throw error
-        } catch {
-            throw EventError.invalidParameters(Self.describe(error))
+            parameters = try P.objectSchema.decode(given, as: P.self)
+        } catch let mismatch as SchemaMismatch {
+            throw EventError.invalidParameters(mismatch.description)
         }
-        try parameters.validate()
+        try parameters.validateRelations()
         return parameters
-    }
-
-    /// `DecodingError`'s own description is a debug dump; rule authors need
-    /// the field path and the problem.
-    static func describe(_ error: any Error) -> String {
-        guard let decoding = error as? DecodingError else { return "\(error)" }
-        func path(_ context: DecodingError.Context) -> String {
-            let keys = context.codingPath.map { $0.intValue.map { "[\($0)]" } ?? $0.stringValue }
-            return keys.isEmpty ? "parameters" : keys.joined(separator: ".")
-        }
-        switch decoding {
-        case .keyNotFound(let key, let context):
-            let parent = path(context)
-            return parent == "parameters"
-                ? "missing \"\(key.stringValue)\"" : "\(parent): missing \"\(key.stringValue)\""
-        case .typeMismatch(let type, let context):
-            return "\(path(context)): expected \(type)"
-        case .valueNotFound(let type, let context):
-            return "\(path(context)): expected \(type), got null"
-        case .dataCorrupted(let context):
-            return "\(path(context)): \(context.debugDescription)"
-        @unknown default:
-            return "\(decoding)"
-        }
     }
 }

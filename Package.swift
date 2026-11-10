@@ -2,13 +2,14 @@
 import PackageDescription
 
 // Buck builds this repository (the BUCK files; docs/building.md). This
-// manifest declares the same Swift targets, with the same dependencies, for
-// SourceKit-LSP and Xcode; //:package_swift_test fails when it and the BUCK
-// files disagree, and //buck2/third_party/swift:pins_test when Package.resolved
-// and //buck2/third_party/swift pin different revisions. What each target is
-// for is in its BUCK file.
+// manifest declares the same Swift targets, with the same dependencies and
+// linker settings, for SourceKit-LSP and Xcode; //:package_swift_test fails
+// when it and the BUCK files disagree, and //buck2/third_party/swift:pins_test
+// when Package.resolved and //buck2/third_party/swift pin different revisions
+// or a version or revision required here is not the one pinned. What each
+// target is for is in its BUCK file.
 
-/// Where the linker settings below find meerkatd's Rust, one static library
+/// Where the unsafe flags below find meerkatd's Rust, one static library
 /// (the rule runtime, Sources/meerkat-runtime), for
 /// building with SwiftPM anyway:
 ///
@@ -66,13 +67,12 @@ let package = Package(
         ),
         .target(name: "MeerkatIPC", dependencies: ["MeerkatKit"]),
         .target(name: "CICU", linkerSettings: [.linkedLibrary("icucore")]),
-        .target(name: "MeerkatRules", dependencies: ["MeerkatKit", "MeerkatIPC"]),
+        .target(name: "MeerkatRules", dependencies: ["MeerkatKit"]),
         .target(
             name: "CMeerkatRuntime",
             path: "Sources/meerkat-runtime/CMeerkatRuntime",
             linkerSettings: [
-                .unsafeFlags(["-L", runtimeLibraries]),
-                .linkedLibrary("meerkat_runtime"),
+                .unsafeFlags(["-L", runtimeLibraries, "-lmeerkat_runtime"]),
                 .linkedLibrary("z"),
                 .linkedLibrary("iconv"),
                 .linkedFramework("CoreServices"),
@@ -94,7 +94,7 @@ let package = Package(
             ]
         ),
         .executableTarget(name: "meerkatd", dependencies: ["MeerkatDaemon"]),
-        .target(name: "MeerkatAgent", dependencies: ["MeerkatIPC"]),
+        .target(name: "MeerkatAgent", dependencies: ["MeerkatIPC", "MeerkatKit"]),
         .executableTarget(
             name: "meerkat",
             dependencies: [
@@ -134,10 +134,13 @@ let package = Package(
                 .product(name: "SQLiteData", package: "sqlite-data"),
             ]
         ),
+        .testTarget(name: "MeerkatIPCTests", dependencies: ["MeerkatIPC", "MeerkatKit"]),
+        .testTarget(name: "MeerkatAgentTests", dependencies: ["MeerkatAgent", "MeerkatIPC", "MeerkatKit"]),
         .testTarget(
             name: "CLITests",
             dependencies: [
                 "meerkat",
+                "MeerkatAgent",
                 "MeerkatIPC",
                 "MeerkatKit",
                 "MeerkatRules",
@@ -146,11 +149,11 @@ let package = Package(
             ]
         ),
         // The icon document is the bundler's input, compiled by actool, not a
-        // SwiftPM resource; parts.bzl is Buck's list of what it bundles.
+        // SwiftPM resource; parts.bzl is Buck's.
         .executableTarget(
             name: "bundle",
             dependencies: [
-                "MeerkatIPC", "MeerkatRules", "ReleaseVersion", "ToolProcess",
+                "MeerkatIPC", "MeerkatKit", "MeerkatRules", "ReleaseVersion", "ToolProcess",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Tools/Bundler",
@@ -182,13 +185,15 @@ let package = Package(
 // (NonisolatedNonsendingByDefault, InferIsolatedConformances) and those that
 // need source-wide annotation (InternalImportsByDefault, strict memory safety)
 // are left for a deliberate migration. Clang targets ignore Swift settings.
-// The generated bindings omit ExistentialAny only, which the generator does
-// not write.
+// The generated modules (the bindings and their C header, checked in) omit
+// ExistentialAny only, which the generator does not write.
+let generatedModules: Set = ["CMeerkatRuntime", "MeerkatRuntimeBindings"]
 for target in package.targets {
-    let generated = target.name == "MeerkatRuntimeBindings"
+    let generated = generatedModules.contains(target.name)
     // Each module directory also holds its BUCK file, which SwiftPM would
-    // otherwise report as unhandled. The bindings' directories have none.
-    if !["CMeerkatRuntime", "MeerkatRuntimeBindings"].contains(target.name) {
+    // otherwise report as unhandled. The generated modules' directories have
+    // none.
+    if !generated {
         target.exclude += ["BUCK"]
     }
     target.swiftSettings =

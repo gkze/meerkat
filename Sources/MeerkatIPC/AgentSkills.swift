@@ -3,8 +3,9 @@
 ///
 /// These say how to work and point at what the running build reports
 /// (`meerkat events list`, `meerkat://catalog`) rather than copying it, so
-/// they don't go stale as the catalog changes. A test parses every command
-/// and resolves every MCP name they mention.
+/// they don't go stale as the catalog changes; the paths, defaults keys and
+/// exit statuses they name are interpolated from their owners. A test
+/// parses every command and resolves every MCP name they mention.
 public struct AgentSkill: Sendable, Equatable {
     public let name: String
     public let title: String
@@ -38,7 +39,8 @@ public struct AgentSkill: Sendable, Equatable {
             Use the `meerkat` MCP server if you have it, and the CLI otherwise. Both read the same daemon. \
             If your client calls tools but can't read resources, `resource_read` reads any `meerkat://` URI. \
             On the CLI, add `--json` to read results as data. `meerkat status` or `meerkat://status` shows \
-            whether the daemon is running; a CLI exit status of 69 means it isn't reachable. \
+            whether the daemon is running; a CLI exit status of \(DaemonService.unavailableExit) means it isn't \
+            reachable. \
             `meerkat sample` needs no daemon.
 
             ## How to look
@@ -55,9 +57,8 @@ public struct AgentSkill: Sendable, Equatable {
             window can mislead: take a few, or `--repeat 5 --json` for medians and ranges.
             4. Compare with the past. `meerkat://samples` lists stored labels, and `samples_compare` compares \
             two of them. On the CLI, `meerkat analyze samples.db --json` and `meerkat compare samples.db --json` \
-            read a store. What rules recorded is in \
-            `~/Library/Application Support/com.gkze.meerkat/samples.db`, unless the `SampleDatabase` default \
-            moves it.
+            read a store. What rules recorded is in `~/\(DaemonPaths.standardSampleDatabase)`, unless the \
+            `\(DaemonPaths.Setting.sampleDatabase.rawValue)` default moves it.
 
             ## Before and after
 

@@ -7,12 +7,9 @@ import SwiftUI
 //
 // Colour marks a resource: one system colour per metric, used on its card's
 // icon, its chart, its bars and its sidebar row, so each reads as one family.
-// Status uses the system's meaning: green normal, orange warning, red
-// critical. Everything else is the system's semantic label, fill and
-// separator styles, so light, dark and Increase Contrast come for free.
-// Not for status words, though: the system green, orange and red are fill
-// colours, and as small text on a light surface they reach only about 2:1
-// to 3.5:1 (WCAG AA asks 4.5:1). Status text takes `Theme.text(_:)`.
+// A state's colour comes from what it means (`Status`). Everything else is
+// the system's semantic label, fill and separator styles, so light, dark and
+// Increase Contrast come for free.
 
 enum Theme {
     static let cpu = Color.teal
@@ -22,26 +19,56 @@ enum Theme {
     static let power = Color.green
     static let churn = Color.pink
 
-    static let normal = Color.green
-    static let warn = Color.orange
-    static let critical = Color.red
-
-    /// `tint` as the colour of text: the status colours swapped for their
-    /// text variants (`NSColor.normalText` and its siblings), any other
-    /// colour as it is. Fills, chart marks and glyphs beside a word keep
-    /// the status colour itself.
-    static func text(_ tint: Color) -> Color {
-        switch tint {
-        case normal: Color(nsColor: .normalText)
-        case warn: Color(nsColor: .warnText)
-        case critical: Color(nsColor: .criticalText)
-        default: tint
-        }
-    }
-
     /// macOS group boxes and grouped content use a 10–12 point radius;
     /// cards are content, not windows.
     static let cardRadius: CGFloat = 12
+}
+
+/// What a state means, which decides its colour: the one map from meaning
+/// to colour, for every state the app shows (rule, runtime, log level,
+/// pressure, a problem's severity). Each state type says which it is, as
+/// `status`; views never pick a status colour themselves.
+///
+/// The system green, orange and red are fill colours: as small text on a
+/// light surface they reach only about 2:1 to 3.5:1 (WCAG AA asks 4.5:1), so
+/// text takes `text`, and fills, chart marks and glyphs take `color`.
+enum Status: CaseIterable {
+    case normal, warning, critical
+    /// A suggestion: worth a look, never a failure (lint findings).
+    case advice
+    /// Nothing to call out: quiet, secondary.
+    case neutral
+
+    var color: Color { Color(nsColor: nsColor) }
+
+    var text: Color {
+        switch self {
+        case .neutral: .secondary
+        case .normal, .warning, .critical, .advice: Color(nsColor: nsText)
+        }
+    }
+
+    /// `color`, for AppKit views too.
+    var nsColor: NSColor {
+        switch self {
+        case .normal: .systemGreen
+        case .warning: .systemOrange
+        case .critical: .systemRed
+        case .advice: .systemYellow
+        case .neutral: .secondaryLabelColor
+        }
+    }
+
+    /// `text` for AppKit views.
+    var nsText: NSColor {
+        switch self {
+        case .normal: .normalText
+        case .warning: .warnText
+        case .critical: .criticalText
+        case .advice: .adviceText
+        case .neutral: .secondaryLabelColor
+        }
+    }
 }
 
 extension NSColor {
@@ -53,6 +80,7 @@ extension NSColor {
     static let normalText = statusText(red: 0x17, green: 0x6B, blue: 0x28, dark: .systemGreen)
     static let warnText = statusText(red: 0x9A, green: 0x4A, blue: 0x00, dark: .systemOrange)
     static let criticalText = statusText(red: 0xB3, green: 0x26, blue: 0x1E, dark: .systemRed)
+    static let adviceText = statusText(red: 0x7A, green: 0x5C, blue: 0x00, dark: .systemYellow)
 
     private static func statusText(red: Int, green: Int, blue: Int, dark: NSColor) -> NSColor {
         let light = NSColor(
@@ -271,8 +299,8 @@ struct StatRow: View {
     struct Item: Identifiable {
         let label: String
         let value: String
-        /// Status colour only (swap over threshold); plain values stay primary.
-        var tint: Color? = nil
+        /// A value past a threshold; plain values stay primary.
+        var status: Status? = nil
         /// A colour key, when the value names a segment of a bar above.
         var key: Color? = nil
         var id: String { label }
@@ -298,7 +326,7 @@ struct StatRow: View {
                         Text(item.value)
                             .font(.body.weight(.medium))
                             .monospacedDigit()
-                            .foregroundStyle(item.tint.map { AnyShapeStyle(Theme.text($0)) } ?? AnyShapeStyle(.primary))
+                            .foregroundStyle(item.status.map { AnyShapeStyle($0.text) } ?? AnyShapeStyle(.primary))
                     }
                     // One line each: a longer value ("95% · 3 h 32 min") shrinks
                     // a little rather than wrapping and growing the card.
@@ -331,8 +359,7 @@ func windowDomain<Value>(_ series: RollingSeries<Value>) -> ClosedRange<Int> {
 typealias SparkPoint = RollingSeries<Double>.Point
 
 /// A chart with its scale: the top of its value range and zero on the
-/// trailing edge, and the time it spans underneath. Charts cover the last
-/// two minutes (see the Sampling settings).
+/// trailing edge, and the time it spans underneath.
 private struct ScaledChart<Plot: View>: View {
     let top: String
     let bottom: String
@@ -386,10 +413,10 @@ struct Sparkline: View {
     /// When true the y-domain hugs the data instead of starting at zero, so
     /// slow drifts in a large absolute value (compressed memory) stay visible.
     var banded: Bool = false
-    /// The time the series covers, for the axis and VoiceOver.
-    var span = "\(SamplingRates.chartSpanText) ago"
 
     private var points: [SparkPoint] { series.drawn }
+
+    private var span: String { "\(SamplingStep.span(series.span)) ago" }
 
     private var values: [Double] { points.map(\.value) }
 
@@ -454,13 +481,16 @@ struct DualSparkline: View {
 
     private var points: [RatePoint] { series.drawn }
 
-    private var upper: Double {
-        max((StickyTop.peak(of: series) { max($0.area, $0.line) } ?? 0.001) * 1.25, 0.001)
+    private var values: ClosedRange<Double> {
+        // Rates in MB/s: a top of at least 1 KB/s, so background traffic
+        // of a few hundred bytes a second doesn't look busy.
+        StickyTop.range(of: series, headroom: 1.25, floor: 0.001, empty: 0.001) { max($0.area, $0.line) }
     }
 
     var body: some View {
-        ScaledChart(top: format(upper), bottom: "0", span: "\(SamplingRates.chartSpanText) ago") {
-            SlidingPlot(step: points.last?.id ?? 0, capacity: series.capacity, values: 0...upper) {
+        let span = SamplingStep.span(series.span)
+        ScaledChart(top: format(values.upperBound), bottom: "0", span: "\(span) ago") {
+            SlidingPlot(step: points.last?.id ?? 0, capacity: series.capacity, values: values) {
                 Chart {
                     ForEach(points) { point in
                         AreaMark(x: .value("Time", point.id), y: .value(metric, point.value.area))
@@ -488,11 +518,11 @@ struct DualSparkline: View {
                 .chartXAxis(.hidden)
                 .chartYAxis(.hidden)
                 .chartXScale(domain: windowDomain(series))
-                .chartYScale(domain: 0...upper)
+                .chartYScale(domain: values)
             }
             .frame(height: height)
             .overlay(alignment: .bottom) { Baseline() }
-            .accessibilityLabel("\(metric) and \(secondary), last \(SamplingRates.chartSpanText)")
+            .accessibilityLabel("\(metric) and \(secondary), last \(span)")
             .accessibilityValue(
                 points.last.map { "\(metric) \(format($0.value.area)), \(secondary) \(format($0.value.line))" }
                     ?? "no data yet")

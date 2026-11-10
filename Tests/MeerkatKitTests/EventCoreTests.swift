@@ -32,39 +32,97 @@ struct EventCatalogTests {
     func parameterExamplesRoundTrip(_ name: String) throws {
         let kind = try #require(EventCatalog.standard.kind(named: name))
         for example in try kind.parameterExamples() {
-            let problems = SchemaValidator.violations(of: example, against: kind.parametersSchema)
+            let problems = SchemaValidator.violations(of: example, against: .object(kind.parametersSchema))
             #expect(problems.isEmpty, "\(name): \(problems)")
             // Normalizing is idempotent: the normalized form is its own key.
-            let normalized = try kind.normalize(example)
-            #expect(try kind.normalize(normalized) == normalized)
+            let normalized = try kind.normalized(example).json
+            #expect(try kind.normalized(normalized).json == normalized)
         }
     }
 
     @Test func unknownParameterIsRejected() throws {
         let kind = try #require(EventCatalog.standard.kind(named: "cpu.sample"))
-        #expect(throws: EventError.invalidParameters("unknown parameter \"intervall\"")) {
-            try kind.normalize(.object(["intervall": .number(2)]))
+        #expect(throws: EventError.invalidParameters("unknown field \"intervall\"")) {
+            try kind.normalized(.object(["intervall": .number(2)])).json
         }
     }
 
     @Test func parameterDefaultsAreApplied() throws {
         let kind = try #require(EventCatalog.standard.kind(named: "cpu.sample"))
-        #expect(try kind.normalize(.object([:])) == .object(["interval": .number(1)]))
-        #expect(try kind.normalize(.null) == .object(["interval": .number(1)]))
+        #expect(try kind.normalized(.object([:])).json == .object(["interval": .number(1)]))
+        #expect(try kind.normalized(.null).json == .object(["interval": .number(1)]))
+    }
+
+    /// Each default is a valid value of its field.
+    @Test(arguments: EventCatalog.standard.kinds.map(\.name))
+    func defaultsAreValid(_ name: String) throws {
+        let kind = try #require(EventCatalog.standard.kind(named: name))
+        for field in kind.parametersSchema.fields {
+            guard let value = field.default else { continue }
+            #expect(SchemaValidator.violations(of: value, against: field.schema).isEmpty, "\(name).\(field.name)")
+        }
+    }
+
+    /// A nested object's defaults are filled as a top-level field's are,
+    /// and null is every field left out.
+    @Test func admittingFillsNestedDefaultsAndNamesUnknownFields() throws {
+        let schema = ObjectSchema([
+            .init("count", .bounded(.integer(1...10)), default: 3),
+            .init(
+                "items",
+                .array(.object(ObjectSchema([.init("on", .boolean, default: false), .field("id", String.self)])))
+            ),
+            .init("inner", .object(ObjectSchema([.init("limit", .number, default: 5)])), optional: true),
+        ])
+        #expect(
+            try schema.admit(["items": [["id": "a"]], "inner": [:]])
+                == ["count": 3, "items": [["id": "a", "on": false]], "inner": ["limit": 5]])
+        #expect(throws: SchemaMismatch(problems: ["args: unknown fields \"a\", \"b\""])) {
+            try schema.admit(["a": 1, "b": 2, "items": []], at: "args")
+        }
+        #expect(throws: SchemaMismatch(problems: ["items: required field is missing"])) { try schema.admit(.null) }
+        #expect(throws: SchemaMismatch(problems: ["count: 11 is more than 10"])) {
+            try schema.admit(["count": 11, "items": []])
+        }
+        // Null for a field with a default is its default, at any depth; for
+        // one without, it is refused.
+        #expect(
+            try schema.admit(["count": .null, "items": [["id": "a", "on": .null]], "inner": ["limit": .null]])
+                == ["count": 3, "items": [["id": "a", "on": false]], "inner": ["limit": 5]])
+        #expect(throws: SchemaMismatch(problems: ["inner: null where the schema expects a value"])) {
+            try schema.admit(["items": [], "inner": .null])
+        }
+        // A section that defaults to `{}` takes it, with its own defaults.
+        let sections = ObjectSchema([
+            .init("inner", .object(ObjectSchema([.init("limit", .number, default: 5)])), default: [:])
+        ])
+        #expect(try sections.admit(["inner": .null]) == ["inner": ["limit": 5]])
+    }
+
+    /// The schema's bounds are the parameters' bounds, whether they come
+    /// from a rule or are built in Swift and validated.
+    @Test func boundsComeFromTheSchema() throws {
+        let top = try #require(EventCatalog.standard.kind(named: "process.top"))
+        #expect(throws: EventError.self) { try top.normalized(.object(["count": .number(101)])) }
+        #expect(throws: EventError.self) { try top.normalized(.object(["count": .number(2.5)])) }
+        #expect(throws: EventError.self) { try top.normalized(.object(["interval": .number(2), "rankInterval": 1])) }
+        #expect(throws: EventError.self) { try ProcessTopParameters(count: 0).validate() }
+        #expect(throws: EventError.self) { try ProcessTopParameters(interval: .nan).validate() }
+        try ProcessTopParameters(count: 100).validate()
     }
 
     @Test func outOfRangeParameterIsRejected() throws {
         let kind = try #require(EventCatalog.standard.kind(named: "cpu.sample"))
-        #expect(throws: EventError.self) { try kind.normalize(.object(["interval": .number(0)])) }
-        #expect(throws: EventError.self) { try kind.normalize(.object(["interval": .string("1")])) }
+        #expect(throws: EventError.self) { try kind.normalized(.object(["interval": .number(0)])).json }
+        #expect(throws: EventError.self) { try kind.normalized(.object(["interval": .string("1")])).json }
     }
 
     @Test func tildePathsNormalizeToTheSameKey() throws {
         let kind = try #require(EventCatalog.standard.kind(named: "fs.change"))
-        let tilde = try kind.normalize(.object(["paths": .array([.string("~/Library")])]))
-        let absolute = try kind.normalize(.object(["paths": .array([.string(NSHomeDirectory() + "/Library/")])]))
+        let tilde = try kind.normalized(.object(["paths": .array([.string("~/Library")])])).json
+        let absolute = try kind.normalized(.object(["paths": .array([.string(NSHomeDirectory() + "/Library/")])])).json
         #expect(tilde == absolute)
-        #expect(throws: EventError.self) { try kind.normalize(.object(["paths": .array([.string("relative")])])) }
+        #expect(throws: EventError.self) { try kind.normalized(.object(["paths": .array([.string("relative")])])).json }
     }
 
     /// One decode gives the key and what is observed, so a grant is checked
@@ -96,8 +154,8 @@ struct EventCatalogTests {
 
     @Test func noParametersRejectsFields() throws {
         let kind = try #require(EventCatalog.standard.kind(named: "memory.pressure"))
-        #expect(try kind.normalize(.object([:])) == .object([:]))
-        #expect(throws: EventError.self) { try kind.normalize(.object(["x": .number(1)])) }
+        #expect(try kind.normalized(.object([:])).json == .object([:]))
+        #expect(throws: EventError.self) { try kind.normalized(.object(["x": .number(1)])).json }
     }
 }
 
@@ -131,7 +189,7 @@ struct SchemaValidatorTests {
 enum ProbeEvent: EventKind {
     struct Parameters: EventParameters {
         var channel: String
-        static var schema: TypeSchema { .object(ObjectSchema([.field("channel", String.self)])) }
+        static var objectSchema: ObjectSchema { ObjectSchema([.field("channel", String.self)]) }
         static var examples: [Self] { [Self(channel: "a")] }
     }
 
@@ -174,9 +232,10 @@ final class ProbeSource: EventSource {
         self.emit = emit
     }
 
+    /// A channel named `empty…` has no value to read at the start.
     func start() throws {
         starts.add(1, ordering: .relaxed)
-        emit(.init(value: 0))
+        if !channel.hasPrefix("empty") { emit.current(.init(value: 0)) }
     }
 
     func stop() { stops.add(1, ordering: .relaxed) }
@@ -223,6 +282,46 @@ struct EventHubTests {
         #expect(change.payload == .object(["value": .number(7)]) && !change.replayed)
         first.cancel()
         late.cancel()
+    }
+
+    /// The hub marks what the source says it read at the start, not its
+    /// first event: with nothing to read then, the first change is a change.
+    @Test func aChangeAfterAnEmptyStartIsNotAReplay() async throws {
+        let channel = "empty-" + UUID().uuidString
+        let first = try hub.subscribe("test.probe", parameters: .object(["channel": .string(channel)]))
+        ProbeEvent.registry.all(channel: channel)[0].emit.changed(.init(value: 3))
+        let change = try #require(await next(first))
+        #expect(change.sequence == 1 && !change.replayed)
+        first.cancel()
+    }
+
+    /// A change that beats the start read to the ring is not followed by a
+    /// replayed current value: what the source read then came after it.
+    @Test func aStartReadAfterAChangeIsNotAReplay() async throws {
+        let channel = "empty-" + UUID().uuidString
+        let first = try hub.subscribe("test.probe", parameters: .object(["channel": .string(channel)]))
+        let source = ProbeEvent.registry.all(channel: channel)[0]
+        source.emit.changed(.init(value: 3))
+        source.emit.current(.init(value: 5))
+        var events = first.events.makeAsyncIterator()
+        let change = try #require(await events.next())
+        let read = try #require(await events.next())
+        #expect(!change.replayed && read.sequence == 2 && !read.replayed)
+        first.cancel()
+    }
+
+    /// A reported value equal to the latest is no change and is left out.
+    @Test func anUnchangedValueIsLeftOut() async throws {
+        let channel = UUID().uuidString
+        let first = try hub.subscribe("test.probe", parameters: .object(["channel": .string(channel)]))
+        var events = first.events.makeAsyncIterator()
+        _ = await events.next()
+        let source = ProbeEvent.registry.all(channel: channel)[0]
+        source.emit.changed(.init(value: 0))
+        source.emit.changed(.init(value: 4))
+        let next = try #require(await events.next())
+        #expect(next.payload == .object(["value": .number(4)]) && next.sequence == 2)
+        first.cancel()
     }
 
     @Test func replayGoesToThatSubscriberOnly() async throws {
@@ -581,25 +680,6 @@ struct FileScopeTests {
         #expect(
             FSChurnParameters(root: "/Users/x").scope(in: environment) == FileScope(root: "/Users/x", exclude: []))
     }
-
-    /// The hub shares one source between subscriptions whose normalized
-    /// parameters are equal, so a default written out and one left out must
-    /// normalize the same.
-    @Test func spelledOutDefaultsNormalizeLikeOmittedOnes() throws {
-        func normalized<P: Codable>(_ type: P.Type, _ json: String) throws -> Data {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = .sortedKeys
-            return try encoder.encode(JSONDecoder().decode(type, from: Data(json.utf8)))
-        }
-        #expect(
-            try normalized(FSChurnParameters.self, "{}")
-                == normalized(FSChurnParameters.self, #"{"exclude":[],"window":4,"every":25,"depth":5,"top":12}"#))
-        #expect(
-            try normalized(ProcessTopParameters.self, "{}")
-                == normalized(
-                    ProcessTopParameters.self,
-                    #"{"interval":1,"rankInterval":5,"count":5,"ioCount":3,"memoryCount":0}"#))
-    }
 }
 
 struct ProcessSampleTests {
@@ -611,7 +691,7 @@ struct ProcessSampleTests {
     ) async throws -> [ProcessSamplePayload] {
         let got = Mutex<[ProcessSamplePayload]>([])
         let source = ProcessSampleSource(
-            parameters: parameters,
+            parameters: parameters, identity: try #require(parameters.observedProcess),
             emit: Emitter { value, _ in
                 if let payload = try? value.decode(as: ProcessSamplePayload.self) {
                     got.withLock { $0.append(payload) }
@@ -665,7 +745,7 @@ struct ProcessSampleTests {
     /// other named.
     @Test func aTargetedSnapshotTellsRefusedFromExited() throws {
         let launchd = try #require(ProcessTable.record(pid: 1))
-        let gone = ProcessIdentity(pid: getpid(), startedAt: 1)
+        let gone = try #require(ProcessIdentity(pid: getpid(), startedAt: 1))
         let (snapshot, exited) = try ProcessSampler.snapshot(of: [launchd.identity, gone])
         let row = try #require(snapshot.counters[launchd.identity])
         #expect(row.usage == nil && row.cpuSeconds > 0)
@@ -694,12 +774,12 @@ struct ProcessTopTests {
         #expect(await eventually { got.withLock { payloads in payloads.count >= 4 } })
         let payloads = got.withLock { $0 }
         let ranking = try #require(payloads.first)
-        let others = Set(ranking.cpu.filter { $0.uid != getuid() }.map(\.identity))
+        let others = Set(ranking.cpu.filter { $0.uid != getuid() }.compactMap(\.identity))
         try #require(!others.isEmpty, "no other user's process was busy in the ranking window")
         let refreshes = payloads.dropFirst().filter { $0.rankedAt == ranking.rankedAt }
         #expect(!refreshes.isEmpty)
         for refresh in refreshes {
-            let kept = Set(refresh.cpu.map(\.identity))
+            let kept = Set(refresh.cpu.compactMap(\.identity))
             let running = others.filter { ProcessTable.record(pid: $0.pid)?.identity == $0 }
             #expect(running.isSubset(of: kept))
         }
@@ -718,7 +798,7 @@ struct PollingSourceTests {
         let ticks = Mutex(0)
         let failedAt = Mutex<[(tick: Int, reason: String)]>([])
         let emit = Emitter<MemorySample>(
-            sink: { _, _ in }, fail: { reason in failedAt.withLock { $0.append((ticks.withLock { $0 }, reason)) } })
+            sink: { _ in }, fail: { reason in failedAt.withLock { $0.append((ticks.withLock { $0 }, reason)) } })
         let source = PollingSource(label: "test", interval: 0.01, failingThrough: emit) {
             let tick = ticks.withLock { tick in
                 tick += 1
@@ -769,5 +849,50 @@ struct SamplerCostTests {
         #expect(try shared.current(maxAge: 60).takenAt == first.takenAt)
         Thread.sleep(forTimeInterval: 0.05)
         #expect(try shared.current(maxAge: 0.01).takenAt > first.takenAt)
+    }
+}
+
+struct EmitterTests {
+    /// A payload JSON cannot carry reaches the hub as such, not as nothing.
+    @Test func aNonFiniteNumberIsReportedNotDropped() {
+        let emitted = Mutex<[Emission]>([])
+        let emit = Emitter<CPUSamplePayload>(sink: { emission in emitted.withLock { $0.append(emission) } })
+        emit(CPUSamplePayload(usagePercent: .nan, busyCores: 0, cpuCount: 1, load1: 0, load5: 0, load15: 0))
+        guard case .unencodable? = emitted.withLock({ $0.first }) else {
+            Issue.record("\(emitted.withLock { $0 })")
+            return
+        }
+    }
+}
+
+/// A kind behind a permission this process cannot have (a test runner has no
+/// Bluetooth usage description), whose source records being made.
+enum GatedEvent: EventKind {
+    static let made = Atomic<Int>(0)
+    static let descriptor = EventDescriptor(
+        "test.gated", "test", mechanism: .push, semantics: .occurrence, loss: .none, permission: .required(.bluetooth),
+        observation: .named, source: "test")
+
+    static func makeSource(
+        _ parameters: NoParameters, environment: SourceEnvironment, emit: Emitter<EmptyPayload>
+    ) throws -> any EventSource {
+        made.add(1, ordering: .relaxed)
+        return ClosureSource(start: {}, stop: {})
+    }
+}
+
+struct PermissionGateTests {
+    /// The descriptor's permission is asked before any source exists, on
+    /// every path to one, so no source can touch what the permission guards
+    /// without it.
+    @Test func noSourceIsMadeWithoutThePermission() throws {
+        let kind = AnyEventKind(GatedEvent.self)
+        let hub = EventHub(catalog: EventCatalog([kind]))
+        #expect(throws: EventError.self) { try hub.subscribe("test.gated") }
+        let parameters = try kind.normalized(.null)
+        #expect(throws: EventError.self) {
+            try kind.makeSource(parameters, environment: SourceEnvironment()) { _ in }
+        }
+        #expect(GatedEvent.made.load(ordering: .relaxed) == 0)
     }
 }

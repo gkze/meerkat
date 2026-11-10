@@ -129,34 +129,21 @@ public struct InputIdlePayload: EventPayload, Equatable {
 
 public struct InputIdleParameters: EventParameters {
     public static let defaultThreshold = 300.0
-    public static let thresholdRange = 5.0...86_400.0
 
     public var threshold: Double
 
     public init(threshold: Double = Self.defaultThreshold) { self.threshold = threshold }
 
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        threshold = try container.decodeIfPresent(Double.self, forKey: .threshold) ?? Self.defaultThreshold
-    }
-
-    public func validate() throws {
-        try requireInterval(threshold, name: "threshold", in: Self.thresholdRange)
-    }
-
     /// How often the idle time is checked: a tenth of the threshold, between
     /// one and ten seconds, so a transition is seen within that delay.
     var checkInterval: Double { min(max(threshold / 10, 1), 10) }
 
-    public static var schema: TypeSchema {
-        .object(
-            ObjectSchema([
-                .optional(
-                    "threshold", Double.self,
-                    doc:
-                        "Seconds without input before the user counts as idle, \(thresholdRange.lowerBound)–\(thresholdRange.upperBound). Default \(defaultThreshold)."
-                )
-            ]))
+    public static var objectSchema: ObjectSchema {
+        ObjectSchema([
+            ObjectSchema.Field(
+                "threshold", .bounded(NumberBounds(5...86_400)), default: .number(defaultThreshold),
+                doc: "Seconds without input before the user counts as idle")
+        ])
     }
 
     public static var examples: [Self] { [Self(), Self(threshold: 60)] }

@@ -681,7 +681,10 @@ fn check_tracks(components: &[Component], name: &str, tracks: &str) -> Result<()
     if found {
         Ok(())
     } else {
-        Err(format!("{name} is pinned for {tracks}, which does not ship; update Tools/Notices/BUCK"))
+        Err(format!(
+            "{name} is pinned for {tracks}, which does not ship; update its pins in Tools/Notices/BUCK \
+             (Deno's are Sources/meerkat-runtime/deno.bzl's)"
+        ))
     }
 }
 

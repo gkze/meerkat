@@ -78,8 +78,11 @@ extension JSONValue {
 
     /// Compact JSON with sorted keys: equal values always produce equal
     /// bytes, which is what makes this usable as a key.
+    ///
+    /// Only a NaN or infinite number has no JSON form. A value decoded from
+    /// JSON holds none, and a payload with one never leaves its source
+    /// (`Emission.unencodable`); one built in Swift with one is `null` here.
     public var canonicalString: String {
-        // Encoding a JSONValue cannot fail: every case maps to JSON.
         let data = (try? JSONValue.encoder.encode(self)) ?? Data("null".utf8)
         return String(decoding: data, as: UTF8.self)
     }
@@ -114,11 +117,19 @@ extension JSONValue {
         return nil
     }
 
-    private static let encoder: JSONEncoder = {
+    private static let encoder = JSONEncoder.meerkat()
+}
+
+extension JSONEncoder {
+    /// How Meerkat writes JSON for people and programs to read (the CLI,
+    /// its failures, MCP, canonical strings): keys sorted, so the same value
+    /// is the same text, and slashes, which every path has, unescaped.
+    public static func meerkat(pretty: Bool = false) -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        if pretty { encoder.outputFormatting.insert(.prettyPrinted) }
         return encoder
-    }()
+    }
 }
 
 extension JSONValue {
@@ -133,7 +144,7 @@ extension JSONValue {
     ///   than leaving it out. For a value a rule may change and write back
     ///   (a user default), where a dropped array element would shift the
     ///   rest and be written back shortened.
-    init?(propertyList value: Any, strict: Bool = false) {
+    public init?(propertyList value: Any, strict: Bool = false) {
         let convert = { (value: Any) in JSONValue(propertyList: value, strict: strict) }
         switch value {
         case let string as String:
@@ -173,17 +184,14 @@ extension JSONValue {
     /// which a property list cannot. Whole numbers are stored as integers,
     /// so a default other programs read as an integer stays one. The other
     /// direction is `init(propertyList:)`.
-    var propertyList: Any? {
+    public var propertyList: Any? {
         switch self {
         case .null:
             return nil
         case .bool(let flag):
             return flag as NSNumber
         case .number(let number):
-            // The bound keeps the conversion from trapping and the value
-            // exact.
-            if number.rounded() == number, abs(number) < 1e15 { return Int(number) as NSNumber }
-            return number as NSNumber
+            return NumberBounds.exactInteger(number).map { $0 as NSNumber } ?? number as NSNumber
         case .string(let text):
             return text
         case .array(let items):

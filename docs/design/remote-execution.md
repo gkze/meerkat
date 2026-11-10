@@ -69,9 +69,12 @@ actions also see the Buck daemon's environment. What each toolchain
 reaches for, and whether the action's cache key covers it:
 
 - **Swift** (`buck2/rules/swift`): `swiftc` and the SDK by absolute path
-  under `[swift] developer_dir` (`/Applications/Xcode.app/...`). The key
-  covers the Xcode through the `MEERKAT_XCODE_BUILD` environment variable,
-  which `xcode_test` keeps equal to the real build. Compiles are
+  under `[swift] developer_dir` (`/Applications/Xcode.app/...`). Every Swift
+  action runs with `DEVELOPER_DIR` set to that directory (`xcode_env` in
+  `buck2/rules/toolchains.bzl`), so what it runs through an `xcrun` shim
+  (actool) is that Xcode's too. The key covers the Xcode through the
+  `MEERKAT_XCODE_BUILD` environment variable, which `xcode_test` keeps equal
+  to the real build. Compiles are
   `local_only = True` because they share an implicit module cache at
   `buck-out/swift-module-cache`, written outside Buck's outputs. They cannot
   run remotely as they are.

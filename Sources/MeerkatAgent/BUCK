@@ -3,5 +3,8 @@ load("//buck2/rules:meerkat.bzl", "meerkat_swift_library")
 # SMAppService registration, shared by the CLI and the app.
 meerkat_swift_library(
     name = "MeerkatAgent",
-    deps = ["//Sources/MeerkatIPC:MeerkatIPC"],
+    deps = [
+        "//Sources/MeerkatIPC:MeerkatIPC",
+        "//Sources/MeerkatKit:MeerkatKit",
+    ],
 )

@@ -72,17 +72,13 @@ final class AgentControl {
     /// The last action's failure, until `dismissError()`.
     private(set) var error: String?
 
-    private let client: DaemonClient
-    #if DEBUG
-        /// Sample data stands in for the system's registration, so every
-        /// action can be checked without touching the installed agent.
-        private var sampleStatus: AgentRegistration.Status = .enabled
-    #endif
+    private let backend: AgentBackend
+    private let back: DaemonReturn
 
-    init(client: DaemonClient) {
-        self.client = client
-        status = .notRegistered
-        status = currentStatus()
+    init(backend: AgentBackend, back: DaemonReturn = DaemonReturn()) {
+        self.backend = backend
+        self.back = back
+        status = backend.status()
     }
 
     /// Registered, whether or not Login Items allows it to run.
@@ -91,9 +87,13 @@ final class AgentControl {
     var canRestart: Bool { status == .enabled && action == nil }
     var canReinstall: Bool { status != .notInBundle && action == nil }
 
+    /// An agent turned on outside the app (Login Items, `meerkat agent
+    /// install`) is meerkatd coming back, as one turned on here is.
     func refresh() {
-        let current = currentStatus()
-        if current != status { status = current }
+        let current = backend.status()
+        guard current != status else { return }
+        status = current
+        if current == .enabled { back.fire() }
     }
 
     func dismissError() { error = nil }
@@ -103,18 +103,13 @@ final class AgentControl {
         switch action {
         case .installing: await install()
         case .uninstalling: await setRunsInBackground(false)
-        case .restarting: await restart()
-        case .reinstalling: await reinstall()
+        case .restarting, .reinstalling: await perform(action)
         }
     }
 
     func setRunsInBackground(_ on: Bool) async {
         guard on != isRegistered else { return }
-        if on {
-            await perform(.installing, sample: .enabled) { try await Self.installAndAwait($0) }
-        } else {
-            await perform(.uninstalling, sample: .notRegistered) { _ in try AgentRegistration.uninstall() }
-        }
+        await perform(on ? .installing : .uninstalling)
     }
 
     /// Registers the agent, then opens Login Items when macOS wants the
@@ -127,41 +122,7 @@ final class AgentControl {
 
     func openLoginItems() { AgentRegistration.openLoginItemsSettings() }
 
-    /// Restarts meerkatd through launchd and waits for a new process to answer.
-    func restart() async {
-        await perform(.restarting, sample: .enabled) { client in
-            guard try await AgentRegistration.restartAndAwait(client: client) != nil else {
-                throw AgentRegistration.RegistrationError.failed(
-                    "meerkatd did not answer within \(AgentRegistration.startLimit.formatted()).")
-            }
-        }
-    }
-
-    /// Registers the agent from this copy of Meerkat.app again: launchd
-    /// rereads the bundle's plist and restarts meerkatd from the bundle's
-    /// binary. Nothing is rebuilt.
-    func reinstall() async {
-        await perform(.reinstalling, sample: .enabled) { try await Self.installAndAwait($0) }
-    }
-
-    /// Registering, as every action that registers decides it: done once a
-    /// daemon from this build answers, or once Login Items holds it for
-    /// approval; registered but silent is a failure that says so.
-    private nonisolated static func installAndAwait(_ client: DaemonClient) async throws {
-        switch try await AgentRegistration.installAndAwait(client: client) {
-        case .answering, .requiresApproval:
-            return
-        case .silent:
-            throw AgentRegistration.RegistrationError.failed(
-                "meerkatd registered but did not start within \(AgentRegistration.startLimit.formatted()). "
-                    + "If Meerkat.app was just replaced, quit and reopen it, then Reinstall.")
-        }
-    }
-
-    private func perform(
-        _ action: Action, sample: AgentRegistration.Status,
-        _ work: @escaping @Sendable (DaemonClient) async throws -> Void
-    ) async {
+    private func perform(_ action: Action) async {
         guard self.action == nil else { return }
         self.action = action
         error = nil
@@ -169,25 +130,45 @@ final class AgentControl {
             self.action = nil
             refresh()
         }
-        #if DEBUG
-            if SampleData.isEnabled {
-                try? await Task.sleep(for: .seconds(2))
-                sampleStatus = sample
-                return
-            }
-        #endif
         do {
-            try await work(client)
+            try await backend.run(action)
+            if action != .uninstalling { back.fire() }
         } catch {
             self.error = "\(error)"
         }
     }
+}
 
-    private func currentStatus() -> AgentRegistration.Status {
-        #if DEBUG
-            if SampleData.isEnabled { return sampleStatus }
-        #endif
-        return AgentRegistration.status
+/// What `AgentControl` acts on, chosen once by `AppState`: the system's
+/// registration of the agent, or sample data's stand-in, which changes
+/// nothing installed.
+struct AgentBackend: Sendable {
+    /// The registration now; `SMAppService` sends no change notifications.
+    let status: @MainActor @Sendable () -> AgentRegistration.Status
+    /// Runs an action, off the main actor, throwing its failure in words
+    /// for the person.
+    let run: @Sendable (AgentControl.Action) async throws -> Void
+
+    /// The LaunchAgent in this copy of Meerkat.app. Every action that
+    /// registers decides it as `meerkat agent install` does, and fails in
+    /// its words (`AgentRegistration.RegistrationError`): done once a daemon
+    /// from this build answers, or once Login Items holds it for approval.
+    /// Restart waits for a new daemon the same way. Nothing is rebuilt:
+    /// Reinstall registers again, so launchd rereads the bundle's plist and
+    /// restarts meerkatd from the bundle's binary.
+    static func system(_ client: DaemonClient) -> AgentBackend {
+        AgentBackend(
+            status: { AgentRegistration.status },
+            run: { action in
+                switch action {
+                case .installing, .reinstalling:
+                    _ = try await AgentRegistration.installAndAwait(client: client)
+                case .uninstalling:
+                    try AgentRegistration.uninstall()
+                case .restarting:
+                    _ = try await AgentRegistration.restartAndAwait(client: client)
+                }
+            })
     }
 }
 

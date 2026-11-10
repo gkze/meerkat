@@ -108,7 +108,7 @@ struct RulesPage: View {
         } else {
             VStack(spacing: 0) {
                 if case .failed(let fault) = model.loadState {
-                    StaleBanner(subject: "rules", reason: fault.description)
+                    StaleBanner(subject: "rules", fault: fault)
                     Divider()
                 }
                 RulesStatusBar(model: model)
@@ -168,10 +168,7 @@ struct RulesPage: View {
             if editor.isEdited { return "\(file) · Edited" }
             return model.status(of: file)?.isFailure == true ? "\(file) · Saved with errors" : file
         }
-        guard model.report != nil else { return "" }
-        let failing = model.failingCount
-        let running = model.rules.filter { $0.state == .loaded }.count
-        return failing > 0 ? "\(running) running, \(failing) failed" : "\(running) running"
+        return model.report == nil ? "" : model.counts.summary
     }
 }
 
@@ -181,14 +178,14 @@ private struct RulesStatusBar: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            let rules = model.rules
-            Count(value: rules.filter { $0.state == .loaded }.count, label: "running", tint: .green)
-            Count(value: rules.filter { $0.state == .failed }.count, label: "failed", tint: .red)
-            Count(value: rules.filter { $0.state == .disabled }.count, label: "off", tint: .secondary)
+            let counts = model.counts
+            Count(value: counts.running, state: .loaded)
+            Count(value: counts.failed, state: .failed)
+            Count(value: counts.off, state: .disabled)
             Spacer(minLength: 8)
             if let error = model.actionError {
                 Label(error, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(Theme.text(Theme.critical))
+                    .foregroundStyle(Status.critical.text)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .help(error)
@@ -207,15 +204,15 @@ private struct RulesStatusBar: View {
         .padding(.vertical, 10)
     }
 
+    /// "3 running", in the state's colour.
     private struct Count: View {
         let value: Int
-        let label: String
-        let tint: Color
+        let state: RuleSummary.State
 
         var body: some View {
             HStack(spacing: 5) {
-                Circle().fill(tint).frame(width: 7, height: 7)
-                Text("\(value) \(label)")
+                Circle().fill(state.status.color).frame(width: 7, height: 7)
+                Text("\(value) \(state.label.lowercased())")
                     .monospacedDigit()
             }
             .accessibilityElement(children: .combine)
@@ -234,7 +231,7 @@ private struct DiagnosticsList: View {
                 systemImage: "exclamationmark.octagon"
             )
             .font(.headline)
-            .foregroundStyle(Theme.text(Theme.critical))
+            .foregroundStyle(Status.critical.text)
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
                     ForEach(model.diagnostics) { listed in
@@ -248,7 +245,7 @@ private struct DiagnosticsList: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
-        .background(Color.red.opacity(0.06))
+        .background(Status.critical.color.opacity(0.06))
     }
 }
 
@@ -283,7 +280,7 @@ private struct LintFindingsList: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
-        .background(Color.yellow.opacity(0.04))
+        .background(Status.advice.color.opacity(0.04))
     }
 
     private var header: some View {
@@ -293,7 +290,7 @@ private struct LintFindingsList: View {
                     .foregroundStyle(.primary)
             } icon: {
                 Image(systemName: "lightbulb")
-                    .foregroundStyle(.yellow)
+                    .foregroundStyle(Status.advice.color)
             }
             .font(.headline)
             Text("Style and likely mistakes. Rules run either way.")
@@ -407,7 +404,7 @@ private struct RulesTable: View {
             .width(min: 90, ideal: 125)
 
             TableColumn("State") { rule in
-                StatusBadge(text: rule.state.label, tint: rule.state.tint)
+                StatusBadge(text: rule.state.label, status: rule.state.status)
             }
             .width(min: 62, ideal: 68, max: 90)
 
@@ -421,7 +418,7 @@ private struct RulesTable: View {
             TableColumn("Failures", value: \.failures) { rule in
                 Text(rule.failures, format: .number)
                     .monospacedDigit()
-                    .foregroundStyle(rule.failures > 0 ? Theme.text(Theme.critical) : .secondary)
+                    .foregroundStyle(rule.failures > 0 ? Status.critical.text : .secondary)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
             .width(min: 50, ideal: 56, max: 80)
@@ -441,7 +438,7 @@ private struct RulesTable: View {
             TableColumn("Problem") { rule in
                 if let problem = rule.state == .failed ? rule.reason : rule.lastError {
                     Text(problem)
-                        .foregroundStyle(Theme.text(Theme.critical))
+                        .foregroundStyle(Status.critical.text)
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .help(problem)
@@ -531,7 +528,7 @@ private struct RuleDetail: View {
                             .font(.title3.weight(.semibold))
                             .textSelection(.enabled)
                         Spacer(minLength: 6)
-                        StatusBadge(text: rule.state.label, tint: rule.state.tint)
+                        StatusBadge(text: rule.state.label, status: rule.state.status)
                     }
                     Text(rule.file)
                         .font(.system(.callout, design: .monospaced))
@@ -542,7 +539,7 @@ private struct RuleDetail: View {
                 if let reason = rule.reason {
                     Text(reason)
                         .font(.callout)
-                        .foregroundStyle(rule.state == .failed ? Theme.text(Theme.critical) : .secondary)
+                        .foregroundStyle(rule.state == .failed ? Status.critical.text : .secondary)
                         .textSelection(.enabled)
                 }
             }
@@ -557,7 +554,7 @@ private struct RuleDetail: View {
                 LabeledContent("Failures") {
                     Text(rule.failures, format: .number)
                         .monospacedDigit()
-                        .foregroundStyle(rule.failures > 0 ? Theme.text(Theme.critical) : .primary)
+                        .foregroundStyle(rule.failures > 0 ? Status.critical.text : .primary)
                 }
                 LabeledContent("Last run") {
                     if let date = rule.lastInvokedDate {
@@ -571,7 +568,7 @@ private struct RuleDetail: View {
                         Text("Last error").foregroundStyle(.secondary)
                         Text(error)
                             .font(.system(.callout, design: .monospaced))
-                            .foregroundStyle(Theme.text(Theme.critical))
+                            .foregroundStyle(Status.critical.text)
                             .textSelection(.enabled)
                     }
                 }
@@ -622,7 +619,7 @@ private struct LogRow: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: listed.entry.level.symbol)
-                .foregroundStyle(listed.entry.level.tint)
+                .foregroundStyle(listed.entry.level.status.color)
                 .accessibilityLabel(listed.entry.level.rawValue)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -652,7 +649,7 @@ private struct SuggestionRow: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: "lightbulb")
-                .foregroundStyle(.yellow)
+                .foregroundStyle(Status.advice.color)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -673,5 +670,96 @@ private struct SuggestionRow: View {
             }
         }
         .accessibilityElement(children: .combine)
+    }
+}
+
+// MARK: - Naming files
+
+/// What the name sheet names.
+enum FileNaming: Identifiable, Hashable {
+    /// A new file, in the rules folder.
+    case new
+    /// A file, by its path in the rules folder; only its name changes.
+    case rename(String)
+
+    var id: Self { self }
+
+    /// The folder the name is for, relative to the rules folder.
+    var folder: String {
+        switch self {
+        case .new: ""
+        case .rename(let file): (file as NSString).deletingLastPathComponent
+        }
+    }
+}
+
+/// Asks for a rule file's name, checking it as it is typed against
+/// `existing`, the names already in its folder.
+struct FileNameSheet: View {
+    let naming: FileNaming
+    let existing: [String]
+    let commit: (String) -> Void
+    @State private var name = ""
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title).font(.headline)
+            TextField("Name", text: $name, prompt: Text("my-rule.ts"))
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(submit)
+            Text(note)
+                .font(.callout)
+                .foregroundStyle(isValid || name.isEmpty ? Status.neutral.text : Status.critical.text)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(action: submit) {
+                    Text(naming == .new ? "Create" : "Rename")
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!isValid)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
+        .onAppear {
+            if case .rename(let file) = naming { name = (file as NSString).lastPathComponent }
+        }
+    }
+
+    private var title: String {
+        switch naming {
+        case .new: "New Rule File"
+        case .rename(let file): "Rename “\(file)”"
+        }
+    }
+
+    private var result: Result<String, RuleFileSource.FileNameProblem> {
+        var existing = existing
+        if case .rename(let file) = naming { existing.removeAll { $0 == (file as NSString).lastPathComponent } }
+        return RuleFileSource.fileName(name, existing: existing)
+    }
+
+    private var isValid: Bool { (try? result.get()) != nil }
+
+    private var note: String {
+        switch result {
+        case .success(let file):
+            switch naming {
+            case .new: "Creates \(file) in the rules folder; meerkatd loads it when it's saved."
+            case .rename: "Rule ids include the file name, so its rules get new ids."
+            }
+        case .failure(.empty): naming == .new ? "Starts as a timer rule that logs, for you to change." : ""
+        case .failure(let problem): problem.description
+        }
+    }
+
+    private func submit() {
+        guard case .success(let file) = result else { return }
+        dismiss()
+        commit(file)
     }
 }

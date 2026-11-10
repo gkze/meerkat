@@ -3,17 +3,20 @@
 #
 # The toolchain lives outside Buck's view (it is the installed Xcode), so
 # Buck cannot hash it. `xcode_build` is part of every Swift action's
-# environment instead: changing Xcode means changing `[swift] xcode_build` in
-# .buckconfig, which invalidates every cached Swift action, and
-# //buck2/rules/swift:xcode_test fails until the two agree.
+# environment instead (`env`): changing Xcode means changing `[swift]
+# xcode_build` in .buckconfig, which invalidates every cached Swift action,
+# and //buck2/rules/swift:xcode_test fails until the two agree.
+
+load("//buck2/rules:toolchains.bzl", "xcode_env")
 
 SwiftToolchainInfo = provider(fields = {
     # Flags for every compile in this mode (optimization, debug info,
     # `-enable-testing`).
     "compile_flags": list[str],
-    # The Xcode the tools come from, for those run through `xcrun`
-    # (actool for resource bundles' asset catalogs).
-    "developer_dir": str,
+    # The environment of every action that runs one of the Xcode's tools
+    # (xcode_env), including those run through `xcrun` (actool for resource
+    # bundles' asset catalogs).
+    "env": dict[str, str],
     # Shared clang module cache for SDK modules, which would otherwise be
     # rebuilt by every compile.
     "module_cache": str,
@@ -30,7 +33,6 @@ SwiftToolchainInfo = provider(fields = {
     # for another deployment target.
     "target": str,
     "triple": typing.Callable,
-    "xcode_build": str,
 })
 
 def _triple(minimum_os: str) -> str:
@@ -45,7 +47,7 @@ def _swift_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
         DefaultInfo(),
         SwiftToolchainInfo(
             compile_flags = ctx.attrs.compile_flags,
-            developer_dir = developer,
+            env = xcode_env(developer, ctx.attrs.xcode_build),
             module_cache = ctx.attrs.module_cache,
             platform_frameworks = platform + "/Developer/Library/Frameworks",
             platform_libraries = platform + "/Developer/usr/lib",
@@ -54,7 +56,6 @@ def _swift_toolchain_impl(ctx: AnalysisContext) -> list[Provider]:
             testing_plugins = toolchain + "/usr/lib/swift/host/plugins/testing",
             target = _triple(ctx.attrs.minimum_os),
             triple = _triple,
-            xcode_build = ctx.attrs.xcode_build,
         ),
     ]
 

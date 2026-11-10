@@ -119,7 +119,8 @@ public struct LogStreamParameters: EventParameters {
         case `default`, info, debug
     }
 
-    public static let maximumPredicateLength = 4096
+    /// 4096 characters of any script, as the limit once counted.
+    public static let maximumPredicateBytes = 16_384
 
     public var predicate: String
     public var level: Level
@@ -129,33 +130,17 @@ public struct LogStreamParameters: EventParameters {
         self.level = level
     }
 
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        predicate = try container.decode(String.self, forKey: .predicate)
-        level = try container.decodeIfPresent(Level.self, forKey: .level) ?? .default
-    }
-
-    public func validate() throws {
-        guard !predicate.trimmingCharacters(in: .whitespaces).isEmpty, predicate.count <= Self.maximumPredicateLength
-        else {
-            throw EventError.invalidParameters("\"predicate\" must be 1–\(Self.maximumPredicateLength) characters")
-        }
-    }
-
-    public static var schema: TypeSchema {
-        .object(
-            ObjectSchema([
-                .field(
-                    "predicate", String.self,
-                    doc:
-                        "`log stream --predicate` filter, e.g. `subsystem == \"com.apple.bluetooth\" AND messageType == error`. Required: the full log is thousands of entries a second."
-                ),
-                .optional(
-                    "level", Level.self,
-                    doc:
-                        "Lowest level streamed: \"default\" (also error and fault), \"info\", or \"debug\". Default \"default\"."
-                ),
-            ]))
+    public static var objectSchema: ObjectSchema {
+        ObjectSchema([
+            ObjectSchema.Field(
+                "predicate", .text(TextBounds(1...maximumPredicateBytes, pattern: .notBlank)),
+                doc:
+                    "`log stream --predicate` filter, e.g. `subsystem == \"com.apple.bluetooth\" AND messageType == error`. Required: the full log is thousands of entries a second."
+            ),
+            ObjectSchema.Field(
+                "level", Level.schema, default: .string(Level.default.rawValue),
+                doc: "Lowest level streamed: \"default\" (also error and fault), \"info\", or \"debug\"."),
+        ])
     }
 
     public static var examples: [Self] {

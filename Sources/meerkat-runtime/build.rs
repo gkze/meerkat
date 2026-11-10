@@ -3,9 +3,10 @@
 //! `$OUT_DIR/deno.d.ts`, which lib.rs embeds and exports.
 //!
 //! The libraries in types/deno/ are Deno's `cli/tsc/dts/` at `DENO_VERSION`,
-//! fetched unchanged by Sources/meerkat-runtime/BUCK, which owns the version
-//! and each file's hash. They are written for Deno's own TypeScript, so two
-//! things are changed, on the parsed source: references to libraries
+//! fetched unchanged by Sources/meerkat-runtime/BUCK; deno.bzl owns the
+//! version and each file's hash, and so which files there are, which
+//! `LIBRARIES` must compose. They are written for Deno's own TypeScript,
+//! so two things are changed, on the parsed source: references to libraries
 //! rule code gets elsewhere are removed, and the Node types the libraries
 //! name are replaced. Anything else Node-specific fails the build here rather
 //! than in a rule. types/timers.d.ts is appended: the timers Deno declares
@@ -20,14 +21,8 @@ use deno_ast::swc::common::comments::Comment;
 use deno_ast::swc::ecma_visit::{Visit, VisitWith};
 use deno_ast::{MediaType, ModuleSpecifier, ParseParams, SourceRangedForSpanned, StartSourcePos, TextChange};
 
-/// Where types/deno/ is from: this Deno release, which the runtime reports as
-/// `Deno.version.deno`.
+/// Where types/deno/ is from: this Deno release (deno.bzl).
 const DENO_VERSION: &str = env!("DENO_VERSION");
-
-/// The `deno_runtime` that release is built on (its Cargo.toml). A test in
-/// worker.rs fails when the linked `deno_runtime` is another one, so the pin
-/// in buck2/third_party/rust/Cargo.toml cannot move without `DENO_VERSION`.
-const DENO_RUNTIME_VERSION: &str = "0.268.0";
 
 /// What `deno types` joins (`tsc::get_types_declaration_file_text` in the
 /// `deno` crate), in its order: each library's name and its file. It also
@@ -63,8 +58,15 @@ const OPAQUE_NODE_TYPES: [(&str, &str); 1] = [("node:net", "Socket")];
 fn main() {
     let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set")).join("types");
     println!("cargo::rerun-if-changed={}", root.display());
-    println!("cargo::rustc-env=DENO_VERSION={DENO_VERSION}");
-    println!("cargo::rustc-env=DENO_RUNTIME_VERSION={DENO_RUNTIME_VERSION}");
+    let deno = root.join("deno");
+    let mut fetched: Vec<String> = fs::read_dir(&deno)
+        .unwrap_or_else(|error| panic!("{}: {error}", deno.display()))
+        .map(|entry| entry.expect("listing types/deno").file_name().to_string_lossy().into_owned())
+        .collect();
+    fetched.sort();
+    let mut listed: Vec<&str> = LIBRARIES.iter().map(|(_, file)| *file).collect();
+    listed.sort_unstable();
+    assert_eq!(fetched, listed, "deno.bzl's DENO_LIBRARIES (types/deno/) and LIBRARIES name different files");
 
     let mut composed = format!(
         "// Deno {DENO_VERSION}'s declarations of the globals rule code runs with, composed by\n\
@@ -72,7 +74,7 @@ fn main() {
     );
     let mut replaced = Vec::new();
     for (_, file) in LIBRARIES {
-        composed += &library(&root.join("deno").join(file), &mut replaced);
+        composed += &library(&deno.join(file), &mut replaced);
         composed.push('\n');
     }
     for opaque in OPAQUE_NODE_TYPES {

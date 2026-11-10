@@ -20,7 +20,7 @@ use std::process::ExitCode;
 use std::{env, fs};
 
 use rules::RULES;
-use source::{Skip, analyze, fix, position};
+use source::{Layout, Skip, analyze, fix, position};
 
 const USAGE: &str = "usage: meerkat-lint [--fix] PATH...";
 const EXTENSIONS: [&str; 8] = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"];
@@ -125,8 +125,9 @@ fn main() -> ExitCode {
                 continue;
             }
         };
+        let layout = Layout::of(file);
         let result = if options.fix {
-            fix(file, &text, &RULES).and_then(|fixed| {
+            fix(file, &text, &RULES, &layout).and_then(|fixed| {
                 // Findings are reported against what is on disk: the fixed
                 // text once written, the original if the write failed.
                 let on_disk = if fixed != text
@@ -138,10 +139,10 @@ fn main() -> ExitCode {
                 } else {
                     fixed
                 };
-                analyze(file, &on_disk, &RULES).map(|findings| (on_disk, findings))
+                analyze(file, &on_disk, &RULES, &layout).map(|findings| (on_disk, findings))
             })
         } else {
-            analyze(file, &text, &RULES).map(|findings| (text, findings))
+            analyze(file, &text, &RULES, &layout).map(|findings| (text, findings))
         };
         match result {
             Ok((text, mut findings)) => {

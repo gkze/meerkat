@@ -95,8 +95,6 @@ final class DaemonServer: Sendable {
             return .status(await status())
         case .catalog:
             return .catalog(CatalogEntry.entries(hub.catalog))
-        case .types:
-            return .types(TypeScriptDeclarations.render(hub.catalog))
         case .subscribe(let id, let kind, let parameters):
             subscriptions.begin(id)
             do {
@@ -151,7 +149,7 @@ final class DaemonServer: Sendable {
             }
         case .ruleLogs(let rule, let limit):
             do {
-                return .logs(try await engine.logs(rule: rule, limit: min(max(limit, 1), 10_000)))
+                return .logs(try await engine.logs(rule: rule, limit: RuleLogEntry.clampedLimit(limit)))
             } catch {
                 return .failure("\(error)")
             }

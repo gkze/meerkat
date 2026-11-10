@@ -226,11 +226,15 @@ enum StickyTop {
     }
 
     /// A chart's value range: zero to the peak with `headroom` above it, so
-    /// the newest point never touches the top. An automatic scale would
-    /// round to a new "nice" top on most samples.
+    /// the newest point never touches the top. Every chart scales this way;
+    /// an automatic scale rounded to a new "nice" top on most samples.
+    /// `floor` is the lowest top, so a near-idle trace stays near the bottom
+    /// instead of filling the chart, and `empty` stands for the peak before
+    /// the first sample; both are in the chart's unit.
     static func range<Value>(
-        of series: RollingSeries<Value>, headroom: Double, _ magnitude: (Value) -> Double
+        of series: RollingSeries<Value>, headroom: Double, floor: Double = 0.0001, empty: Double = 1,
+        _ magnitude: (Value) -> Double
     ) -> ClosedRange<Double> {
-        0...max((peak(of: series, magnitude) ?? 1) * headroom, 0.0001)
+        0...max((peak(of: series, magnitude) ?? empty) * headroom, floor)
     }
 }

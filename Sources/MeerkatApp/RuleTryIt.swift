@@ -140,7 +140,7 @@ struct RuleTryIt: View {
             if let other = model.state.file, model.isRunning {
                 message(
                     "Another file is running", "Try It runs one file at a time; “\(other)” is running now.",
-                    symbol: "hourglass", tint: .secondary)
+                    symbol: "hourglass", status: .neutral)
             } else if source == .recorded && recorded.isEmpty {
                 nothingRecorded
             } else {
@@ -148,15 +148,17 @@ struct RuleTryIt: View {
             }
         case .running(let running):
             progress(running)
-        case .failed(_, let failure):
-            message(failure.title, failure.detail, symbol: "exclamationmark.triangle", tint: .orange)
+        case .failed(_, let fault):
+            message(
+                fault.title(.dryRun), fault.explanation(.dryRun), symbol: "exclamationmark.triangle",
+                status: .warning)
         case .finished(let finished):
             report(finished)
         }
     }
 
     private var idlePrompt: some View {
-        message("Run the rule", prompt, symbol: "play.circle", tint: .secondary)
+        message("Run the rule", prompt, symbol: "play.circle", status: .neutral)
     }
 
     private var prompt: String {
@@ -172,7 +174,7 @@ struct RuleTryIt: View {
             message(
                 "No recorded events",
                 "Recorded means events the Event Explorer holds. Capture some\(kind.map { " of \($0)" } ?? "") there.",
-                symbol: "tray", tint: .secondary)
+                symbol: "tray", status: .neutral)
             if let kind {
                 Button("Open Event Explorer") { app.showEvent(kind) }
                     .controlSize(.small)
@@ -197,9 +199,9 @@ struct RuleTryIt: View {
     /// `detail` is plain text, never Markdown: meerkatd's refusals quote
     /// rule text (an `on:` kind, a source's stop reason), which must not
     /// become links or formatting.
-    private func message(_ title: String, _ detail: String, symbol: String, tint: Color) -> some View {
+    private func message(_ title: String, _ detail: String, symbol: String, status: Status) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: symbol).foregroundStyle(tint).accessibilityHidden(true)
+            Image(systemName: symbol).foregroundStyle(status.color).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).fontWeight(.semibold)
                 Text(verbatim: detail).foregroundStyle(.secondary).textSelection(.enabled)
@@ -234,7 +236,7 @@ struct RuleTryIt: View {
         if report.runs.isEmpty {
             message(
                 "No events", "None arrived during the sample. Try Example, or a longer sample.", symbol: "tray",
-                tint: .secondary)
+                status: .neutral)
         }
         ForEach(Array(report.runs.enumerated()), id: \.offset) { index, run in
             if index > 0 { Divider() }
@@ -264,7 +266,7 @@ struct RuleTryIt: View {
     private func banner(_ text: String) -> some View {
         Text(text)
             .font(.callout)
-            .foregroundStyle(Theme.text(Theme.warn))
+            .foregroundStyle(Status.warning.text)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
     }
@@ -294,11 +296,6 @@ struct RuleTryIt: View {
 private struct InvocationRow: View {
     let run: DryRunInvocation
 
-    private var tint: Color {
-        if run.result.isFailure { return .red }
-        return run.result.isSkipped ? .secondary : .green
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
@@ -315,19 +312,19 @@ private struct InvocationRow: View {
                 if run.milliseconds > 0 {
                     Text(RuleTryIt.time(run.milliseconds)).monospacedDigit().foregroundStyle(.secondary)
                 }
-                StatusBadge(text: run.result.label, tint: tint)
+                StatusBadge(text: run.result.label, status: run.result.status)
             }
             .font(.caption)
-            Text(run.event.payload.compactText)
+            Text(run.event.payload.canonicalString)
                 .font(.system(.caption, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
                 .truncationMode(.tail)
-                .help(run.event.payload.compactText)
+                .help(run.event.payload.canonicalString)
             if let detail = run.result.detail {
                 Text(detail)
                     .font(.callout)
-                    .foregroundStyle(run.result.isFailure ? Theme.text(Theme.critical) : .secondary)
+                    .foregroundStyle(run.result.isFailure ? Status.critical.text : Status.neutral.text)
                     .textSelection(.enabled)
             }
             ForEach(Array(run.effects.enumerated()), id: \.offset) { _, effect in
@@ -350,11 +347,6 @@ private struct InvocationRow: View {
 private struct EffectRow: View {
     let effect: DryRunEffect
 
-    private var tint: Color {
-        if case .refused = effect.outcome { return .red }
-        return .secondary
-    }
-
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Image(systemName: "arrow.turn.down.right").foregroundStyle(.secondary).accessibilityHidden(true)
@@ -365,11 +357,11 @@ private struct EffectRow: View {
                     .lineLimit(3)
                     .help(effect.requestText)
                 if let detail = effect.outcomeDetail {
-                    Text(detail).foregroundStyle(Theme.text(tint)).lineLimit(3).help(detail)
+                    Text(detail).foregroundStyle(effect.status.text).lineLimit(3).help(detail)
                 }
             }
             Spacer(minLength: 4)
-            StatusBadge(text: effect.outcomeLabel, tint: tint)
+            StatusBadge(text: effect.outcomeLabel, status: effect.status)
         }
         .font(.callout)
     }
@@ -378,18 +370,10 @@ private struct EffectRow: View {
 private struct LogLine: View {
     let log: DryRunLog
 
-    private var tint: Color {
-        switch log.level {
-        case .error: .red
-        case .warn: .orange
-        case .debug, .info: .secondary
-        }
-    }
-
     var body: some View {
         Text("\(log.level.rawValue): \(log.message)")
             .font(.system(.caption, design: .monospaced))
-            .foregroundStyle(Theme.text(tint))
+            .foregroundStyle(log.level.status.text)
             .textSelection(.enabled)
     }
 }

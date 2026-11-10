@@ -1,7 +1,8 @@
 load("//buck2/rules:meerkat.bzl", "meerkat_swift_library")
 
-# Message types for XPC (clients <-> daemon), and where the daemon keeps
-# things.
+# What the daemon's clients share with it: the XPC messages and client, how
+# a failure is classified, where the daemon keeps things, the bundle's
+# names, meerkat.json's schema and the agent skills.
 meerkat_swift_library(
     name = "MeerkatIPC",
     deps = ["//Sources/MeerkatKit:MeerkatKit"],

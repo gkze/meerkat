@@ -40,18 +40,8 @@ extension JSONValue {
         }
     }
 
-    /// One-line JSON, keys sorted, for a parameter field or a table cell.
-    var compactText: String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        guard let data = try? encoder.encode(self) else { return inlineText }
-        return String(decoding: data, as: UTF8.self)
-    }
-
     var prettyPrinted: String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        guard let data = try? encoder.encode(self) else { return inlineText }
+        guard let data = try? JSONEncoder.meerkat(pretty: true).encode(self) else { return inlineText }
         return String(decoding: data, as: UTF8.self)
     }
 

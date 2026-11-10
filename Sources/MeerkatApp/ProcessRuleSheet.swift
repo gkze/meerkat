@@ -6,48 +6,6 @@ import SwiftUI
 /// the rules folder: the daemon compiles and loads it like any rule, and
 /// the file is the user's to edit afterwards.
 struct ProcessRuleDraft: Equatable {
-    enum Metric: String, CaseIterable, Identifiable {
-        case cpuPercent, footprintMB, energyWatts, diskWriteMBps
-        var id: Self { self }
-
-        var title: String {
-            switch self {
-            case .cpuPercent: "CPU"
-            case .footprintMB: "Memory"
-            case .energyWatts: "Energy"
-            case .diskWriteMBps: "Disk writes"
-            }
-        }
-
-        var unit: String {
-            switch self {
-            case .cpuPercent: "% of a core"
-            case .footprintMB: "MB"
-            case .energyWatts: "W"
-            case .diskWriteMBps: "MB/s"
-            }
-        }
-
-        var defaultThreshold: Double {
-            switch self {
-            case .cpuPercent: 80
-            case .footprintMB: 4000
-            case .energyWatts: 5
-            case .diskWriteMBps: 50
-            }
-        }
-
-        /// The headline in the notification: "running hot", "using a lot of memory".
-        var what: String {
-            switch self {
-            case .cpuPercent: "is running hot"
-            case .footprintMB: "is using a lot of memory"
-            case .energyWatts: "is using a lot of energy"
-            case .diskWriteMBps: "is writing a lot"
-            }
-        }
-    }
-
     enum Action: String, CaseIterable, Identifiable {
         case notify, background
         var id: Self { self }
@@ -61,8 +19,8 @@ struct ProcessRuleDraft: Equatable {
     }
 
     var process: String
-    var metric: Metric = .cpuPercent
-    var threshold: Double = Metric.cpuPercent.defaultThreshold
+    var metric: ProcessHotParameters.Metric = .cpuPercent
+    var threshold: Double = ProcessHotParameters.Metric.cpuPercent.defaultThreshold
     var minutes: Double = 5
     var action: Action = .notify
     var fileName: String
@@ -84,7 +42,8 @@ struct ProcessRuleDraft: Equatable {
     var source: String {
         let name = Self.literal(process)
         // At least 5 minutes between notifications, at most `rate`'s limit.
-        let throttle = min(max(Self.whole(minutes * 60 * 3), 300), 86_400)
+        let longest = Self.whole(RuleLimits.rateSeconds.maximum ?? .infinity)
+        let throttle = min(max(Self.whole(minutes * 60 * 3), 300), longest)
         let observe = otherUser ? "\"all\"" : "\"own\""
         let capabilities =
             action == .background
@@ -126,9 +85,7 @@ struct ProcessRuleDraft: Equatable {
     var problem: String? {
         if threshold <= 0 { return "The threshold must be above 0." }
         if sustainSeconds <= 0 { return "The duration must be above 0." }
-        let parameters = ProcessHotParameters(
-            metric: .init(rawValue: metric.rawValue) ?? .cpuPercent, above: threshold,
-            sustainSeconds: Double(sustainSeconds))
+        let parameters = ProcessHotParameters(metric: metric, above: threshold, sustainSeconds: Double(sustainSeconds))
         do {
             try parameters.validate()
         } catch {
@@ -140,7 +97,7 @@ struct ProcessRuleDraft: Equatable {
 
     /// The file to write in the rules folder, by the editor's rules for a
     /// new file's name; whether one is already there is checked on create.
-    var file: Result<String, RuleEditorModel.FileNameProblem> { RuleEditorModel.fileName(fileName, existing: []) }
+    var file: Result<String, RuleFileSource.FileNameProblem> { RuleFileSource.fileName(fileName, existing: []) }
 
     static func slug(_ text: String) -> String {
         let parts = text.lowercased().split { !$0.isLetter && !$0.isNumber }
@@ -165,6 +122,50 @@ struct ProcessRuleDraft: Equatable {
 
     static func number(_ value: Double) -> String {
         Int(exactly: value).map { String($0) } ?? String(value)
+    }
+}
+
+/// How the sheet offers each `process.hot` metric: every one the event
+/// knows, in its words.
+extension ProcessHotParameters.Metric {
+    var title: String {
+        switch self {
+        case .cpuPercent: "CPU"
+        case .footprintMB: "Memory"
+        case .energyWatts: "Energy"
+        case .diskWriteMBps: "Disk writes"
+        case .diskReadMBps: "Disk reads"
+        }
+    }
+
+    var unit: String {
+        switch self {
+        case .cpuPercent: "% of a core"
+        case .footprintMB: "MB"
+        case .energyWatts: "W"
+        case .diskWriteMBps, .diskReadMBps: "MB/s"
+        }
+    }
+
+    var defaultThreshold: Double {
+        switch self {
+        case .cpuPercent: 80
+        case .footprintMB: 4000
+        case .energyWatts: 5
+        case .diskWriteMBps, .diskReadMBps: 50
+        }
+    }
+
+    /// The notification's headline: "is running hot", "is using a lot of
+    /// memory".
+    var what: String {
+        switch self {
+        case .cpuPercent: "is running hot"
+        case .footprintMB: "is using a lot of memory"
+        case .energyWatts: "is using a lot of energy"
+        case .diskWriteMBps: "is writing a lot"
+        case .diskReadMBps: "is reading a lot"
+        }
     }
 }
 
@@ -193,7 +194,7 @@ struct ProcessRuleSheet: View {
                 LabeledContent("When") {
                     HStack {
                         Picker("Metric", selection: $draft.metric) {
-                            ForEach(ProcessRuleDraft.Metric.allCases) { Text($0.title).tag($0) }
+                            ForEach(ProcessHotParameters.Metric.allCases, id: \.self) { Text($0.title).tag($0) }
                         }
                         .labelsHidden()
                         .fixedSize()
@@ -238,7 +239,7 @@ struct ProcessRuleSheet: View {
             HStack {
                 Text(error ?? draft.problem ?? "The rule loads when the file is saved.")
                     .font(.caption)
-                    .foregroundStyle(error != nil || draft.problem != nil ? Theme.critical : .secondary)
+                    .foregroundStyle(error != nil || draft.problem != nil ? Status.critical.text : .secondary)
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)

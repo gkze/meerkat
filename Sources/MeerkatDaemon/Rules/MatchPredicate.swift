@@ -58,7 +58,7 @@ struct MatchPredicate: Sendable, Equatable {
 
     private static func compile(_ raw: JSONValue, schema: TypeSchema, path: String) throws -> Test {
         switch schema {
-        case .string:
+        case .string, .text:
             return try stringTest(raw, cases: nil, path: path)
         case .enumeration(let cases):
             return try stringTest(raw, cases: cases, path: path)
@@ -67,7 +67,7 @@ struct MatchPredicate: Sendable, Equatable {
         case .boolean:
             guard case .bool = raw else { throw MatchError("\(label(path)) is a boolean; match it with true or false") }
             return .equals(raw)
-        case .array(let element):
+        case .array(let element, _):
             return try arrayTest(raw, element: element, path: path)
         case .object(let object), .named(_, let object):
             return .nested(MatchPredicate(fields: try compile(raw, object: object, path: path + ".")))

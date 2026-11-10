@@ -5,7 +5,8 @@ import Foundation
 /// interfaces the effects name are declared with the event payloads
 /// (`TypeScriptDeclarations`).
 enum EffectDeclarations {
-    static func lines(_ catalog: EffectCatalog) -> [String] {
+    static func lines() -> [String] {
+        let catalog = EffectCatalog.standard
         var lines = ["/** What a rule may do. The daemon refuses any effect not granted here. */"]
         lines.append("export interface Grants {")
         lines += render(grantTree(catalog.grants), indent: "  ")
@@ -91,7 +92,9 @@ enum EffectDeclarations {
     private static func render(_ node: GrantNode, indent: String) -> [String] {
         node.children.flatMap { name, child -> [String] in
             if let grant = child.grant {
-                return ["\(indent)/** \(escaped(grant.doc)) */", "\(indent)\(name)?: \(leafType(grant.shape));"]
+                return [
+                    "\(indent)/** \(escaped(documentation(grant))) */", "\(indent)\(name)?: \(leafType(grant.shape));",
+                ]
             }
             return ["\(indent)\(name)?: {"] + render(child, indent: indent + "  ") + ["\(indent)};"]
         }
@@ -170,9 +173,21 @@ enum EffectDeclarations {
     }
 
     private static func doc(_ effect: EffectDescriptor, indent: String) -> [String] {
-        var text = effect.summary
-        if let permission = effect.permission { text += " Needs the \(permission.rawValue) permission." }
-        return ["\(indent)/** \(escaped(text)) */"]
+        ["\(indent)/** \(escaped(([effect.summary] + needs(effect)).joined(separator: " "))) */"]
+    }
+
+    /// What an effect needs besides its grant, from its descriptor.
+    private static func needs(_ effect: EffectDescriptor) -> [String] {
+        (effect.permission.map { ["Needs \($0.named)."] } ?? [])
+            + (effect.automation.map { ["Needs Automation permission for \($0.name)."] } ?? [])
+    }
+
+    /// A grant's doc, with what the effects it grants need besides it.
+    private static func documentation(_ grant: GrantDescriptor) -> String {
+        let effects = EffectCatalog.standard.effects.filter { $0.grant.grantKey == grant.key }
+        var notes: [String] = []
+        for note in effects.flatMap(Self.needs) where !notes.contains(note) { notes.append(note) }
+        return ([grant.doc] + notes).joined(separator: " ")
     }
 
     /// `<T …>(parameters): Promise<Result>`, without the method's name.
@@ -182,10 +197,10 @@ enum EffectDeclarations {
         case .none:
             parameters = ""
         case .request:
-            parameters = "request: \(TypeScriptDeclarations.type(effect.request, indent: indent))"
+            parameters = "request: \(TypeScriptDeclarations.type(effect.requestType, indent: indent))"
         case .positional(let names):
             parameters = names.map { name in
-                guard let field = effect.fields.first(where: { $0.name == name }) else {
+                guard let field = effect.request.fields.first(where: { $0.name == name }) else {
                     preconditionFailure("\(effect.kind): argument \(name) is not a request field")
                 }
                 return

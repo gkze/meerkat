@@ -387,7 +387,7 @@ struct ExtendedSourceTests {
             try LogEntryEvent.makeSource(
                 LogStreamParameters(predicate: #"subsystem == "com.gkze.meerkat.tests""#),
                 environment: hub.environment,
-                emit: Emitter(sink: { _, _ in }, fail: { reason in failure.withLock { $0 = reason } }))
+                emit: Emitter(sink: { _ in }, fail: { reason in failure.withLock { $0 = reason } }))
                 as? LogStreamSource)
         try source.start()
         defer { source.stop() }
@@ -516,12 +516,12 @@ struct ExtendedSourceTests {
             ("window.focused", EventDescriptor.Permission.accessibility),
             ("input.activity", .inputMonitoring), ("bluetooth.devices", .bluetooth),
         ] {
-            #expect(hub.catalog.kind(named: kind)?.descriptor.permission == permission)
+            #expect(hub.catalog.kind(named: kind)?.descriptor.permission == .required(permission))
             guard permission.status != .granted else { continue }
             #expect {
                 try hub.subscribe(kind)
             } throws: { error in
-                "\(error)".contains(permission.rawValue)
+                "\(error)".contains(permission.displayName)
             }
         }
         // No bundle, so no usage description: these can never be asked for.

@@ -4,60 +4,15 @@ import MeerkatIPC
 import MeerkatKit
 import SwiftUI
 
-/// A failed request to meerkatd, classified once where it was caught: the
-/// typed `DaemonClient.ClientError` decides the class, the text is for
-/// display only.
-struct DaemonFault: Equatable, CustomStringConvertible {
-    /// The daemon answered, but is a different build from this app.
-    let isDifferentBuild: Bool
-    let description: String
-
-    init(_ error: any Error) {
-        isDifferentBuild = if case .differentBuild? = error as? DaemonClient.ClientError { true } else { false }
-        description = "\(error)"
-    }
-}
-
-/// A page's first request to meerkatd.
-enum LoadState: Equatable {
-    case loading
-    case loaded
-    case failed(DaemonFault)
-}
-
-/// Why meerkatd does not answer, in the words every page uses: the full-page
-/// `DaemonUnavailableView` and the Overview's banner.
+/// A page's failed request in the words every page uses: the full-page
+/// `DaemonUnavailableView` and the Overview's banner (`DaemonFault`'s map,
+/// for a load).
 struct DaemonProblem {
     let fault: DaemonFault
     let agent: AgentRegistration.Status
 
-    var title: String {
-        if fault.isDifferentBuild { return "meerkatd is a different build" }
-        switch agent {
-        case .notRegistered: return "meerkatd isn't installed"
-        case .requiresApproval: return "meerkatd is off in Login Items"
-        case .enabled: return "meerkatd isn't answering"
-        case .notInBundle: return "Run Meerkat from Meerkat.app"
-        }
-    }
-
-    var explanation: String {
-        if fault.isDifferentBuild {
-            return
-                "The running agent was built separately from this app, for example it has not restarted since an update. Restart it so they match (`meerkat agent restart`); if that does not help, reinstall it from this copy of Meerkat."
-        }
-        switch agent {
-        case .notRegistered:
-            return
-                "The app reads everything from the background agent. Installing it also runs the rules in the rules folder."
-        case .requiresApproval: return "Turn on Meerkat in System Settings > General > Login Items & Extensions."
-        case .enabled:
-            return
-                "The agent is registered but didn't reply. Reinstalling registers it again from this copy of Meerkat."
-        case .notInBundle: return "The agent can only be managed from the installed app."
-        }
-    }
-
+    var title: String { fault.title(.load(agent: agent)) }
+    var explanation: String { fault.explanation(.load(agent: agent)) }
     var symbol: String { fault.isDifferentBuild ? "arrow.triangle.2.circlepath" : "bolt.horizontal.circle" }
 }
 
@@ -69,9 +24,10 @@ struct DaemonProblem {
 struct AgentFixButton: View {
     let problem: DaemonProblem
     let agent: AgentControl
-    /// Called once the action succeeds, to subscribe again at once rather
-    /// than at the next retry.
-    let fixed: () async -> Void
+    /// Called once the action succeeds, to load the page again at once.
+    /// Subscriptions need nothing: `AgentControl` tells every follower
+    /// (`DaemonReturn`).
+    var fixed: () async -> Void = {}
     @State private var pending: AgentControl.Action?
 
     var body: some View {
@@ -83,6 +39,8 @@ struct AgentFixButton: View {
 
     @ViewBuilder private var button: some View {
         switch agent.status {
+        case _ where !problem.fault.concernsTheAgent:
+            EmptyView()
         case .notRegistered:
             Button(agent.action == .installing ? "Installing…" : "Install Agent") {
                 Task {
@@ -150,18 +108,21 @@ struct DaemonUnavailableView: View {
 
     var body: some View {
         let problem = DaemonProblem(fault: fault, agent: agent.status)
-        let reason = fault.description
+        let reason = agent.error ?? fault.description
         ContentUnavailableView {
             Label(problem.title, systemImage: problem.symbol)
         } description: {
             VStack(spacing: 8) {
                 Text(problem.explanation)
-                Text(agent.error ?? reason)
-                    .font(.caption)
-                    .foregroundStyle(agent.error == nil ? .tertiary : .secondary)
-                    .lineLimit(3)
-                    .textSelection(.enabled)
-                    .help(agent.error ?? reason)
+                // A refusal's explanation is already the daemon's words.
+                if reason != problem.explanation {
+                    Text(reason)
+                        .font(.caption)
+                        .foregroundStyle(agent.error == nil ? .tertiary : .secondary)
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                        .help(reason)
+                }
             }
         } actions: {
             HStack {
@@ -193,19 +154,20 @@ struct DaemonLoadGate: View {
 /// The last poll failed; what is on screen is the last good `subject`.
 struct StaleBanner: View {
     let subject: String
-    let reason: String
+    let fault: DaemonFault
 
     var body: some View {
         Label(
-            "Lost contact with meerkatd. Showing the last \(subject). \(reason)", systemImage: "bolt.horizontal.circle"
+            "\(fault.title(.refresh)). Showing the last \(subject). \(fault.explanation(.refresh))",
+            systemImage: "bolt.horizontal.circle"
         )
         .font(.callout)
-        .foregroundStyle(Theme.text(Theme.warn))
+        .foregroundStyle(Status.warning.text)
         .lineLimit(2)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal)
         .padding(.vertical, 8)
-        .background(Color.orange.opacity(0.08))
+        .background(Status.warning.color.opacity(0.08))
     }
 }
 
@@ -222,7 +184,7 @@ struct FeedFailureNote: View {
                 .foregroundStyle(.secondary)
         } icon: {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(Theme.warn)
+                .foregroundStyle(Status.warning.color)
         }
         .font(.caption)
         .lineLimit(2)
@@ -234,15 +196,15 @@ struct FeedFailureNote: View {
 /// A small coloured capsule for a state word.
 struct StatusBadge: View {
     let text: String
-    let tint: Color
+    let status: Status
 
     var body: some View {
         Text(text)
             .font(.caption.weight(.medium))
-            .foregroundStyle(Theme.text(tint))
+            .foregroundStyle(status.text)
             .padding(.horizontal, 7)
             .padding(.vertical, 2)
-            .background(tint.opacity(0.14), in: .capsule)
+            .background(status.color.opacity(0.14), in: .capsule)
             .fixedSize()
     }
 }
@@ -256,13 +218,29 @@ extension RuleSummary.State {
         }
     }
 
-    var tint: Color {
+    var status: Status {
         switch self {
-        case .loaded: return .green
-        case .failed: return .red
-        case .disabled: return .secondary
+        case .loaded: return .normal
+        case .failed: return .critical
+        case .disabled: return .neutral
         }
     }
+}
+
+/// How many rules run, failed and are off, in the words every page uses.
+struct RuleCounts: Equatable {
+    let running: Int
+    let failed: Int
+    let off: Int
+
+    init(_ rules: [RuleSummary]) {
+        running = rules.count { $0.state == .loaded }
+        failed = rules.count { $0.state == .failed }
+        off = rules.count { $0.state == .disabled }
+    }
+
+    /// "3 running", "3 running, 1 failed".
+    var summary: String { failed > 0 ? "\(running) running, \(failed) failed" : "\(running) running" }
 }
 
 extension HandlerHostStatus.State {
@@ -276,12 +254,12 @@ extension HandlerHostStatus.State {
         }
     }
 
-    var tint: Color {
+    var status: Status {
         switch self {
-        case .idle: return .secondary
-        case .starting, .backingOff: return .orange
-        case .running: return .green
-        case .unavailable: return .red
+        case .idle: return .neutral
+        case .starting, .backingOff: return .warning
+        case .running: return .normal
+        case .unavailable: return .critical
         }
     }
 }
@@ -296,20 +274,24 @@ extension LogLevel {
         }
     }
 
-    var tint: Color {
+    /// The rule log's and the dry run's alike.
+    var status: Status {
         switch self {
-        case .debug: return .secondary
-        case .info: return .blue
-        case .warn: return .orange
-        case .error: return .red
+        case .debug, .info: return .neutral
+        case .warn: return .warning
+        case .error: return .critical
         }
     }
 }
 
 enum Finder {
-    static func reveal(_ path: String) {
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    /// Selects `paths` in a Finder window; a leading `~` is the home folder.
+    static func reveal(_ paths: [String]) {
+        NSWorkspace.shared.activateFileViewerSelecting(
+            paths.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) })
     }
+
+    static func reveal(_ path: String) { reveal([path]) }
 
     /// Opens `url` with its default application without waiting for it.
     /// `NSWorkspace.open(_:)` waits on Launch Services, on the main thread,

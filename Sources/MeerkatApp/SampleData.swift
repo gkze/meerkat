@@ -1,12 +1,15 @@
 #if DEBUG
     import Foundation
+    import MeerkatAgent
     import MeerkatIPC
     import MeerkatKit
+    import MeerkatRules
 
-    /// Stands in for meerkatd where `AppState` hands a page its daemon, so
-    /// the page's model works as it does against the real one. Nothing here
-    /// reaches the installed daemon, whose rules sample data must never
-    /// change. Requests the sample pages don't send are refused.
+    /// Stands in for meerkatd wherever `AppState` hands out its daemon, so
+    /// each page's model, the Event Explorer's and the process card's work
+    /// as they do against the real one. Nothing here reaches the installed
+    /// daemon, whose rules sample data must never change. Requests no page
+    /// sends in sample mode are refused.
     actor SampleDaemon: DaemonConnection {
         /// Sample rules, with the toggles made in this session.
         private var rules = SampleData.rules
@@ -27,6 +30,8 @@
             case .dryRun(let request):
                 try await Task.sleep(for: .seconds(2))
                 return .dryRun(SampleData.dryRun(request))
+            case .catalog:
+                return .catalog(CatalogEntry.entries())
             default:
                 throw DaemonClient.ClientError.unexpectedReply("\(request) has no sample reply")
             }
@@ -46,7 +51,7 @@
 
     /// Realistic replies for the Overview, Rules and Daemon health pages, for
     /// debug builds launched with `MEERKAT_SAMPLE_DATA=1`: a way to see every
-    /// populated state without rule files on disk or a running daemon.
+    /// populated state without a running daemon.
     /// Written as the daemon's JSON, so the fixtures exercise the same
     /// decoding as real replies.
     enum SampleData {
@@ -56,9 +61,183 @@
 
         private static let now = Date().timeIntervalSince1970 * 1000
 
+        /// The rules folder the sample daemon reports, and so the one the
+        /// editor and "Make a Rule…" write to: a scratch folder, never the
+        /// installed daemon's, which would load what is saved there. It
+        /// holds the files `rules` names, and the editor support the daemon
+        /// would write, so the editor, Open File and the language server see
+        /// what the report says.
+        static let rulesDirectory: URL = {
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Meerkat Sample Rules")
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            // Only where missing: the folder outlives the app, with the
+            // edits made in it.
+            for (file, text) in sources {
+                try? RuleFileSource.create(folder.appendingPathComponent(file), text: text)
+            }
+            let support = EditorSupport(
+                declarations: TypeScriptDeclarations.render(),
+                runtimeDeclarations: TypeScriptToolchain.locate()?.runtimeDeclarations.flatMap {
+                    try? String(contentsOf: $0, encoding: .utf8)
+                },
+                configurationSchema: nil, linter: nil)
+            Task.detached { try? await support.write(in: folder) }
+            return folder
+        }()
+
+        /// The rule files `rules` reports, by name: each defines the rules
+        /// listed for it, or, for index.ts and scratch.ts, fails as listed.
+        static let sources: [(file: String, text: String)] = [
+            (
+                "low-battery.ts",
+                """
+                import { rule } from "meerkat";
+
+                export const warn = rule({
+                  name: "warn",
+                  on: "battery.sample",
+                  params: { interval: 60 },
+                  handle(event, ctx) {
+                    if (event.externalConnected === false) ctx.warn("on battery, drawing", event.systemPowerWatts, "W");
+                  },
+                });
+
+                """
+            ),
+            (
+                "heavy-writers.ts",
+                """
+                import { rule } from "meerkat";
+
+                // Processes this user owns that write more than 48 MB a second over a
+                // ranking window are logged, so a backup or an indexer that slows the Mac
+                // down shows up in the rule's log.
+
+                export const renice = rule({
+                  name: "renice",
+                  on: "process.top",
+                  params: { interval: 5, ioCount: 5 },
+                  capabilities: {
+                    process: { observe: "own", priority: true },
+                  },
+                  handle(event, ctx) {
+                    let heavy = 0;
+                    for (const row of event.io) {
+                      // Other users' processes report no disk writes.
+                      if (row.diskWriteMB === undefined) {
+                        continue;
+                      }
+                      const perSecond = row.diskWriteMB / row.windowSeconds;
+                      if (48 < perSecond) {
+                        ctx.info(row.name, "is writing", perSecond, "MB/s");
+                        heavy += 1;
+                      }
+                    }
+                    // Nothing over the limit this window: say so, so the log shows the
+                    // rule is still running.
+                    const quiet = heavy === 0;
+                    const window = event.rankWindowSeconds;
+                    if (quiet) ctx.info("nothing over the limit in", window, "s");
+                  },
+                });
+
+                """
+            ),
+            (
+                "downloads.ts",
+                """
+                import { rule } from "meerkat";
+
+                export const tidy = rule({
+                  name: "tidy",
+                  on: "fs.change",
+                  params: { paths: ["~/Downloads"] },
+                  capabilities: { fs: { read: ["~/Downloads"] } },
+                  handle(event, ctx) {
+                    ctx.info(event.path, event.changes.join(", "));
+                  },
+                });
+
+                """
+            ),
+            (
+                "microphone.ts",
+                """
+                import { rule } from "meerkat";
+
+                export const notify = rule({
+                  name: "notify",
+                  on: "audio.inUse",
+                  capabilities: { observe: { allow: ["audio.inUse"] }, notify: true },
+                  handle(event, ctx) {
+                    // Which device is recording: the first one in use.
+                    const used = event.running[0]!;
+                    ctx.info(used.device.name ?? "a device", "is in use");
+                  },
+                });
+
+                """
+            ),
+            (
+                "recorder.ts",
+                """
+                import { rule } from "meerkat";
+
+                export const continuous = rule({
+                  name: "continuous",
+                  on: "timer",
+                  params: { every: 60 },
+                  handle(_event, ctx) {
+                    ctx.info("recording");
+                  },
+                });
+
+                """
+            ),
+            (
+                "index.ts",
+                """
+                import { rule } from "meerkat";
+
+                rule({
+                  name: "pinger",
+                  on: "timer",
+                  params: { every: 60 },
+                  handle(_event, ctx) {
+                    ctx.info("ping");
+                  },
+                });
+
+                """
+            ),
+            (
+                "scratch.ts",
+                """
+                import { rule } from "meerkat";
+
+                export const scratch = rule({
+                  name: "scratch",
+                  on: "timer",
+                  params: { every: 60 },
+                  handle(_event, ctx) {
+                    ctx.info(limit());
+                  },
+                });
+
+                // A typing mistake, for the compiler to find.
+                function limit(): number {
+                  const value: number = "48";
+                  return value;
+                }
+
+                """
+            ),
+        ]
+
         static let rules: RulesReport = decode(
             """
             {
+              "rulesDirectory": "\(rulesDirectory.path)",
               "compiledAt": \(now - 95_000),
               "rules": [
                 {"id": "low-battery.ts#warn", "file": "low-battery.ts", "event": "battery.sample", "state": "loaded",
@@ -71,7 +250,7 @@
                  "lastInvokedAt": \(now - 7_200_000)},
                 {"id": "microphone.ts#notify", "file": "microphone.ts", "event": "audio.inUse", "state": "failed",
                  "reason": "circuit breaker: 5 failures in a row", "invocations": 12, "failures": 5,
-                 "lastInvokedAt": \(now - 600_000), "lastError": "TypeError: Cannot read properties of undefined (reading 'name')"},
+                 "lastInvokedAt": \(now - 600_000), "lastError": "TypeError: Cannot read properties of undefined (reading 'device')"},
                 {"id": "recorder.ts#continuous", "file": "recorder.ts", "event": "timer", "state": "loaded",
                  "invocations": 98, "failures": 0, "lastInvokedAt": \(now - 180_000)},
                 {"id": "index.ts", "file": "index.ts", "state": "failed",
@@ -94,7 +273,7 @@
                    "column": 5, "code": "eslint(curly)", "message": "Expected { after 'if' condition."},
                   {"tool": "meerkat-lint", "kind": "finding", "severity": "error", "file": "microphone.ts", "line": 9,
                    "column": 18, "code": "meerkat(payload-optional-field)",
-                   "message": "event.processes may be empty; check its length before reading [0].name."},
+                   "message": "event.running may be empty; check its length before reading [0]."},
                   {"tool": "oxfmt", "kind": "finding", "severity": "warning", "file": "downloads.ts",
                    "message": "not formatted; `meerkat rules fmt` formats it", "fixable": true},
                   {"tool": "meerkat-lint", "kind": "toolFailure", "severity": "error",
@@ -103,6 +282,29 @@
               }
             }
             """)
+
+        /// Stands in for the agent's registration: each action takes 2 s,
+        /// then leaves the status it would, so every action and its
+        /// progress can be seen without touching the installed agent.
+        @MainActor
+        static func agent() -> AgentBackend {
+            let registration = SampleRegistration()
+            return AgentBackend(
+                status: { registration.status },
+                run: { action in
+                    try await Task.sleep(for: .seconds(2))
+                    await registration.finish(action)
+                })
+        }
+
+        @MainActor
+        private final class SampleRegistration: Sendable {
+            private(set) var status = AgentRegistration.Status.enabled
+
+            func finish(_ action: AgentControl.Action) {
+                status = action == .uninstalling ? .notRegistered : .enabled
+            }
+        }
 
         /// `report` with rule `id` turned on or off, as the daemon would
         /// report it. A failed rule stays failed when turned on.
@@ -116,7 +318,8 @@
                     lastInvokedAt: rule.lastInvokedAt, lastError: rule.lastError)
             }
             return RulesReport(
-                rules: rules, diagnostics: report.diagnostics, compiledAt: report.compiledAt, lint: report.lint)
+                rulesDirectory: report.rulesDirectory, rules: rules, diagnostics: report.diagnostics,
+                compiledAt: report.compiledAt, lint: report.lint)
         }
 
         static func logs(for rule: String) -> [RuleLogEntry] {
@@ -146,7 +349,7 @@
         }
 
         /// `uptime` (seconds) advances the delivered counters at each source's
-        /// rate. The rules folder is the real one, as the app opens it.
+        /// rate.
         static func status(uptime: Double) -> DaemonStatus {
             decode(
                 """
@@ -155,22 +358,23 @@
                   "pid": 48213,
                   "startedAt": \(now - 9_480_000),
                   "executablePath": "/Users/example/Applications/Meerkat.app/Contents/MacOS/meerkatd",
-                  "rulesDirectory": "\(DaemonPaths.standard().rulesDirectory.path)",
+                  "rulesDirectory": "\(rulesDirectory.path)",
                   "handlerHost": {"state": "running", "workers": 5, "restarts": 1,
                                   "lastExit": "heavy-writers.ts#renice held the JavaScript thread for 5.2 s"},
                   "sources": [
                     {"instance": 3, "kind": "cpu.sample", "parameters": {"interval": 0.25}, "subscribers": 2,
-                     "delivered": \(38_112 + Int(uptime * 4)), "dropped": 0},
+                     "delivered": \(38_112 + Int(uptime * 4)), "dropped": 0, "unencodable": 0},
                     {"instance": 4, "kind": "memory.sample", "parameters": {"interval": 1}, "subscribers": 1,
-                     "delivered": \(9_528 + Int(uptime)), "dropped": 0},
+                     "delivered": \(9_528 + Int(uptime)), "dropped": 0, "unencodable": 0},
                     {"instance": 7, "kind": "process.top", "parameters": {"count": 3, "interval": 1, "ioCount": 3, "rankInterval": 5},
-                     "subscribers": 2, "delivered": \(9_401 + Int(uptime)), "dropped": 0},
+                     "subscribers": 2, "delivered": \(9_401 + Int(uptime)), "dropped": 0, "unencodable": 0},
                     {"instance": 9, "kind": "fs.change", "parameters": {"latency": 0.1, "paths": ["/Users/example/Downloads"]},
-                     "subscribers": 1, "delivered": \(1_204 + Int(uptime * 18.5)), "dropped": 312},
-                    {"instance": 11, "kind": "battery.sample", "parameters": {}, "subscribers": 1, "delivered": 214, "dropped": 0},
-                    {"instance": 12, "kind": "timer", "parameters": {"every": 300}, "subscribers": 1, "delivered": 98, "dropped": 0},
+                     "subscribers": 1, "delivered": \(1_204 + Int(uptime * 18.5)), "dropped": 312, "unencodable": 0},
+                    {"instance": 11, "kind": "battery.sample", "parameters": {}, "subscribers": 1, "delivered": 214, "dropped": 0,
+                     "unencodable": 2, "lastUnencodable": "systemPowerWatts is NaN"},
+                    {"instance": 12, "kind": "timer", "parameters": {"every": 300}, "subscribers": 1, "delivered": 98, "dropped": 0, "unencodable": 0},
                     {"instance": 13, "kind": "log.entry", "parameters": {"level": "default", "predicate": "subsystem == \\"com.apple.bluetooth\\""},
-                     "subscribers": 1, "delivered": 57, "dropped": 0,
+                     "subscribers": 1, "delivered": 57, "dropped": 0, "unencodable": 0,
                      "detail": "log applies: subsystem == \\"com.apple.bluetooth\\" AND type == 1024"}
                   ],
                   "rules": \(encoded(rules.rules)),
@@ -236,7 +440,10 @@
                     var tick = 0
                     repeat {
                         let seconds = Double(tick) * (period ?? 0)
-                        guard let payload = feedPayload(kind, seconds: seconds, rankInterval: rankInterval) else {
+                        guard
+                            let payload = feedPayload(
+                                kind, seconds: seconds, rankInterval: rankInterval, parameters: parameters)
+                        else {
                             return
                         }
                         continuation.yield(
@@ -248,6 +455,17 @@
                 }
                 continuation.onTermination = { _ in task.cancel() }
             }
+        }
+
+        /// The sample processes' names, by pid, as the feeds list them.
+        private static let names: [Int32: String] = [
+            980: "Xcode", 412: "WindowServer", 377: "mds_stores", 1204: "Safari", 0: "kernel_task", 1388: "Mail",
+            1502: "Notes", 611: "Finder", 1730: "Terminal", 1811: "Music", 1920: "Calendar", 2044: "Preview",
+            1: "launchd",
+        ]
+
+        private static func period(_ parameters: JSONValue) -> Double {
+            parameters["interval"]?.numberValue ?? parameters["every"]?.numberValue ?? 1
         }
 
         private static let physicalMB = Double(ProcessInfo.processInfo.physicalMemory) / 1_000_000
@@ -279,7 +497,9 @@
             ])
         }
 
-        private static func feedPayload(_ kind: String, seconds t: Double, rankInterval: Double) -> JSONValue? {
+        private static func feedPayload(
+            _ kind: String, seconds t: Double, rankInterval: Double, parameters: JSONValue
+        ) -> JSONValue? {
             switch kind {
             case "cpu.sample":
                 let usage = min(max(wave(t, 26, [(14, 9), (7, 2.1)], jitter: 3), 2), 97)
@@ -301,6 +521,28 @@
                 ])
             case "memory.pressure":
                 return .object(["level": .string("normal")])
+            case "network.path":
+                return .object([
+                    "status": .string("satisfied"),
+                    "interfaces": .array([.object(["name": .string("en0"), "type": .string("wifi")])]),
+                    "isExpensive": .bool(false), "isConstrained": .bool(false), "supportsIPv4": .bool(true),
+                    "supportsIPv6": .bool(true), "supportsDNS": .bool(true),
+                ])
+            case "power.assertions":
+                return .object([
+                    "assertions": .array([
+                        .object([
+                            "id": .number(38_069), "pid": .number(1204), "process": .string("Safari"),
+                            "type": .string("PreventUserIdleDisplaySleep"), "name": .string("Playing video"),
+                            "startedAt": .number(now - 1_260_000),
+                        ]),
+                        .object([
+                            "id": .number(34_211), "pid": .number(639), "process": .string("coreaudiod"),
+                            "type": .string("PreventUserIdleSystemSleep"), "onBehalfOfPid": .number(1811),
+                        ]),
+                    ]),
+                    "active": .array([.string("PreventUserIdleDisplaySleep"), .string("PreventUserIdleSystemSleep")]),
+                ])
             case "disk.sample":
                 // disk4 is a disk image: its I/O also crosses disk0, so it is
                 // in the rows but not the totals.
@@ -427,6 +669,18 @@
                         ])
                     }
                 return .object(["processes": .array(own + others)])
+            case "process.sample":
+                // The process a card opened, by the pid it asked for: a
+                // sample one, under its sample name.
+                let pid = Int32(exactly: parameters["pid"]?.numberValue ?? 0) ?? 0
+                let name = names[pid] ?? "process \(pid)"
+                let cpu = max(wave(t + Double(pid), 8, [(5, 6), (2, 1.7)], jitter: 1), 0.1)
+                return .object([
+                    "running": .bool(true),
+                    "process": process(
+                        pid, name, cpu: cpu, writeMB: max(wave(t, 1.2, [(1, 9)], jitter: 0.2), 0), readMB: 0.4,
+                        window: period(parameters), footprintMB: 640 + wave(t, 0, [(40, 20)], jitter: 4)),
+                ])
             case "fs.churn":
                 let scale = 1 + 0.3 * sin(t / 50)
                 let buckets: [(String, Double)] = [
@@ -487,8 +741,8 @@
                 }
             }
             return DryRunReport(
-                outcome: .ran, rules: ["warn"], rule: "\(request.file)#warn", event: "power.source", runs: runs,
-                compileMilliseconds: 180, loadMilliseconds: 42)
+                outcome: .ran, rules: ["warn"], rule: RuleID.make(file: request.file, name: "warn"),
+                event: "power.source", runs: runs, compileMilliseconds: 180, loadMilliseconds: 42)
         }
 
         private static func decode<T: Decodable>(_ json: String) -> T {

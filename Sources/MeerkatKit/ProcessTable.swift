@@ -20,14 +20,15 @@ public struct ProcessIdentity: Sendable, Hashable, Codable, Comparable {
     public var startedAt: Double { Double(startMicroseconds) / 1000 }
 
     /// `startedAt` values a process can have, in milliseconds, through the
-    /// year 2255. A value from outside (a rule, the CLI, MCP) is checked
-    /// against this before `init(pid:startedAt:)`, which traps past Int64.
+    /// year 2255; schemas bound a value from outside to it.
     public static let startedAtRange: ClosedRange<Double> = 1...9e12
 
-    /// The inverse of `startedAt`, for identities carried through JSON.
-    /// Exact for every realistic start time: microsecond counts stay far
-    /// below 2^53.
-    public init(pid: pid_t, startedAt: Double) {
+    /// The inverse of `startedAt`, for identities carried through JSON; nil
+    /// for a start time no process can have, so no value from outside can
+    /// reach a trapping conversion. Exact for every start time in range:
+    /// microsecond counts stay far below 2^53.
+    public init?(pid: pid_t, startedAt: Double) {
+        guard Self.startedAtRange.contains(startedAt) else { return nil }
         self.init(pid: pid, startMicroseconds: Int64((startedAt * 1000).rounded()))
     }
 
@@ -74,6 +75,12 @@ public enum ProcessTable {
             guard errno == ENOMEM else { throw MeerkatError.processTableUnreadable(errno) }
         }
         throw MeerkatError.processTableUnreadable(ENOMEM)
+    }
+
+    /// The process `identity` names, if it is still running: the pid's
+    /// record only while its start time matches, since a pid is reused.
+    public static func record(of identity: ProcessIdentity) -> ProcessRecord? {
+        record(pid: identity.pid).flatMap { $0.identity == identity ? $0 : nil }
     }
 
     public static func record(pid: pid_t) -> ProcessRecord? {

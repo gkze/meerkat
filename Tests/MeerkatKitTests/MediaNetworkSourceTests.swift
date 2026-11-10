@@ -210,7 +210,9 @@ struct MediaNetworkSourceTests {
         let received = Atomic<Int>(0)
         weak var weakSource: (any EventSource)?
         do {
-            let source = try kind.makeSource(kind.normalized(.object([:])), environment: SourceEnvironment()) { _, _ in
+            let source = try kind.makeSource(kind.normalized(.object([:])), environment: SourceEnvironment()) {
+                emission in
+                guard case .event = emission else { return }
                 received.add(1, ordering: .relaxed)
             }
             weakSource = source

@@ -46,7 +46,8 @@ it is no reason to take LanguageClient.
 - `RuleLanguageServer` (actor) runs `tsrs --lsp --stdio` with the rules
   directory as working directory and workspace folder, so tsrs reads the
   daemon's `tsconfig.json` and `.meerkat/meerkat.d.ts`: what it reports is
-  what the daemon's next compile reports. tsrs is located as the CLI and the
+  what the daemon's next compile reports. Sample mode writes the same
+  editor support into its scratch folder (`SampleData.rulesDirectory`). tsrs is located as the CLI and the
   daemon locate it (`TypeScriptToolchain.locate`: `MEERKAT_TSRS`, else
   `Contents/Resources/typescript/tsrs` in the app).
 - tsrs pushes no diagnostics for `.ts` files; it answers
@@ -96,9 +97,13 @@ it is no reason to take LanguageClient.
   every request, and closing the editor, forever. `RuleLanguageServer.Limits`
   bounds each message: 30 s for `initialize`, 10 s for anything after, and
   a request past its limit counts as an exit ("didn't answer …"), so the
-  restart policy above applies. Stopping sends `shutdown` and `exit` for up
+  restart policy above applies. So does a document notification (open,
+  change, save, close, files changed) that fails ("missed …"): tsrs would
+  hold other text than the editor, and only a new server, which opens the
+  file afresh, is back in step. A failed request only goes unanswered.
+  Stopping sends `shutdown` and `exit` for up
   to 2 s, then SIGTERM, then SIGKILL 2 s later, and isn't cut short by the
-  editor closing. `withDeadline` (MeerkatIPC, shared with the daemon
+  editor closing. `withDeadline` (MeerkatKit, shared with the daemon
   client) runs the call unstructured, since a task group would wait for a
   call that ignores cancellation; the process's end ends the abandoned call.
 - **Files.** The file list's add button makes `<name>.ts` from a template
@@ -109,7 +114,12 @@ it is no reason to take LanguageClient.
   it would run (its draft moves with it; its rules get new ids, which name
   the file),
   moves it to the Trash after a confirmation (`FileManager.trashItem`, never
-  a delete), or shows it in Finder.
+  a delete), or shows it in Finder. The naming rules and the template are
+  `RuleFileSource` (`RuleFiles.swift`, with the drafts' `RuleDrafts`), which
+  the sheet that makes a rule from a process card uses too; the name sheet
+  (`FileNameSheet`) and a file's state at the last compile
+  (`RulesModel.status(of:)`) belong to the Rules page, which uses them
+  without the editor.
 - **The folder.** The file list is the files the daemon compiles
   (`RuleCompiler.ruleSources`), so the two can't disagree. While the editor
   is open, an `FSEventStream` on the rules directory keeps it current and sends tsrs
@@ -157,8 +167,9 @@ it is no reason to take LanguageClient.
   Gruvbox, Nord, One, Solarized and Tokyo Night, chosen in Settings › Editor
   (with a preview) or the View menu, both one `UserDefaults` value. Each has
   light and dark variants that follow the app's appearance, except Dracula
-  and Nord, which are dark in both. A palette has fewer colors than `EditorTheme` has roles; the mapping is on
-  `RuleEditorPalette`. Comment colors in Nord, One and Tokyo Night are a
+  and Nord, which are dark in both (`isDarkOnly`, which the Settings note
+  and the tests read). A palette has fewer colors than `EditorTheme` has
+  roles; the mapping is on `RuleEditorPalette`. Comment colors in Nord, One and Tokyo Night are a
   step lighter or darker than the originals so they stay readable.
 
 ## Dry run
@@ -266,10 +277,12 @@ Try It opens it in place of the file list. Live, Recorded and Example are
   A run and its answer carry their file (`RuleDryRunModel.state(for:)`):
   another file's panel shows neither, says which file is running, and
   shows its answer again on going back to it.
-- A meerkatd that is a different build can't decode the request, which
-  `ClientError.differentBuild` reports: the panel's title is "meerkatd is a
-  different build", and it says to run `meerkat agent restart`, not the raw
-  error.
+- A failed run is classified like every other request to meerkatd
+  (`DaemonFault`) and told in the same words (its map's dry-run context): a
+  refusal shows meerkatd's words, an unreachable daemon says so, and a
+  meerkatd that is a different build, which can't decode the request, gets
+  the title "meerkatd is a different build" and the advice to run
+  `meerkat agent restart`, not the raw error.
 - `MEERKAT_SAMPLE_DATA` answers from `SampleData.dryRun` after 2 s.
 
 Save and Enabled stay in the toolbar above; the panel doesn't repeat them.

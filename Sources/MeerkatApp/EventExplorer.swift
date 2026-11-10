@@ -91,11 +91,11 @@ private struct CatalogRow: View {
                     .font(.system(.body, design: .monospaced))
                     .lineLimit(1)
                 Spacer(minLength: 4)
-                if let permission = descriptor.permission {
-                    Image(systemName: "lock")
+                if let need = descriptor.permission {
+                    Image(systemName: need.without == .refused ? "lock" : "lock.open")
                         .foregroundStyle(.secondary)
-                        .help("Needs the \(permission.displayName) permission")
-                        .accessibilityLabel("Needs the \(permission.displayName) permission")
+                        .help(need.sentence)
+                        .accessibilityLabel(need.sentence)
                 }
             }
             Text(descriptor.summary)
@@ -172,16 +172,16 @@ private struct KindHeader: View {
             }
             .font(.callout)
 
-            if let permission = descriptor.permission {
+            if let need = descriptor.permission {
                 Label {
                     Text(
-                        "Needs the \(permission.displayName) permission (\(permission.settingsPane)). Subscribing can make macOS ask for it."
+                        "\(need.sentence) (\(need.permission.settingsPane)). Subscribing can make macOS ask for it."
                     )
                 } icon: {
-                    Image(systemName: "lock")
+                    Image(systemName: need.without == .refused ? "lock" : "lock.open")
                 }
                 .font(.callout)
-                .foregroundStyle(Theme.text(Theme.warn))
+                .foregroundStyle(need.status.text)
             }
 
             DisclosureGroup("Payload type") {
@@ -253,11 +253,11 @@ private struct SubscriptionBar: View {
             if let parameterError {
                 Text(parameterError)
                     .font(.caption)
-                    .foregroundStyle(Theme.text(Theme.critical))
-            } else if case .failed(let reason) = model.streamState {
-                Text(reason)
+                    .foregroundStyle(Status.critical.text)
+            } else if case .failed(let fault) = model.streamState {
+                Text(fault.description)
                     .font(.caption)
-                    .foregroundStyle(Theme.text(Theme.critical))
+                    .foregroundStyle(Status.critical.text)
                     .lineLimit(3)
                     .textSelection(.enabled)
             }
@@ -301,10 +301,10 @@ private struct StreamStatusLabel: View {
                 .foregroundStyle(.secondary)
         case .live:
             Label("Live", systemImage: "dot.radiowaves.left.and.right")
-                .foregroundStyle(Theme.text(Theme.normal))
+                .foregroundStyle(Status.normal.text)
         case .failed:
             Label("Failed", systemImage: "exclamationmark.triangle")
-                .foregroundStyle(Theme.text(Theme.critical))
+                .foregroundStyle(Status.critical.text)
         }
     }
 }
@@ -354,11 +354,11 @@ private struct EmptyCapture: View {
 
     var body: some View {
         switch state {
-        case .failed:
+        case .failed(let fault):
             // The reason is shown under the parameters, next to the fix.
             ContentUnavailableView(
-                "Subscription failed", systemImage: "exclamationmark.triangle",
-                description: Text("Check the parameters against the type above, then subscribe again."))
+                fault.title(.subscription), systemImage: "exclamationmark.triangle",
+                description: Text(fault.explanation(.subscription)))
         case .live, .starting:
             ContentUnavailableView(
                 "Waiting for events", systemImage: "dot.radiowaves.left.and.right",
@@ -442,15 +442,12 @@ private struct JSONRow: View {
 
 // MARK: - Descriptor text
 
-extension EventDescriptor.Permission {
-    var displayName: String {
-        switch self {
-        case .accessibility: return "Accessibility"
-        case .inputMonitoring: return "Input Monitoring"
-        case .location: return "Location Services"
-        case .bluetooth: return "Bluetooth"
-        }
-    }
+extension EventDescriptor.PermissionNeed {
+    /// Kit's `note`, standing alone.
+    var sentence: String { note.prefix(1).uppercased() + note.dropFirst() }
+
+    /// Only a permission the kind can't run without is a warning.
+    var status: Status { without == .refused ? .warning : .neutral }
 }
 
 extension EventDescriptor.Mechanism {

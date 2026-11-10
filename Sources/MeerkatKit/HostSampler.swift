@@ -31,4 +31,22 @@ public enum HostSampler {
 
         return (busy: user + system + nice, total: user + system + idle + nice)
     }
+
+    /// Percent of all cores busy between two `cpuTicks` reads; nil when
+    /// no tick passed or the counters went backwards, which would trap the
+    /// subtraction.
+    public static func usagePercent(from start: (busy: UInt64, total: UInt64), to end: (busy: UInt64, total: UInt64))
+        -> Double?
+    {
+        guard end.total > start.total, end.busy >= start.busy else { return nil }
+        return Double(end.busy - start.busy) / Double(end.total - start.total) * 100
+    }
+
+    /// The 1, 5 and 15 minute load averages. Throws rather than report an
+    /// idle machine.
+    public static func loadAverages() throws -> (Double, Double, Double) {
+        var loads = [Double](repeating: 0, count: 3)
+        guard getloadavg(&loads, 3) == 3 else { throw MeerkatError.loadAverageUnavailable }
+        return (loads[0], loads[1], loads[2])
+    }
 }

@@ -101,7 +101,8 @@ public struct ChurnAccumulator: Sendable {
 /// simply produce no events for this process.
 public final class PathChurnMonitor: Sendable {
     private let accumulator: Mutex<ChurnAccumulator>
-    private let latency: Double
+    /// FSEvents' coalescing window in seconds (`FSEventStream.Options.latency`).
+    private static let latency = 1.0
     private let root: String
 
     /// - Parameters:
@@ -109,17 +110,8 @@ public final class PathChurnMonitor: Sendable {
     ///   - depth: path components kept when bucketing, counted from `/`.
     ///   - home: used only to render `~` in bucket names.
     ///   - exclude: absolute paths whose events are not counted.
-    ///   - latency: FSEvents coalescing window in seconds; see
-    ///     `FSEventStream.Options.latency`.
-    public init(
-        root: String,
-        depth: Int = 6,
-        home: String = NSHomeDirectory(),
-        exclude: [String] = [],
-        latency: Double = 1.0
-    ) {
+    public init(root: String, depth: Int, home: String = NSHomeDirectory(), exclude: [String] = []) {
         self.root = root
-        self.latency = latency
         accumulator = Mutex(ChurnAccumulator(root: root, depth: depth, home: home, exclude: exclude))
     }
 
@@ -127,8 +119,7 @@ public final class PathChurnMonitor: Sendable {
     /// `body`'s result: a churn window over exactly the time another
     /// measurement takes, so the two describe one interval. Blocks as `body`
     /// does; for one-shot CLI use.
-    public func measure<T>(during body: () throws -> T, topBuckets: Int = 12) throws -> (churn: ChurnResult, result: T)
-    {
+    public func measure<T>(topBuckets: Int, during body: () throws -> T) throws -> (churn: ChurnResult, result: T) {
         let (stream, end) = try startStream()
         let started = ContinuousClock.now
         let result: T
@@ -144,7 +135,7 @@ public final class PathChurnMonitor: Sendable {
     }
 
     /// The same measurement without blocking a thread.
-    public func measure(duration: Duration, topBuckets: Int = 12) async throws -> ChurnResult {
+    public func measure(duration: Duration, topBuckets: Int) async throws -> ChurnResult {
         let (stream, end) = try startStream()
         do {
             try await Task.sleep(for: duration)
@@ -167,8 +158,8 @@ public final class PathChurnMonitor: Sendable {
             $0 = ChurnAccumulator(root: $0.root, depth: $0.depth, home: $0.home, exclude: $0.exclude)
         }
         let end = try WindowEnd()
-        let stream = FSEventStream(paths: [root, end.directory], options: .init(latency: latency, markSelf: false)) {
-            events in
+        let options = FSEventStream.Options(latency: Self.latency, markSelf: false)
+        let stream = FSEventStream(paths: [root, end.directory], options: options) { events in
             self.accumulator.withLock { $0.record(events.filter { !end.contains($0.path) }) }
             if events.contains(where: { $0.path == end.marker }) { end.arrived() }
         }

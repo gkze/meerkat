@@ -19,12 +19,14 @@ meerkat-lint [--fix] PATH...
 Directories are searched for `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs` and `.cjs`
 files, skipping hidden directories, `node_modules` and declaration files. Findings print in
 Oxlint's `unix` format. `--fix` applies fixes until none apply (at most 10 passes); formatting is
-left to Oxfmt. Exit status: 0 clean, 1 findings, 2 bad arguments or an unreadable path. A file that
-does not parse is named on stderr and skipped, since Oxlint and the compiler report its errors.
+left to Oxfmt. Exit status: 0 clean, 1 findings, 2 bad arguments, an unreadable path or a fix that
+could not be written (every other file is still checked). A file that does not parse is named on
+stderr and skipped, since Oxlint and the compiler report its errors.
 
 All four rules always run; Oxlint configuration is not read.
-`policy/` holds the Oxlint and Oxfmt policy these rules complete: the root `.oxlintrc.json` extends
-`policy/oxlintrc.json`, and the daemon copies both files into each rules folder.
+`policy/` holds the Oxlint and Oxfmt policy these rules complete. The root `.oxlintrc.json` extends
+`policy/oxlintrc.json`; the daemon writes a copy of it into each rules folder's `.meerkat/`, and
+that folder's `.oxlintrc.json` and `.oxfmtrc.json`, from the policy, when they are missing.
 
 ## Behaviour
 
@@ -36,7 +38,10 @@ a generator, has a `this` parameter, an overload or a namespace merge, is refere
 declaration or from inside another function declaration (which is hoisted, so may call it before its
 line), or is used other than by a direct call. `compact-arrow-returns` parenthesizes a returned
 expression whose first token is `{`, not only an object literal. The two compact rules fire only
-when the result fits 100 columns, Oxfmt's default, which this repository uses.
+when the result fits the print width of the `.oxfmtrc.json` nearest the file, and lay code out with
+its indent. A rules folder's starts as `policy/oxfmtrc.json` and is the author's from then on. What
+it leaves out is Oxfmt's default, as Oxfmt reads it; a file with no `.oxfmtrc.json` above it, or one
+that doesn't parse, keeps to `policy/oxfmtrc.json` (`src/source.rs`).
 
 `rule-exported` follows `import { rule } from "meerkat"`, aliases included, by name. The daemon is
 the authoritative check (it fails a file that creates rules and exports none); this rule catches the
@@ -56,5 +61,5 @@ The port was checked against those JS rules running in npm Oxlint 1.89.0, one ru
 repository: `--fix` output was byte-identical for every file, and every finding had the same
 file and line. To port a change from tsmono, port its test cases into the rule's tests first.
 
-The AST comes from `oxc` 0.155.0 (exact pin), parsed without parenthesized-expression nodes, as in
-the AST Oxlint gives JS plugins.
+The AST comes from `oxc` at its exact pin in `buck2/third_party/rust/Cargo.toml`, parsed without
+parenthesized-expression nodes, as in the AST Oxlint gives JS plugins.

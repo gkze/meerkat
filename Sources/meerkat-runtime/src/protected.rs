@@ -82,6 +82,7 @@ use deno_runtime::deno_io::StdFileResourceInner;
 use deno_runtime::deno_io::fs::{File, FsResult, FsStat, FsStatFs};
 use deno_runtime::deno_permissions::{CheckedPath, CheckedPathBuf, OpenAccessKind};
 use rustix::fs::{Mode, OFlags};
+use rustix::io::Errno;
 
 /// What every call goes to. A static, so an async call's future may borrow
 /// it for as long as the call runs.
@@ -96,13 +97,8 @@ static NAMESPACE: RwLock<()> = RwLock::new(());
 /// `MAXSYMLINKS`.
 const MAXIMUM_LINKS: usize = 32;
 
-/// `ELOOP` (`<sys/errno.h>`), which an `O_NOFOLLOW` open of a symlink fails
-/// with.
-const ELOOP: i32 = 62;
-/// `ENOENT`, which `RealFs` reports such an open as.
-const ENOENT: i32 = 2;
-/// `O_NONBLOCK` (`<sys/fcntl.h>`), as `OpenOptions::custom_flags` takes it.
-const O_NONBLOCK: i32 = 0x4;
+/// `O_NONBLOCK`, as `OpenOptions::custom_flags` takes it.
+const O_NONBLOCK: i32 = OFlags::NONBLOCK.bits().cast_signed();
 
 /// The paths no rule's code may change (the file's `deny_write`), and those
 /// it may not read either (its `deny_read`), as the daemon names them.
@@ -292,8 +288,10 @@ fn open_std(path: &CheckedPath, options: OpenOptions) -> FsResult<std::fs::File>
     let open = |options: OpenOptions| {
         let options = OpenOptions { custom_flags: Some(options.custom_flags.unwrap_or(0) | O_NONBLOCK), ..options };
         match open_options_for_checked_path(options, path).open(path) {
-            Err(error) if path.canonicalized() && error.raw_os_error() == Some(ELOOP) => {
-                Err(io::Error::from_raw_os_error(ENOENT))
+            // How an `O_NOFOLLOW` open of a symlink fails, and how `RealFs`
+            // reports it.
+            Err(error) if path.canonicalized() && error.raw_os_error() == Some(Errno::LOOP.raw_os_error()) => {
+                Err(Errno::NOENT.into())
             }
             opened => opened,
         }

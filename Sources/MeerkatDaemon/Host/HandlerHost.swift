@@ -52,16 +52,22 @@ public struct HandlerRuntime: Sendable {
 actor HandlerHost {
     enum InvocationResult: Sendable, Equatable {
         case completed(HandlerError?)
-        /// The handler's promise did not settle in time, or its own code held
-        /// the thread past the deadline (which ended the host). Nothing else
-        /// a handler does is charged to its invocation: a fault with an
-        /// invocation is an overrun (protocol.rs, `Fault`).
+        /// The handler's promise did not settle in time. Nothing else a
+        /// handler does is charged to its invocation.
         case timedOut
+        /// The handler's own code held the thread past the deadline, which
+        /// ended the host. The engine charges it where it counts the fault
+        /// (`Event.fault`, which names the rule), in one step, so the failure
+        /// and the fault are never seen apart.
+        case overran
         /// The host ended for a reason that is not this rule's fault (another
         /// file's code ended it, or it failed). Not counted against the rule.
         case interrupted(String)
         /// A reload retired this host while the invocation ran.
         case superseded
+        /// The event could not be sent to the handler, which never ran; why,
+        /// in the encoder's words. Not counted against the rule.
+        case undeliverable(String)
     }
 
     enum HostError: Error, CustomStringConvertible {
@@ -77,6 +83,10 @@ actor HandlerHost {
     /// One entry's `loaded` result, its definitions decoded.
     struct LoadedEntry: Sendable {
         let entry: String
+        /// The entry's file (`RuleCompiler.entryFile`), which the host is
+        /// told to name it by in every message, and each of its rules' ids
+        /// begin with.
+        let file: String
         /// Each rule's definition with `handle` removed, as the author wrote it.
         let rules: [JSONValue]
         let error: HandlerError?
@@ -90,7 +100,8 @@ actor HandlerHost {
         /// A rule file's code ended the host, which is stopping. `rule` when
         /// it was that rule's handler running its own code; otherwise the
         /// runtime knows only the file (a timer, or a handler's continuation
-        /// after an `await`). `reason` follows the name.
+        /// after an `await`). `reason` follows the name; `exited`, which
+        /// comes next, has the sentence whole.
         case fault(file: String, rule: String?, reason: String)
         case exited(reason: String)
         /// Everything sent before this has been handled (`drainEvents`).
@@ -109,13 +120,13 @@ actor HandlerHost {
     private var started = false
     private var ready: CheckedContinuation<Void, any Error>?
     private var loading: CheckedContinuation<[LoadedEntry], any Error>?
-    private var loadEntries: Set<String> = []
+    /// Each entry the load asked for, with its file.
+    private var loadEntries: [String: String] = [:]
     private var loadBackstop: Task<Void, Never>?
     private var invocations: [UInt64: Invocation] = [:]
     private var nextInvocation: UInt64 = 1
     private var loadedFiles = 0
     private var exitReason: String?
-    private var killReason: String?
     private var outcomeForPending: InvocationResult?
     /// Set once the host reported a fault: it is stopping, so nothing it
     /// asks for any more is acted on.
@@ -142,6 +153,9 @@ actor HandlerHost {
     /// Most text one message from the host may carry: the runtime's own
     /// limit, which its ops keep rule code within.
     static let maximumMessageBytes = Int(maximumMessageTextBytes())
+    /// Longest log line, error message or stack the runtime sends, in bytes:
+    /// the limit for every line of a rule's log.
+    static let maximumLogLineBytes = Int(MeerkatRuntimeBindings.maximumTextBytes())
     /// Time allowed between starting the host and its `ready`.
     static let startupDeadline: Duration = .seconds(10)
     /// Beyond a deadline the host itself enforces, how long to wait before
@@ -221,9 +235,9 @@ actor HandlerHost {
     }
 
     /// Stops the host. Pending invocations complete with `.superseded` when
-    /// a reload retired the host, `.interrupted` otherwise.
+    /// a reload retired the host, `.interrupted` otherwise. The runtime ends
+    /// with the first reason it was given, or the fault that came first.
     func stop(reason: String, superseded: Bool = false) {
-        killReason = killReason ?? reason
         if outcomeForPending == nil { outcomeForPending = superseded ? .superseded : .interrupted(reason) }
         transport.stop(reason: reason)
     }
@@ -232,15 +246,18 @@ actor HandlerHost {
 
     /// Loads the rule set. The runtime enforces `entryDeadline` on each
     /// file's top-level code and reports a file that overran (or failed) in
-    /// its result, without stopping the others.
+    /// its result, without stopping the others. At most one result per
+    /// entry asked for, and none for anything else. `entries` are module
+    /// ids; the host names each by its file, which only the daemon derives.
     func load(
         modules: [RuleCompiler.Module], entries: [String], rejected: [String: String],
         entryDeadline: Duration
     ) async throws -> [LoadedEntry] {
-        loadEntries = Set(entries)
+        let named = entries.map { HostEntry(module: $0, file: RuleCompiler.entryFile($0)) }
+        loadEntries = Dictionary(named.map { ($0.module, $0.file) }) { first, _ in first }
         send(
             .load(
-                modules: modules.map { HostModule(id: $0.id, code: $0.code) }, entries: entries, rejected: rejected,
+                modules: modules.map { HostModule(id: $0.id, code: $0.code) }, entries: named, rejected: rejected,
                 entryDeadlineSeconds: Self.seconds(entryDeadline),
                 effects: EffectCatalog.standard.runtimeTable.canonicalString))
         return try await withCheckedThrowingContinuation {
@@ -272,12 +289,18 @@ actor HandlerHost {
         if dying { return .interrupted("the handler host is restarting") }
         let invocation = nextInvocation
         nextInvocation += 1
-        guard let event = try? String(decoding: JSONEncoder().encode(event), as: UTF8.self) else {
-            // Encoding failed (a non-finite number in the payload, say): this
-            // event cannot be delivered, which is not the host's problem.
-            return .completed(HandlerError(message: "the event could not be encoded for the handler"))
+        let text: String
+        do {
+            text = try String(decoding: JSONEncoder().encode(event), as: UTF8.self)
+        } catch EncodingError.invalidValue(_, let context) {
+            // A non-finite number in the payload, say: neither the host's
+            // problem nor the rule's.
+            let path = context.codingPath.map { $0.intValue.map { "[\($0)]" } ?? $0.stringValue }.joined(separator: ".")
+            return .undeliverable("the event has no JSON form at \(path): \(context.debugDescription)")
+        } catch {
+            return .undeliverable("the event has no JSON form: \(error)")
         }
-        guard send(.invoke(invocation: invocation, rule: rule, event: event, timeoutSeconds: Self.seconds(timeout)))
+        guard send(.invoke(invocation: invocation, rule: rule, event: text, timeoutSeconds: Self.seconds(timeout)))
         else { return .interrupted(exitReason ?? "the handler host stopped") }
         return await withCheckedContinuation { (continuation: CheckedContinuation<InvocationResult, Never>) in
             invocations[invocation] = Invocation(
@@ -345,15 +368,21 @@ actor HandlerHost {
             ready?.resume()
             ready = nil
         case .loaded(let entries):
-            guard let results = try? entries.map(LoadedEntry.init) else {
-                stop(reason: "sent an undecodable message")
+            // The host runs user code: one result per entry this load asked
+            // for, and nothing else, is what callers get.
+            var unreported = loadEntries
+            let results: [LoadedEntry]
+            do {
+                results = try entries.compactMap { result in
+                    try unreported.removeValue(forKey: result.entry).map { try LoadedEntry(result, file: $0) }
+                }
+            } catch {
+                stop(reason: "sent an undecodable message: \(error)")
                 return
             }
             loadBackstop?.cancel()
             loadBackstop = nil
-            // Only entries this load asked for count; the engine checks the
-            // results the same way.
-            loadedFiles = results.filter { $0.error == nil && loadEntries.contains($0.entry) }.count
+            loadedFiles = results.filter { $0.error == nil }.count
             loading?.resume(returning: results)
             loading = nil
         case .started(let invocation):
@@ -368,19 +397,21 @@ actor HandlerHost {
             finish(invocation, .completed(error))
         case .invocationTimedOut(let invocation):
             finish(invocation, .timedOut)
-        case .fault(let file, let rule, let invocation, _, let reason):
+        case .fault(let file, let rule, let invocation, let kind, let reason):
             dying = true
-            killReason = "\(rule ?? file) \(reason)"
-            if let invocation {
+            if kind == .overran, let invocation {
                 // A handler's own code held the thread past its timeout: its
                 // invocation fails with it. (Gone already only if a reload
                 // superseded it meanwhile.)
-                finish(invocation, .timedOut)
+                finish(invocation, .overran)
             }
             eventSink.yield(.fault(file: file, rule: rule, reason: reason))
         case .effect(let call, let invocation, let rule, let text):
-            guard let request = try? JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)) else {
-                stop(reason: "sent an undecodable message")
+            let request: JSONValue
+            do {
+                request = try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8))
+            } catch {
+                stop(reason: "sent an undecodable effect request: \(error)")
                 return
             }
             // Only the handler that is running, for its own rule, may ask for
@@ -425,9 +456,8 @@ actor HandlerHost {
     // MARK: - Termination
 
     /// The runtime stopped, after delivering everything it sent.
-    private func terminated(_ status: String) {
+    private func terminated(_ reason: String) {
         guard exitReason == nil else { return }
-        let reason = killReason ?? status
         exitReason = reason
         ready?.resume(throwing: HostError.exited(reason))
         ready = nil
@@ -444,8 +474,9 @@ actor HandlerHost {
 }
 
 extension HandlerHost.LoadedEntry {
-    init(_ result: EntryResult) throws {
+    init(_ result: EntryResult, file: String) throws {
         entry = result.entry
+        self.file = file
         rules = try result.rules.map { try JSONDecoder().decode(JSONValue.self, from: Data($0.utf8)) }
         error = result.error
     }

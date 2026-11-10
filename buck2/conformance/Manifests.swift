@@ -76,8 +76,15 @@ struct PackageManifest: Decodable {
                 let name: String
                 let condition: Condition?
             }
+            /// `{"revision": [sha]}`, `{"exact": [version]}` or a range,
+            /// which neither field reads.
+            struct Requirement: Decodable {
+                let revision: [String]?
+                let exact: [String]?
+            }
             let identity: String
             let traits: [Request]?
+            let requirement: Requirement?
         }
         let sourceControl: [SourceControl]?
     }

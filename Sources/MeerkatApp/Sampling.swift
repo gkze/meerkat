@@ -4,9 +4,9 @@ import SwiftUI
 // MARK: - Rates
 
 /// How often the Overview asks the daemon for each signal it polls. Presets
-/// and the Custom choice both resolve to one of these, and everything that
-/// depends on the spacing (chart history, footer) is derived
-/// here, so they stay consistent with each other.
+/// and the Custom choice both resolve to one of these; each feed's
+/// parameters are built from them in `MetricsModel.feeds`, and the chart
+/// history from them here.
 ///
 /// The daemon shares a source between subscribers only when their parameters
 /// match (`EventHub` keys instances by kind plus parameters), so rates that
@@ -33,6 +33,8 @@ struct SamplingRates: Codable, Equatable {
     /// publishes new readings only every few seconds, and 5 s is the
     /// event's shortest interval.
     static let batteryInterval = 5.0
+    /// `power.assertions`, for the Power page, which no preset changes.
+    static let assertionInterval = 5.0
 
     static let relaxed = SamplingRates(cpu: 1, chart: 2, rows: 2, rank: 10, churnEvery: 60)
     static let normal = SamplingRates(cpu: 1, chart: 1, rows: 1, rank: 5, churnEvery: 25)
@@ -52,26 +54,6 @@ struct SamplingRates: Codable, Equatable {
             "cpu " + SamplingStep.rate(cpu), "charts " + SamplingStep.rate(chart),
             "rows " + SamplingStep.rate(rows), "rank " + SamplingStep.rate(rank),
         ].joined(separator: "  ·  ")
-    }
-
-    /// The parameters each Overview subscription sends, built in one place so
-    /// the menus validate exactly what the daemon will be asked for.
-    var cpuParameters: IntervalParameters<CPUSampleEvent> { .init(interval: cpu) }
-    var chartParameters: IntervalParameters<MemorySampleEvent> { .init(interval: chart) }
-    var diskParameters: IntervalParameters<DiskSampleEvent> { .init(interval: chart) }
-    var networkParameters: IntervalParameters<NetworkSampleEvent> { .init(interval: chart) }
-    static var batteryParameters: IntervalParameters<BatterySampleEvent> { .init(interval: batteryInterval) }
-    /// The Overview cards' three rows, by CPU and by disk I/O.
-    func processParameters() -> ProcessTopParameters {
-        .init(interval: rows, rankInterval: rank, count: 3, ioCount: 3)
-    }
-    /// Every process, for the resource pages' tables, which sort it.
-    var listParameters: IntervalParameters<ProcessListEvent> { .init(interval: rank) }
-    static var assertionParameters: IntervalParameters<PowerAssertionsEvent> { .init(interval: 5) }
-    /// No root: the daemon measures its file scope (meerkat.json `files`,
-    /// by default the whole startup volume).
-    var churnParameters: FSChurnParameters {
-        .init(window: Self.churnWindow, every: churnEvery, depth: 5)
     }
 
     // MARK: Storage
@@ -214,9 +196,9 @@ enum SamplingField: CaseIterable, Identifiable {
     private static let ladder: [Double] = [0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600]
 
     /// The steps this field may take, given the other rates: the ladder,
-    /// filtered by the event's own `validate()` (the check the daemon runs on
-    /// subscribe, so a menu cannot offer what the daemon would reject) and by
-    /// the live-view cap.
+    /// filtered by the `validate()` of every feed it sets (the check the
+    /// daemon runs on subscribe, so a menu cannot offer what the daemon
+    /// would reject) and by the live-view cap.
     /// The current value is kept when valid even off the ladder (Normal's
     /// 25 s churn period), so the menu always contains its selection.
     func options(in rates: SamplingRates) -> [Double] {
@@ -243,21 +225,8 @@ enum SamplingField: CaseIterable, Identifiable {
     }
 
     private func isValid(_ rates: SamplingRates) -> Bool {
-        do {
-            switch self {
-            case .cpu: try rates.cpuParameters.validate()
-            case .chart:
-                try rates.chartParameters.validate()
-                try rates.diskParameters.validate()
-                try rates.networkParameters.validate()
-            case .rows, .rank:
-                try rates.processParameters().validate()
-                try rates.listParameters.validate()
-            case .churn: try rates.churnParameters.validate()
-            }
-            return true
-        } catch {
-            return false
+        MetricsModel.feeds.filter { $0.rates.contains(self) }.allSatisfy { feed in
+            (try? feed.validate(rates)) != nil
         }
     }
 }

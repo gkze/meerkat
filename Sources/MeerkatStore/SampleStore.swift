@@ -55,15 +55,22 @@ public enum SampleStoreError: Error, CustomStringConvertible {
     }
 }
 
-/// `insert` committed the sample, but applying the store's limits afterwards
-/// failed: the sample is kept, and the store may stay over its budget until
-/// a later insert applies them. Distinct from an insert that failed, which
-/// a writer may repeat; repeating this one would record the sample twice.
+/// The sample was committed, but bounding the store afterwards failed: its
+/// age and size limits (`insert`), or the writer's `retain` (`record`). The
+/// sample is kept, and the store may stay over its bounds until a later
+/// write applies them. Distinct from an insert that failed, which a writer
+/// may repeat; repeating this one would record the sample twice.
 public struct LimitsNotAppliedError: Error, CustomStringConvertible {
     public let cause: any Error
+    /// The writer's `retain` when it was that which failed; nil for the
+    /// store's own limits.
+    public var retain: Int? = nil
 
     public var description: String {
-        "the sample was recorded, but the store's age and size limits could not be applied: \(cause)"
+        guard let retain else {
+            return "the sample was recorded, but the store's age and size limits could not be applied: \(cause)"
+        }
+        return "the sample was recorded, but keeping only the newest \(retain) under its label failed: \(cause)"
     }
 }
 
@@ -198,18 +205,24 @@ public final class SampleStore {
             self.init(maxAge: TimeInterval(maxAgeDays) * 86_400, maxBytes: maxMegabytes * 1_000_000)
         }
 
-        public static let standard = Limits(
-            maxAgeDays: SampleBudget.maxAgeDays, maxMegabytes: SampleBudget.maxMegabytes)
+        /// The budget `meerkat.json` sets.
+        public init(_ budget: SampleBudget) {
+            self.init(maxAgeDays: budget.maxAgeDays, maxMegabytes: budget.maxMegabytes)
+        }
+
+        public static let standard = Limits(SampleBudget())
     }
 
     private let dbQueue: DatabaseQueue
     public let limits: Limits
 
-    /// Opens the store at `path` for writing, creating it if the file is
-    /// missing or empty. A file that holds anything but this build's schema
-    /// is refused unchanged (`IncompatibleStoreError`).
+    /// Opens the store at `path` for writing, creating it, and the folder it
+    /// is in, if missing or empty. A file that holds anything but this
+    /// build's schema is refused unchanged (`IncompatibleStoreError`).
     public init(path: String, limits: Limits = .standard) throws {
         self.limits = limits
+        try FileManager.default.createDirectory(
+            at: URL(fileURLWithPath: path).deletingLastPathComponent(), withIntermediateDirectories: true)
         // GRDB enables foreign keys by default, which the cascades rely on.
         // The CLI and the daemon can write the same file, so a writer waits
         // for the other instead of failing.
@@ -400,8 +413,11 @@ public final class SampleStore {
                 try SampleRow.insert { draft }.execute(db)
                 let sampleID = Int(db.lastInsertedRowID)
 
-                let processRows = try sample.processes.map { process in
-                    let identity = process.identity
+                // A sample's rows come from the process table, so each names
+                // a process; one decoded from elsewhere that names none has
+                // no process to be stored under.
+                let processRows = try sample.processes.compactMap { process -> ProcessSampleRow? in
+                    guard let identity = process.identity else { return nil }
                     let executableID = try Self.executableID(name: process.name, path: process.path, db)
                     let processID = try Self.processID(
                         pid: Int(identity.pid), startedMicroseconds: Int(identity.startMicroseconds),
@@ -490,6 +506,28 @@ public final class SampleStore {
         if let id = try PathRow.where({ $0.path.eq(path) }).select(\.id).fetchOne(db) { return id }
         try PathRow.insert { PathRow.Draft(path: path) }.execute(db)
         return Int(db.lastInsertedRowID)
+    }
+
+    /// How a writer records a sample (`meerkat sample --db`, the
+    /// `store.record` effect): `insert`, then `retainNewest(retain)` under
+    /// the same label. A sample that was committed still gets its
+    /// retention; a bound that failed after the commit is
+    /// `LimitsNotAppliedError`, the store's own limits first.
+    public func record(_ sample: SystemSample, label: String, retain: Int?) throws {
+        var unapplied: LimitsNotAppliedError?
+        do {
+            try insert(label: label, sample: sample)
+        } catch let error as LimitsNotAppliedError {
+            unapplied = error
+        }
+        if let retain {
+            do {
+                try retainNewest(retain, label: label)
+            } catch {
+                unapplied = unapplied ?? LimitsNotAppliedError(cause: error, retain: retain)
+            }
+        }
+        if let unapplied { throw unapplied }
     }
 
     // MARK: - Retention

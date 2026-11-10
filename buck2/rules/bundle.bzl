@@ -1,12 +1,19 @@
-# Meerkat.app's parts and the command that assembles, signs and installs
-# them (Tools/Bundler).
+# The command that assembles, signs and installs Meerkat.app from its parts
+# (Tools/Bundler/parts.bzl).
 #
 # Buck builds everything the bundle holds; the bundler only lays it out,
 # compiles the icon, writes the plists and signs, which needs the keychain's
 # identity and so cannot be a build action. `buck2 run //Tools/Bundler:app`
 # (`-- --install` to install) runs it with each part's path.
 
+load("//Tools/Bundler:parts.bzl", "PARTS")
 load("//buck2/rules/swift:defs.bzl", "SwiftResourcesInfo")
+
+# What the bundler copies in: the parts, and the notices generated from
+# them, each passed as `--<name>` (`-` for `_`), the option Bundler.swift
+# declares for it. The app is in every bundle; the full bundle needs the
+# rest (Bundler.swift's `validate`), which the preview leaves out.
+_INPUTS = list(PARTS) + ["notices"]
 
 def _directory_impl(ctx: AnalysisContext) -> list[Provider]:
     return [DefaultInfo(default_output = ctx.actions.copied_dir(ctx.label.name, ctx.attrs.entries))]
@@ -41,17 +48,10 @@ _mode_transition = transition(
 
 def _bundle_command_impl(ctx: AnalysisContext) -> list[Provider]:
     args = cmd_args(ctx.attrs.bundler[RunInfo])
-    for option, part in [
-        ("--app", ctx.attrs.app),
-        ("--cli", ctx.attrs.cli),
-        ("--daemon", ctx.attrs.daemon),
-        ("--typescript", ctx.attrs.typescript),
-        ("--lint-toolchain", ctx.attrs.lint_toolchain),
-        ("--notices", ctx.attrs.notices),
-        ("--runtime-types", ctx.attrs.runtime_types),
-    ]:
+    for name in _INPUTS:
+        part = getattr(ctx.attrs, name)
         if part:
-            args.add(option, part[DefaultInfo].default_outputs[0])
+            args.add("--" + name.replace("_", "-"), part[DefaultInfo].default_outputs[0])
     # The resource bundles of the modules the app links, for
     # Contents/Resources, where their `Bundle.module` looks.
     if SwiftResourcesInfo in ctx.attrs.app:
@@ -74,20 +74,14 @@ def _bundle_command_impl(ctx: AnalysisContext) -> list[Provider]:
 # `--output`, `--notarize`, `--archive`).
 bundle_command = rule(
     impl = _bundle_command_impl,
-    attrs = {
+    attrs = {name: attrs.option(attrs.dep(), default = None) for name in _INPUTS} | {
         "app": attrs.dep(),
         "bundler": attrs.exec_dep(providers = [RunInfo]),
         "checks": attrs.list(attrs.dep(), default = []),
-        "cli": attrs.option(attrs.dep(), default = None),
-        "daemon": attrs.option(attrs.dep(), default = None),
         "developer_dir": attrs.string(),
-        "lint_toolchain": attrs.option(attrs.dep(), default = None),
         "minimum_macos": attrs.string(),
         "mode": attrs.enum(["debug", "release"]),
-        "notices": attrs.option(attrs.dep(), default = None),
         "preview": attrs.bool(default = False),
-        "runtime_types": attrs.option(attrs.dep(), default = None),
-        "typescript": attrs.option(attrs.dep(), default = None),
         "version": attrs.string(),
     },
     cfg = _mode_transition,

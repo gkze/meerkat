@@ -174,7 +174,7 @@ extension ProcessDelta: SchemaDescribed {
     public var diskMB: Double { (diskReadMB ?? 0) + (diskWriteMB ?? 0) }
 
     /// `windowSeconds`, never zero: what the window's totals are rates over.
-    private var rateWindow: Double { max(windowSeconds, 0.001) }
+    private var rateWindow: Double { max(windowSeconds, ProcessSnapshot.shortestWindow) }
 
     /// Each total over the window. Nil, like the total, when this user
     /// cannot read the counter.
@@ -183,8 +183,9 @@ extension ProcessDelta: SchemaDescribed {
     public var diskReadMBps: Double? { diskReadMB.map { $0 / rateWindow } }
     public var diskMBps: Double { diskMB / rateWindow }
 
-    /// Pid plus start time: the process instance.
-    public var identity: ProcessIdentity { ProcessIdentity(pid: pid, startedAt: startedAt) }
+    /// Pid plus start time: the process instance; nil for a row from JSON
+    /// whose start time no process can have.
+    public var identity: ProcessIdentity? { ProcessIdentity(pid: pid, startedAt: startedAt) }
 
     public static var schema: TypeSchema {
         .named(
@@ -224,13 +225,12 @@ public struct ProcessHotParameters: EventParameters {
 
         /// nil when the counter is unknown for this process.
         func value(of row: ProcessDelta) -> Double? {
-            let window = max(row.windowSeconds, 0.001)
             switch self {
-            case .cpuPercent: return row.cpuPct
-            case .diskWriteMBps: return row.diskWriteMB.map { $0 / window }
-            case .diskReadMBps: return row.diskReadMB.map { $0 / window }
-            case .footprintMB: return row.footprintMB
-            case .energyWatts: return row.energyJoules.map { $0 / window }
+            case .cpuPercent: row.cpuPct
+            case .diskWriteMBps: row.diskWriteMBps
+            case .diskReadMBps: row.diskReadMBps
+            case .footprintMB: row.footprintMB
+            case .energyWatts: row.energyWatts
             }
         }
     }
@@ -240,43 +240,34 @@ public struct ProcessHotParameters: EventParameters {
     public var sustainSeconds: Double
     public var interval: Double
 
-    public init(metric: Metric, above: Double, sustainSeconds: Double = 0, interval: Double = 5) {
+    public static let defaultSustainSeconds = 0.0
+    public static let defaultInterval = 5.0
+
+    public init(
+        metric: Metric, above: Double, sustainSeconds: Double = defaultSustainSeconds,
+        interval: Double = defaultInterval
+    ) {
         self.metric = metric
         self.above = above
         self.sustainSeconds = sustainSeconds
         self.interval = interval
     }
 
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        metric = try container.decode(Metric.self, forKey: .metric)
-        above = try container.decode(Double.self, forKey: .above)
-        sustainSeconds = try container.decodeIfPresent(Double.self, forKey: .sustainSeconds) ?? 0
-        interval = try container.decodeIfPresent(Double.self, forKey: .interval) ?? 5
-    }
-
-    public func validate() throws {
-        try requireInterval(interval, in: 1...3600)
-        guard above.isFinite, above >= 0 else {
-            throw EventError.invalidParameters("\"above\" must be a non-negative number")
-        }
-        guard sustainSeconds.isFinite, (0...86_400).contains(sustainSeconds) else {
-            throw EventError.invalidParameters("\"sustainSeconds\" must be between 0 and 86400")
-        }
-    }
-
-    public static var schema: TypeSchema {
-        .object(
-            ObjectSchema([
-                .field(
-                    "metric", Metric.self,
-                    doc: "Which per-process value to watch. Rates are per second over the sample window."),
-                .field("above", Double.self, doc: "Threshold; the episode starts when the value stays above it."),
-                .optional(
-                    "sustainSeconds", Double.self,
-                    doc: "How long the value must stay above `above`. Default 0 (one sample)."),
-                .optional("interval", Double.self, doc: "Seconds between process-table samples, 1–3600. Default 5."),
-            ]))
+    public static var objectSchema: ObjectSchema {
+        ObjectSchema([
+            .field(
+                "metric", Metric.self,
+                doc: "Which per-process value to watch. Rates are per second over the sample window."),
+            ObjectSchema.Field(
+                "above", .bounded(NumberBounds(minimum: 0)),
+                doc: "Threshold; the episode starts when the value stays above it."),
+            ObjectSchema.Field(
+                "sustainSeconds", .bounded(NumberBounds(0...86_400)), default: .number(defaultSustainSeconds),
+                doc: "How long the value must stay above `above`; 0 is one sample"),
+            ObjectSchema.Field(
+                "interval", .bounded(NumberBounds(1...3600)), default: .number(defaultInterval),
+                doc: "Seconds between process-table samples"),
+        ])
     }
 
     public static var examples: [Self] {
@@ -334,7 +325,7 @@ struct HotProcessDetector: Sendable {
         var seen = Set<ProcessIdentity>()
 
         for row in rows {
-            let identity = row.identity
+            guard let identity = row.identity else { continue }
             seen.insert(identity)
             // An unknown value is not above the threshold.
             let value = parameters.metric.value(of: row)
@@ -424,9 +415,12 @@ public struct ProcessTopParameters: EventParameters {
     public static let defaultCount = 5
     public static let defaultIOCount = 3
     public static let defaultMemoryCount = 0
+    /// Seconds between refreshes.
     static let intervalRange = 0.5...60.0
-    static let countRange = 1...100
-    static let optionalCountRange = 0...100
+    static let intervalBounds = NumberBounds(intervalRange)
+    /// Seconds between rankings, and the most a listing (`process.list`)
+    /// may wait: a listing is one ranking's work.
+    static let rankIntervalMaximum = 600.0
 
     public init(
         interval: Double = defaultInterval, rankInterval: Double = defaultRankInterval, count: Int = defaultCount,
@@ -439,52 +433,35 @@ public struct ProcessTopParameters: EventParameters {
         self.memoryCount = memoryCount
     }
 
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        interval = try container.decodeIfPresent(Double.self, forKey: .interval) ?? Self.defaultInterval
-        rankInterval = try container.decodeIfPresent(Double.self, forKey: .rankInterval) ?? Self.defaultRankInterval
-        count = try container.decodeIfPresent(Int.self, forKey: .count) ?? Self.defaultCount
-        ioCount = try container.decodeIfPresent(Int.self, forKey: .ioCount) ?? Self.defaultIOCount
-        memoryCount = try container.decodeIfPresent(Int.self, forKey: .memoryCount) ?? Self.defaultMemoryCount
+    public func validateRelations() throws {
+        guard rankInterval >= interval else {
+            throw EventError.invalidParameters(
+                "rankInterval must be at least interval (\(NumberBounds.format(interval)))")
+        }
     }
 
-    public func validate() throws {
-        try requireInterval(interval, in: Self.intervalRange)
-        try requireInterval(rankInterval, name: "rankInterval", in: interval...600)
-        try requireCount(count, name: "count", in: Self.countRange)
-        try requireCount(ioCount, name: "ioCount", in: Self.optionalCountRange)
-        try requireCount(memoryCount, name: "memoryCount", in: Self.optionalCountRange)
-    }
-
-    public static var schema: TypeSchema {
-        .object(
-            ObjectSchema([
-                .optional(
-                    "interval", Double.self,
-                    doc:
-                        "Seconds between refreshes of the ranked rows, \(NumberBounds.format(intervalRange.lowerBound))–\(NumberBounds.format(intervalRange.upperBound)). Default \(NumberBounds.format(defaultInterval))."
-                ),
-                .optional(
-                    "rankInterval", Double.self,
-                    doc:
-                        "Seconds between full re-rankings, at least `interval`. Default \(NumberBounds.format(defaultRankInterval))."
-                ),
-                .optional(
-                    "count", Int.self,
-                    doc:
-                        "Rows ranked by CPU, \(countRange.lowerBound)–\(countRange.upperBound). Default \(defaultCount)."
-                ),
-                .optional(
-                    "ioCount", Int.self,
-                    doc:
-                        "Rows ranked by disk I/O, \(optionalCountRange.lowerBound)–\(optionalCountRange.upperBound). Default \(defaultIOCount)."
-                ),
-                .optional(
-                    "memoryCount", Int.self,
-                    doc:
-                        "Rows ranked by memory footprint, \(optionalCountRange.lowerBound)–\(optionalCountRange.upperBound). Default \(defaultMemoryCount). Only processes whose footprint this user can read (their own) rank."
-                ),
-            ]))
+    public static var objectSchema: ObjectSchema {
+        typealias Field = ObjectSchema.Field
+        return ObjectSchema([
+            Field(
+                "interval", .bounded(intervalBounds), default: .number(defaultInterval),
+                doc: "Seconds between refreshes of the ranked rows"),
+            Field(
+                "rankInterval",
+                .bounded(NumberBounds(intervalRange.lowerBound...rankIntervalMaximum)),
+                default: .number(defaultRankInterval), doc: "Seconds between full re-rankings, at least `interval`"),
+            Field(
+                "count", .bounded(.integer(1...100)), default: .number(Double(defaultCount)),
+                doc: "Rows ranked by CPU"),
+            Field(
+                "ioCount", .bounded(.integer(0...100)), default: .number(Double(defaultIOCount)),
+                doc: "Rows ranked by disk I/O"),
+            Field(
+                "memoryCount", .bounded(.integer(0...100)), default: .number(Double(defaultMemoryCount)),
+                doc:
+                    "Rows ranked by memory footprint. Only processes whose footprint this user can read (their own) rank."
+            ),
+        ])
     }
 
     public static var examples: [Self] { [Self()] }
@@ -617,7 +594,7 @@ final class ProcessTopSource: EventSource {
             defer { state.lastFull = snapshot }
             guard let previous = state.lastFull else { return nil }
             let deltas = ProcessSampler.deltas(previous: previous, current: snapshot, top: .max)
-            let window = max(snapshot.takenAt.timeIntervalSince(previous.takenAt), 0.001)
+            let window = snapshot.window(since: previous)
             // Of the processes whose counters are known.
             state.rates = (
                 deltas.reduce(0) { $0 + ($1.diskReadMB ?? 0) } / window,
@@ -639,7 +616,7 @@ final class ProcessTopSource: EventSource {
                         .sorted { ($0.footprintMB ?? 0) > ($1.footprintMB ?? 0) }
                         .prefix(parameters.memoryCount))
             }
-            state.focus = state.cpu.map(\.identity)
+            state.focus = state.cpu.compactMap(\.identity)
             let focus = Set(state.focus)
             state.focusBaseline = ProcessSnapshot(
                 takenAt: snapshot.takenAt,
@@ -772,7 +749,8 @@ final class ProcessListSource: EventSource {
 public enum ProcessListEvent: EventKind, IntervalParameterDefaults {
     public static let defaultInterval = 5.0
     /// `process.top`'s ranking bounds: a listing is one ranking's work.
-    public static let intervalRange = 0.5...600.0
+    public static let intervalRange =
+        ProcessTopParameters.intervalRange.lowerBound...ProcessTopParameters.rankIntervalMaximum
 
     public static let descriptor = EventDescriptor(
         "process.list",
@@ -801,39 +779,27 @@ public struct ProcessSampleParameters: ProcessObservingParameters {
     /// Seconds between samples.
     public var interval: Double
 
-    public init(pid: Int32, startedAt: Double, interval: Double = 1) {
+    public static let defaultInterval = 1.0
+
+    public init(pid: Int32, startedAt: Double, interval: Double = defaultInterval) {
         self.pid = pid
         self.startedAt = startedAt
         self.interval = interval
     }
 
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        pid = try container.decode(Int32.self, forKey: .pid)
-        startedAt = try container.decode(Double.self, forKey: .startedAt)
-        interval = try container.decodeIfPresent(Double.self, forKey: .interval) ?? 1
-    }
+    public var observedProcess: ProcessIdentity? { ProcessIdentity(pid: pid, startedAt: startedAt) }
 
-    public var observedProcess: ProcessIdentity { ProcessIdentity(pid: pid, startedAt: startedAt) }
-
-    public func validate() throws {
-        guard pid > 0 else { throw EventError.invalidParameters("\"pid\" must be a process id, got \(pid)") }
-        guard ProcessIdentity.startedAtRange.contains(startedAt) else {
-            throw EventError.invalidParameters("\"startedAt\" must be a process's start time, in epoch milliseconds")
-        }
-        try requireInterval(interval, in: 0.5...60)
-    }
-
-    public static var schema: TypeSchema {
-        .object(
-            ObjectSchema([
-                .field("pid", Int32.self, doc: "The process to follow."),
-                .field(
-                    "startedAt", Double.self,
-                    doc: "Its start time, epoch milliseconds (ProcessUsage.startedAt), so a reused pid is not followed."
-                ),
-                .optional("interval", Double.self, doc: "Seconds between samples, 0.5–60. Default 1."),
-            ]))
+    public static var objectSchema: ObjectSchema {
+        ObjectSchema([
+            ObjectSchema.Field("pid", .bounded(.integer(1...Int(Int32.max))), doc: "The process to follow."),
+            ObjectSchema.Field(
+                "startedAt", .bounded(NumberBounds(ProcessIdentity.startedAtRange)),
+                doc: "Its start time, epoch milliseconds (ProcessUsage.startedAt), so a reused pid is not followed."
+            ),
+            ObjectSchema.Field(
+                "interval", .bounded(NumberBounds(0.5...60)), default: .number(defaultInterval),
+                doc: "Seconds between samples"),
+        ])
     }
 
     public static var examples: [Self] { [Self(pid: 4242, startedAt: 1_792_887_367_209.92)] }
@@ -872,10 +838,10 @@ final class ProcessSampleSource: EventSource {
     private let identity: ProcessIdentity
     private let state = Mutex<(previous: ProcessSnapshot?, timer: PollingSource?)>((nil, nil))
 
-    init(parameters: ProcessSampleParameters, emit: Emitter<ProcessSamplePayload>) {
+    init(parameters: ProcessSampleParameters, identity: ProcessIdentity, emit: Emitter<ProcessSamplePayload>) {
         self.parameters = parameters
         self.emit = emit
-        identity = ProcessIdentity(pid: parameters.pid, startedAt: parameters.startedAt)
+        self.identity = identity
     }
 
     func start() throws {
@@ -927,6 +893,11 @@ public enum ProcessSampleEvent: EventKind {
         _ parameters: ProcessSampleParameters, environment: SourceEnvironment,
         emit: Emitter<ProcessSamplePayload>
     ) throws -> any EventSource {
-        ProcessSampleSource(parameters: parameters, emit: emit)
+        // The schema bounds `startedAt`, so only parameters built in Swift
+        // can name no process.
+        guard let identity = parameters.observedProcess else {
+            throw EventError.invalidParameters("startedAt: \(parameters.startedAt) is not a process start time")
+        }
+        return ProcessSampleSource(parameters: parameters, identity: identity, emit: emit)
     }
 }

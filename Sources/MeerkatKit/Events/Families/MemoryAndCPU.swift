@@ -18,24 +18,12 @@ public struct IntervalParameters<Defaults: IntervalParameterDefaults>: EventPara
         self.interval = interval
     }
 
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        interval = try container.decodeIfPresent(Double.self, forKey: .interval) ?? Defaults.defaultInterval
-    }
-
-    public func validate() throws {
-        try requireInterval(interval, in: Defaults.intervalRange)
-    }
-
-    public static var schema: TypeSchema {
-        .object(
-            ObjectSchema([
-                .optional(
-                    "interval", Double.self,
-                    doc:
-                        "Seconds between samples, \(Defaults.intervalRange.lowerBound)–\(Defaults.intervalRange.upperBound). Default \(Defaults.defaultInterval)."
-                )
-            ]))
+    public static var objectSchema: ObjectSchema {
+        ObjectSchema([
+            ObjectSchema.Field(
+                "interval", .bounded(NumberBounds(Defaults.intervalRange)),
+                default: .number(Defaults.defaultInterval), doc: "Seconds between samples")
+        ])
     }
 
     public static var examples: [Self] { [Self()] }
@@ -80,13 +68,13 @@ public enum MemoryPressureEvent: EventKind {
                     let event = source.data
                     let level: MemoryPressurePayload.Level =
                         event.contains(.critical) ? .critical : event.contains(.warning) ? .warning : .normal
-                    emit(MemoryPressurePayload(level: level))
+                    emit.changed(MemoryPressurePayload(level: level))
                 }
                 holder.withLock { $0 = DispatchSourceBox(value: source) }
                 source.resume()
                 // The dispatch source reports changes only; the current level
                 // comes from the same kernel state through sysctl.
-                queue.async { emit(MemoryPressurePayload(level: currentMemoryPressure())) }
+                queue.async { emit.current(MemoryPressurePayload(level: currentMemoryPressure())) }
             },
             stop: {
                 holder.withLock { box in
@@ -220,11 +208,10 @@ public enum CPUSampleEvent: EventKind, IntervalParameterDefaults {
                 defer { last = now }
                 return last
             }
-            // Ticks that went backwards would trap the subtraction; the
-            // next tick compares with these.
-            guard let last, now.total > last.total, now.busy >= last.busy else { return }
-            let load = try MemorySampler.loadAverages()
-            let usage = Double(now.busy - last.busy) / Double(now.total - last.total) * 100
+            // Ticks that went backwards give no sample; the next tick
+            // compares with these.
+            guard let last, let usage = HostSampler.usagePercent(from: last, to: now) else { return }
+            let load = try HostSampler.loadAverages()
             emit(
                 CPUSamplePayload(
                     usagePercent: usage,
@@ -242,21 +229,11 @@ public struct TimerParameters: EventParameters {
     /// Seconds between events.
     public var every: Double
 
-    static let everyRange = 1.0...(7 * 86_400)
-
-    public func validate() throws {
-        try requireInterval(every, name: "every", in: Self.everyRange)
-    }
-
-    public static var schema: TypeSchema {
-        .object(
-            ObjectSchema([
-                .field(
-                    "every", Double.self,
-                    doc:
-                        "Seconds between events, \(NumberBounds.format(everyRange.lowerBound))–\(NumberBounds.format(everyRange.upperBound))."
-                )
-            ]))
+    public static var objectSchema: ObjectSchema {
+        ObjectSchema([
+            ObjectSchema.Field(
+                "every", .bounded(NumberBounds(1...(7 * 86_400))), doc: "Seconds between events")
+        ])
     }
 
     public static var examples: [Self] { [Self(every: 300)] }

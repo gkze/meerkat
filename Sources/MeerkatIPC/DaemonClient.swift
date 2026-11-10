@@ -22,12 +22,6 @@ extension DaemonConnection {
         return status
     }
 
-    /// The daemon's process id and start time, which change when launchd
-    /// replaces it.
-    public func daemonIdentity() async throws -> DaemonIdentity {
-        try DaemonIdentity(pong: try await send(.ping))
-    }
-
     public func catalog() async throws -> [CatalogEntry] {
         guard case .catalog(let entries) = try await send(.catalog) else {
             throw DaemonClient.ClientError.unexpectedReply("catalog")
@@ -83,6 +77,37 @@ extension DaemonConnection {
     }
 }
 
+/// What a failed request says about meerkatd, decided once here for every
+/// client (the CLI's exit status, the app's `DaemonFault`), from the error
+/// the client threw. Nil for an error that is not about the daemon.
+public enum DaemonFailure: Sendable, Equatable {
+    /// meerkatd answered: it refused the request or ended the
+    /// subscription, in its own words. Only that request failed; asking the
+    /// same daemon again repeats it.
+    case refused
+    /// meerkatd answered in a form this client cannot read, or could not
+    /// read the request: it is a different build. Restarting it from this
+    /// build fixes it; asking again does not.
+    case differentBuild
+    /// meerkatd was not reached, did not answer in time, answered with
+    /// something nobody asked for, or lost a subscription across a restart:
+    /// the daemon, not the request, is what failed.
+    case unavailable
+
+    public init?(classifying error: any Error) {
+        switch error {
+        case let error as DaemonClient.ClientError:
+            switch error {
+            case .daemon: self = .refused
+            case .differentBuild: self = .differentBuild
+            case .unreachable, .unexpectedReply, .resubscribeFailed: self = .unavailable
+            }
+        case is DaemonDidNotAnswer: self = .unavailable
+        default: return nil
+        }
+    }
+}
+
 /// One subscription's iterator, read by the one consumer of the stream
 /// `events` makes from it, which calls `next` only after the last call
 /// returned.
@@ -103,6 +128,13 @@ private final class EnvelopeReader: @unchecked Sendable {
 /// accepted it (from `.subscribed`), not one identity for the client: a
 /// subscribe that reaches a new daemon before the heartbeat does must not
 /// make the old daemon's subscriptions look current.
+///
+/// A recreated subscription carries on without a word to its reader, who
+/// missed what happened between the two daemons; `reconnected` is that
+/// word, and also comes when a request is answered after one could not
+/// reach meerkatd. A request that reached it and timed out
+/// (`send(_:within:)`) is not a lost daemon, so the next answer is not
+/// "back".
 public final class DaemonClient: DaemonConnection {
     public enum ClientError: Error, CustomStringConvertible {
         case unreachable(String)
@@ -154,6 +186,8 @@ public final class DaemonClient: DaemonConnection {
         var dropped: UInt64 = 0
         /// Where `DaemonPush.mcp` messages go; nil drops them.
         var mcp: AsyncStream<Data>.Continuation?
+        /// The last request did not reach meerkatd.
+        var unreached = false
     }
 
     private struct SessionBox: Sendable {
@@ -164,9 +198,15 @@ public final class DaemonClient: DaemonConnection {
     }
 
     private let state = Mutex(State())
+    private let reconnected: @Sendable () -> Void
     private static let heartbeatInterval: Duration = .seconds(3)
 
-    public init() {}
+    /// `reconnected` is called, on no particular thread, when this client
+    /// reaches meerkatd again: a request is answered after one could not
+    /// reach it, or the heartbeat recreated subscriptions on a new daemon.
+    public init(reconnected: @escaping @Sendable () -> Void = {}) {
+        self.reconnected = reconnected
+    }
 
     deinit {
         let (session, heartbeat) = state.withLock { ($0.session, $0.heartbeat) }
@@ -177,6 +217,27 @@ public final class DaemonClient: DaemonConnection {
     // MARK: - Requests
 
     public func send(_ request: DaemonRequest) async throws -> DaemonReply {
+        do {
+            let reply = try await exchange(request)
+            reached(true)
+            return reply
+        } catch let error as ClientError {
+            // Only an unreachable daemon is a lost one: a refusal or a
+            // different build is meerkatd answering.
+            if case .unreachable = error { reached(false) } else { reached(true) }
+            throw error
+        }
+    }
+
+    private func reached(_ answered: Bool) {
+        let back = state.withLock { state in
+            defer { state.unreached = !answered }
+            return answered && state.unreached
+        }
+        if back { reconnected() }
+    }
+
+    private func exchange(_ request: DaemonRequest) async throws -> DaemonReply {
         let session = try connect()
         do {
             let reply: DaemonReply = try await withCheckedThrowingContinuation { continuation in
@@ -394,10 +455,15 @@ public final class DaemonClient: DaemonConnection {
             return state.subscriptions
         }
         guard !subscriptions.isEmpty else { return false }
+        // Bounded: a daemon that takes the ping and never answers must not
+        // stall the heartbeat, which would then never recreate anything.
+        // Unanswered is checked again at the next beat.
         guard let current = try? await daemonIdentity() else { return true }
         // A new daemon has none of the old one's subscriptions; recreate each
         // with its original id so the streams continue.
-        for id in Self.stale(subscriptions.mapValues(\.daemon), current: current) {
+        let stale = Self.stale(subscriptions.mapValues(\.daemon), current: current)
+        defer { if !stale.isEmpty { reconnected() } }
+        for id in stale {
             guard let subscription = subscriptions[id] else { continue }
             do {
                 let daemon = try await requestSubscription(

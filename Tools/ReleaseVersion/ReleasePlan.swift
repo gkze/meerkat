@@ -3,8 +3,8 @@
 /// yet is published, and one already tagged is a successful no-op, so
 /// changing the version is what releases.
 public enum ReleasePlan: Equatable, Sendable {
-    case publish(SemanticVersion)
-    case alreadyReleased(SemanticVersion)
+    case publish
+    case alreadyReleased
 
     public struct NotNewer: Error, Equatable, CustomStringConvertible {
         public let version: SemanticVersion
@@ -24,11 +24,11 @@ public enum ReleasePlan: Equatable, Sendable {
             return try? SemanticVersion(String(tag.dropFirst()))
         }
         if released.contains(version) {
-            self = .alreadyReleased(version)
+            self = .alreadyReleased
         } else if let latest = released.max(), version < latest {
             throw NotNewer(version: version, latest: latest)
         } else {
-            self = .publish(version)
+            self = .publish
         }
     }
 }

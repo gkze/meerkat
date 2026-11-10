@@ -12,10 +12,23 @@ import Synchronization
 /// name does fails to load (`refusal(name:)`), in the daemon and unrouted in
 /// the runtime (host.rs, `rule_id`).
 public enum RuleID {
+    /// Longest rule name, in UTF-8 bytes: the runtime's `MAXIMUM_RULE_NAME`
+    /// (protocol.rs), which bounds the rule id every message about a rule
+    /// carries beside its text. The daemon's tests hold the two equal.
+    public static let maximumNameBytes = 256
+
     public static func make(file: String, name: String) -> String { "\(file)#\(name)" }
 
     /// The entry file `id` names.
     public static func file(of id: String) -> String { String(id.prefix { $0 != "#" }) }
+
+    /// The rule's name within `file`, or nil when `id` stands for the whole
+    /// file (one that failed to load). Taken past the file's part of the id
+    /// rather than at a `#`, which a refused file's name may hold.
+    public static func name(of id: String, file: String) -> String? {
+        let prefix = make(file: file, name: "")
+        return id.hasPrefix(prefix) ? String(id.dropFirst(prefix.count)) : nil
+    }
 
     /// Why `file`, an entry file's name, cannot be one; nil when it can.
     public static func refusal(file: String) -> String? {
@@ -25,7 +38,9 @@ public enum RuleID {
 
     /// Why `name` cannot be a rule's name; nil when it can.
     public static func refusal(name: String) -> String? {
-        name.contains("#") ? "\"name\" must not contain #" : nil
+        if name.contains("#") { return "\"name\" must not contain #" }
+        if name.utf8.count > maximumNameBytes { return "\"name\" is longer than \(maximumNameBytes) bytes" }
+        return nil
     }
 }
 

@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import MeerkatIPC
+import MeerkatKit
 import MeerkatRules
 import ReleaseVersion
 import ToolProcess
@@ -22,8 +23,9 @@ import ToolProcess
 // target names (buck2/rules/bundle.bzl), and passes their paths; this tool
 // copies them into the bundle layout the daemon expects, compiles the icon,
 // writes the plists, and signs nested code inside-out with the keychain's
-// identity, which is why it is not a build action. The names the app,
-// daemon and agent find each other by are DaemonService's.
+// identity, which is why it is not a build action. The layout is
+// AppBundle's, and the names the app, daemon and agent find each other by
+// are DaemonService's.
 
 /// The two bundles this tool builds. They share the app executable, icon and
 /// Info.plist contents, and differ in identity and in what else they hold.
@@ -63,23 +65,7 @@ struct Bundle: ParsableCommand {
     @Option(help: "The app executable (MeerkatApp).")
     var app: String
 
-    @Option(help: "The CLI (meerkat). Required unless --preview.")
-    var cli: String?
-
-    @Option(help: "The daemon (meerkatd). Required unless --preview.")
-    var daemon: String?
-
-    @Option(help: "The TypeScript compiler's directory (tsrs and its lib.*.d.ts). Required unless --preview.")
-    var typescript: String?
-
-    @Option(help: "The runtime's declarations (Sources/meerkat-rules/deno.d.ts). Required unless --preview.")
-    var runtimeTypes: String?
-
-    @Option(help: "The lint toolchain directory, in LintToolchain's layout. Required unless --preview.")
-    var lintToolchain: String?
-
-    @Option(help: "The third-party notices (//Tools/Notices:notices). Required unless --preview.")
-    var notices: String?
+    @OptionGroup var parts: FullBundleParts
 
     @Option(help: "A resource bundle of a module the app links, copied into Contents/Resources. Repeatable.")
     var resourceBundle: [String] = []
@@ -118,7 +104,7 @@ struct Bundle: ParsableCommand {
     @Option(help: "Also write the finished bundle, zipped as Finder would (ditto), to this path.")
     var archive: String?
 
-    @Flag(help: "Copy the bundle to ~/Applications/Meerkat.app and install the agent from there.")
+    @Flag(help: "Copy the bundle to ~/\(DaemonService.installedApp) and install the agent from there.")
     var install = false
 
     @Flag(
@@ -131,10 +117,7 @@ struct Bundle: ParsableCommand {
         if preview && install {
             throw ValidationError("--preview cannot be combined with --install")
         }
-        if !preview && [cli, daemon, typescript, runtimeTypes, lintToolchain, notices].contains(nil) {
-            throw ValidationError(
-                "the full bundle needs --cli, --daemon, --typescript, --runtime-types, --lint-toolchain and --notices")
-        }
+        if !preview { _ = try parts.resolved() }
         if notarize {
             if preview { throw ValidationError("--notarize is for Meerkat.app, not the preview") }
             _ = try NotaryKey.fromEnvironment()
@@ -163,16 +146,17 @@ struct Bundle: ParsableCommand {
         let fileManager = FileManager.default
         try? fileManager.removeItem(at: staging)
         let contents = staging.appendingPathComponent("Contents")
-        let macOS = contents.appendingPathComponent("MacOS")
-        let resources = contents.appendingPathComponent("Resources")
+        let macOS = staging.appendingPathComponent(AppBundle.executables)
+        let resources = staging.appendingPathComponent(AppBundle.resources)
         for directory in [macOS, resources] {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         }
-        try fileManager.copyItem(at: URL(fileURLWithPath: self.app), to: macOS.appendingPathComponent("MeerkatApp"))
+        try fileManager.copyItem(
+            at: URL(fileURLWithPath: self.app), to: macOS.appendingPathComponent(DaemonService.appExecutable))
         for bundle in resourceBundle.map(URL.init(fileURLWithPath:)) {
             try fileManager.copyItem(at: bundle, to: resources.appendingPathComponent(bundle.lastPathComponent))
         }
-        if variant == .full { try assembleDaemonAndCLI(into: contents) }
+        if variant == .full { try assembleDaemonAndCLI(parts.resolved(), into: staging) }
 
         step("compiling the app icon (actool)")
         let iconKeys = try compileIcon(root: root, into: resources)
@@ -187,7 +171,7 @@ struct Bundle: ParsableCommand {
         // executable) last. Identifiers are what peer requirements and the
         // privacy database see.
         if variant == .full {
-            try signResourceExecutables(in: contents, identity: identity)
+            try signResourceExecutables(in: resources, identity: identity)
             try signDaemonAndCLI(in: macOS, identity: identity, scratch: staging)
         }
         // The app asks for the Automation permission meerkatd's Apple Events
@@ -219,29 +203,24 @@ struct Bundle: ParsableCommand {
     /// Everything in Meerkat.app beside the app: the CLI and the daemon,
     /// the toolchains they run, the third-party notices, and the LaunchAgent
     /// plist.
-    private func assembleDaemonAndCLI(into contents: URL) throws {
+    private func assembleDaemonAndCLI(_ parts: FullBundleParts.Resolved, into bundle: URL) throws {
         let fileManager = FileManager.default
-        // validate() requires every part for the full bundle.
-        guard let cli, let daemon, let typescriptPath = typescript, let runtimeTypes, let lintToolchain,
-            let noticesFile = notices
-        else {
-            throw ValidationError("the full bundle needs every part")
-        }
-        let typescript = URL(fileURLWithPath: typescriptPath)
-        let lint = URL(fileURLWithPath: lintToolchain)
-        let macOS = contents.appendingPathComponent("MacOS")
-        let agents = contents.appendingPathComponent("Library/LaunchAgents")
+        let typescript = URL(fileURLWithPath: parts.typescript)
+        let lint = URL(fileURLWithPath: parts.lintToolchain)
+        let macOS = bundle.appendingPathComponent(AppBundle.executables)
+        let resources = bundle.appendingPathComponent(AppBundle.resources)
+        let agentPlist = bundle.appendingPathComponent(DaemonService.agentPlist)
         // tsrs resolves its lib.*.d.ts next to its own executable, and
         // codesign treats every file under Helpers as nested code, so the
         // package lives in Resources, and the binary is signed there
         // (`signResourceExecutables`).
-        let typescriptDirectory = contents.appendingPathComponent("Resources")
-            .appendingPathComponent(TypeScriptToolchain.bundledDirectory)
-        for directory in [agents, typescriptDirectory] {
+        let typescriptDirectory = resources.appendingPathComponent(TypeScriptToolchain.bundledDirectory)
+        for directory in [agentPlist.deletingLastPathComponent(), typescriptDirectory] {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         }
 
-        for (product, path) in [("meerkat", cli), ("meerkatd", daemon)] {
+        let executables = [(DaemonService.cliExecutable, parts.cli), (DaemonService.daemonExecutable, parts.daemon)]
+        for (product, path) in executables {
             try fileManager.copyItem(at: URL(fileURLWithPath: path), to: macOS.appendingPathComponent(product))
         }
         for item in try fileManager.contentsOfDirectory(atPath: typescript.path) {
@@ -251,27 +230,25 @@ struct Bundle: ParsableCommand {
         // The runtime's declarations, for `meerkat rules check`, which does
         // not link the runtime (meerkatd takes them from it).
         try fileManager.copyItem(
-            at: URL(fileURLWithPath: runtimeTypes), to: typescriptDirectory.appendingPathComponent("deno.d.ts"))
+            at: URL(fileURLWithPath: parts.runtimeTypes),
+            to: typescriptDirectory.appendingPathComponent(TypeScriptToolchain.runtimeDeclarationsFile))
         // Like tsrs, the lint tools are resources, signed in place:
         // meerkatd and meerkat run them as child processes.
-        try fileManager.copyItem(
-            at: lint,
-            to: contents.appendingPathComponent("Resources").appendingPathComponent(LintToolchain.bundledDirectory))
-        let notices = contents.appendingPathComponent("Resources/THIRD_PARTY_NOTICES")
+        try fileManager.copyItem(at: lint, to: resources.appendingPathComponent(LintToolchain.bundledDirectory))
+        let notices = resources.appendingPathComponent("THIRD_PARTY_NOTICES")
         // Buck's output is a symbolic link, and `copyItem` copies a link as one.
-        try fileManager.copyItem(at: URL(fileURLWithPath: noticesFile).resolvingSymlinksInPath(), to: notices)
+        try fileManager.copyItem(at: URL(fileURLWithPath: parts.notices).resolvingSymlinksInPath(), to: notices)
         // AppKit's standard About panel shows Credits.html from Resources.
-        try Data("Third-party notices: Contents/Resources/\(notices.lastPathComponent)".utf8)
+        try Data("Third-party notices: \(AppBundle.resources)/\(notices.lastPathComponent)".utf8)
             .write(to: notices.deletingLastPathComponent().appendingPathComponent("Credits.html"))
-        try write(plist: agentPlist, to: agents.appendingPathComponent(DaemonService.plistName))
+        try write(plist: self.agentPlist, to: agentPlist)
     }
 
     /// Signs every executable the bundle carries as a resource (tsrs and
     /// the lint tools) with the bundle's identity. Their own signatures are
     /// ad hoc, with no team, hardened runtime or timestamp, and the notary
     /// service checks every Mach-O file in a submission, resources included.
-    private func signResourceExecutables(in contents: URL, identity: String) throws {
-        let resources = contents.appendingPathComponent("Resources")
+    private func signResourceExecutables(in resources: URL, identity: String) throws {
         let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey]
         guard let walker = FileManager.default.enumerator(at: resources, includingPropertiesForKeys: keys) else {
             return
@@ -307,11 +284,11 @@ struct Bundle: ParsableCommand {
             to: entitlements)
         defer { try? FileManager.default.removeItem(at: entitlements) }
         try sign(
-            macOS.appendingPathComponent("meerkatd"), identity: identity,
+            macOS.appendingPathComponent(DaemonService.daemonExecutable), identity: identity,
             identifier: "\(DaemonService.bundleIdentifier).daemon",
             entitlements: entitlements)
         try sign(
-            macOS.appendingPathComponent("meerkat"), identity: identity,
+            macOS.appendingPathComponent(DaemonService.cliExecutable), identity: identity,
             identifier: "\(DaemonService.bundleIdentifier).cli")
     }
 
@@ -402,7 +379,7 @@ struct Bundle: ParsableCommand {
     private func infoPlist(build: String) -> [String: Any] {
         [
             "CFBundleIdentifier": variant.identifier,
-            "CFBundleExecutable": "MeerkatApp",
+            "CFBundleExecutable": DaemonService.appExecutable,
             "CFBundleName": variant.name,
             "CFBundleDisplayName": variant.name,
             "CFBundlePackageType": "APPL",
@@ -439,7 +416,7 @@ struct Bundle: ParsableCommand {
     private var agentPlist: [String: Any] {
         [
             "Label": DaemonService.label,
-            "BundleProgram": "Contents/MacOS/meerkatd",
+            "BundleProgram": DaemonService.daemonProgram,
             "MachServices": [DaemonService.machService: true],
             "RunAtLoad": true,
             "KeepAlive": true,
@@ -514,11 +491,11 @@ struct Bundle: ParsableCommand {
     private static let registrationAttempts = 3
 
     private func installBundle(_ app: URL) throws {
-        let applications = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Applications")
+        let destination = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(DaemonService.installedApp)
+        let applications = destination.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: applications, withIntermediateDirectories: true)
-        let destination = applications.appendingPathComponent("Meerkat.app")
         step("installing \(destination.path)")
-        let copy = applications.appendingPathComponent(".Meerkat.app.installing")
+        let copy = applications.appendingPathComponent(".\(destination.lastPathComponent).installing")
         try? FileManager.default.removeItem(at: copy)
         try FileManager.default.copyItem(at: app, to: copy)
         if FileManager.default.fileExists(atPath: destination.path) {
@@ -537,7 +514,7 @@ struct Bundle: ParsableCommand {
         // daemon never answers is made again. Only that outcome: any other
         // failure would fail the same way again.
         try Subprocess("/usr/bin/open", ["-g", destination.path]).run()
-        let cli = destination.appendingPathComponent("Contents/MacOS/meerkat").path
+        let cli = destination.appendingPathComponent(DaemonService.cliPath).path
         for attempt in 1...Self.registrationAttempts {
             do {
                 try Subprocess(cli, ["agent", "install"]).run()
@@ -551,7 +528,7 @@ struct Bundle: ParsableCommand {
         print(
             """
             installed. Put the CLI on your PATH with:
-              ln -sf \(destination.path)/Contents/MacOS/meerkat ~/.local/bin/meerkat
+              ln -sf \(destination.path)/\(DaemonService.cliPath) ~/.local/bin/\(DaemonService.cliExecutable)
             """)
     }
 
@@ -559,6 +536,53 @@ struct Bundle: ParsableCommand {
 
     private func step(_ message: String) {
         FileHandle.standardError.write(Data("==> \(message)\n".utf8))
+    }
+}
+
+/// The parts of Meerkat.app beside the app, which bundle_command passes
+/// (buck2/rules/bundle.bzl): the full bundle needs each, and the preview
+/// holds none.
+struct FullBundleParts: ParsableArguments {
+    @Option(help: "The CLI (meerkat). Required unless --preview.")
+    var cli: String?
+
+    @Option(help: "The daemon (meerkatd). Required unless --preview.")
+    var daemon: String?
+
+    @Option(help: "The TypeScript compiler's directory (tsrs and its lib.*.d.ts). Required unless --preview.")
+    var typescript: String?
+
+    @Option(help: "The runtime's declarations (Sources/meerkat-rules/deno.d.ts). Required unless --preview.")
+    var runtimeTypes: String?
+
+    @Option(help: "The lint toolchain directory, in LintToolchain's layout. Required unless --preview.")
+    var lintToolchain: String?
+
+    @Option(help: "The third-party notices (//Tools/Notices:notices). Required unless --preview.")
+    var notices: String?
+
+    struct Resolved {
+        let cli: String
+        let daemon: String
+        let typescript: String
+        let runtimeTypes: String
+        let lintToolchain: String
+        let notices: String
+    }
+
+    /// Every part, or the options missing.
+    func resolved() throws -> Resolved {
+        let parts = [
+            ("--cli", cli), ("--daemon", daemon), ("--typescript", typescript), ("--runtime-types", runtimeTypes),
+            ("--lint-toolchain", lintToolchain), ("--notices", notices),
+        ]
+        guard let cli, let daemon, let typescript, let runtimeTypes, let lintToolchain, let notices else {
+            let missing = parts.filter { $0.1 == nil }.map(\.0)
+            throw ValidationError("the full bundle needs \(missing.joined(separator: ", "))")
+        }
+        return Resolved(
+            cli: cli, daemon: daemon, typescript: typescript, runtimeTypes: runtimeTypes,
+            lintToolchain: lintToolchain, notices: notices)
     }
 }
 

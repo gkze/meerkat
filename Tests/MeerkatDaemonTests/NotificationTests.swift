@@ -60,6 +60,21 @@ struct NotificationSpecTests {
         #expect(throws: EffectError.self) { try spec(fields) }
     }
 
+    /// Display text is bounded in bytes, four for each character it was once
+    /// counted in, so a title that fit in any script still fits.
+    @Test func displayTextFitsItsCharactersInAnyScript() throws {
+        let title = String(repeating: "😀", count: 256)
+        let action = String(repeating: "😀", count: 64)
+        let decoded = try spec(["title": .string(title), "actions": [["id": "a", "title": .string(action)]]])
+        #expect(decoded.title == title && decoded.actions.first?.title == action)
+        #expect(throws: EffectError.self) { try spec(["title": .string(title + "x")]) }
+    }
+
+    /// Null data carries nothing back, so it is left out as absent data is.
+    @Test func nullDataIsLeftOut() throws {
+        #expect(try spec(["title": "t", "data": .null]).data == nil)
+    }
+
     @Test func withdrawDecodes() throws {
         #expect(try EffectRequest(["kind": "notify.withdraw", "id": "low"]).action == .withdrawNotification(id: "low"))
         #expect(throws: EffectError.self) { try EffectRequest(["kind": "notify.withdraw", "id": ""]) }
@@ -199,7 +214,8 @@ struct NotifyEffectTests {
         return (
             EffectExecutor(
                 store: store, ownProcesses: OwnProcesses(), notifier: notifier,
-                sampleDatabasePath: directory.appendingPathComponent("s.db").path),
+                sampleDatabasePath: directory.appendingPathComponent("s.db").path,
+                authorizer: EffectAuthorizer(permissionStatus: { _ in .granted }, protectedPaths: [])),
             directory
         )
     }

@@ -22,6 +22,13 @@ public struct DaemonPaths: Sendable {
         self.sampleDatabase = sampleDatabase
     }
 
+    /// `meerkat.json`, which lives in the rules directory.
+    public var configurationFile: URL { Self.configurationFile(in: rulesDirectory) }
+
+    public static func configurationFile(in rulesDirectory: URL) -> URL {
+        rulesDirectory.appendingPathComponent(MeerkatConfiguration.fileName)
+    }
+
     /// One path's environment variable and defaults key.
     public enum Setting: String, CaseIterable, Sendable {
         case rulesDirectory = "RulesDirectory"
@@ -74,12 +81,18 @@ public struct DaemonPaths: Sendable {
         return bare.caseInsensitiveCompare(DaemonService.bundleIdentifier) == .orderedSame
     }
 
+    /// Where the daemon keeps its databases by default, relative to the home
+    /// folder.
+    static let supportFolder = "Library/Application Support/\(DaemonService.bundleIdentifier)"
+    /// The sample store's default, relative to the home folder.
+    public static let standardSampleDatabase = supportFolder + "/samples.db"
+
     public static func standard(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         preferences: (String) -> String? = DaemonPaths.preference
     ) -> DaemonPaths {
         let home = URL(fileURLWithPath: NSHomeDirectory())
-        let support = home.appendingPathComponent("Library/Application Support/\(DaemonService.bundleIdentifier)")
+        let support = home.appendingPathComponent(supportFolder)
         func path(_ setting: Setting, _ fallback: URL) -> URL {
             let value = environment[setting.environmentVariable] ?? preferences(setting.rawValue)
             return value.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
@@ -90,7 +103,7 @@ public struct DaemonPaths: Sendable {
             cacheDirectory: path(
                 .cacheDirectory, home.appendingPathComponent("Library/Caches/\(DaemonService.bundleIdentifier)")),
             ruleDatabase: path(.ruleDatabase, support.appendingPathComponent("rules.db")),
-            sampleDatabase: path(.sampleDatabase, support.appendingPathComponent("samples.db"))
+            sampleDatabase: path(.sampleDatabase, home.appendingPathComponent(standardSampleDatabase))
         )
     }
 }

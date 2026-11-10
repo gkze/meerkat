@@ -149,20 +149,14 @@ public struct WiFiParameters: EventParameters {
 
     public init(signal: Bool = false) { self.signal = signal }
 
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        signal = try container.decodeIfPresent(Bool.self, forKey: .signal) ?? false
-    }
-
-    public static var schema: TypeSchema {
-        .object(
-            ObjectSchema([
-                .optional(
-                    "signal", Bool.self,
-                    doc:
-                        "Also report every change in signal strength and transmit rate (several a minute). Default false: those fields are read only when something else changes."
-                )
-            ]))
+    public static var objectSchema: ObjectSchema {
+        ObjectSchema([
+            ObjectSchema.Field(
+                "signal", .boolean, default: false,
+                doc:
+                    "Also report every change in signal strength and transmit rate (several a minute). Without it, those fields are read only when something else changes."
+            )
+        ])
     }
 
     public static var examples: [Self] { [Self(), Self(signal: true)] }
@@ -172,8 +166,7 @@ public enum WiFiEvent: EventKind {
     public static let descriptor = EventDescriptor(
         "network.wifi",
         "Wi-Fi was turned on or off, joined or left a network, roamed to another access point, or changed channel or mode; with `signal`, also every signal change. The current state is delivered first. The network name and access point need the Location permission (asked for when a rule first subscribes); without it they are absent and everything else is reported.",
-        mechanism: .push, semantics: .state, loss: .coalesced, permission: .location,
-        observation: .named,
+        mechanism: .push, semantics: .state, loss: .coalesced, permission: .improves(.location), observation: .named,
         source:
             "CoreWLAN CWEventDelegate (power, SSID, BSSID, link, link quality, mode, country code); CLLocationManager authorization"
     )
@@ -383,21 +376,18 @@ public struct BluetoothDevicesPayload: EventPayload, Equatable {
 public enum BluetoothDevicesEvent: EventKind {
     public static let descriptor = EventDescriptor(
         "bluetooth.devices",
-        "A paired Bluetooth device connected or disconnected; pairing changes and Bluetooth being turned on or off are noticed within 15 seconds. The current state is delivered first. Needs the Bluetooth permission. Devices that are not paired with the Mac are not reported.",
-        mechanism: .push, semantics: .state, loss: .coalesced, permission: .bluetooth,
+        "A paired Bluetooth device connected or disconnected; pairing changes and Bluetooth being turned on or off are noticed within \(NumberBounds.format(BluetoothSource.pollInterval)) seconds. The current state is delivered first. Devices that are not paired with the Mac are not reported.",
+        mechanism: .push, semantics: .state, loss: .coalesced, permission: .required(.bluetooth),
         observation: .named,
         source:
-            "IOBluetoothDevice connect and disconnect notifications, pairedDevices; IOBluetoothHostController powerState (checked every 15 s)"
+            "IOBluetoothDevice connect and disconnect notifications, pairedDevices; IOBluetoothHostController powerState (checked every \(NumberBounds.format(BluetoothSource.pollInterval)) s)"
     )
 
     public static func makeSource(
         _ parameters: NoParameters, environment: SourceEnvironment,
         emit: Emitter<BluetoothDevicesPayload>
     ) throws -> any EventSource {
-        // Touching IOBluetooth without NSBluetoothAlwaysUsageDescription
-        // gets the process killed, so the permission check comes first.
-        try EventDescriptor.Permission.bluetooth.require(for: descriptor.name)
-        return BluetoothSource(emit: emit)
+        BluetoothSource(emit: emit)
     }
 }
 

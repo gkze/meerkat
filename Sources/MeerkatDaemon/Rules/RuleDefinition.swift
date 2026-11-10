@@ -22,9 +22,10 @@ struct RuleDefinition: Sendable, Equatable {
     let includeOwn: Bool
     let timeout: Duration
 
-    private static let knownFields: Set<String> = [
-        "name", "on", "params", "match", "rate", "capabilities", "includeOwn", "timeoutSeconds",
-    ]
+    /// The options' names come from their schema, so an option it gains
+    /// is never refused as unknown.
+    private static let optionFields = Set(RuleLimits.options.fields.map(\.name))
+    private static let knownFields = optionFields.union(["name", "on", "params", "match", "capabilities"])
 
     /// Decodes one definition object from `file`, and refuses it when its
     /// grants do not cover observing its kind (`ObservationScope.require`;
@@ -63,24 +64,25 @@ struct RuleDefinition: Sendable, Equatable {
                 throw RuleDefinitionError("\"match\": \(error.message)")
             }
         }
-        rate = try RateSpec(fields["rate"])
+        let options: Options
+        do {
+            options = try RuleLimits.options.decode(.object(fields.filter { Self.optionFields.contains($0.key) }))
+        } catch {
+            throw RuleDefinitionError("\(error)")
+        }
+        rate = options.rate ?? RateSpec()
+        includeOwn = options.includeOwn
+        // In range, so the conversion cannot trap.
+        timeout = .milliseconds(Int((options.timeoutSeconds * 1000).rounded()))
         grants = try CapabilityGrants(fields["capabilities"], events: catalog)
         try observation.require(kind, parameters: parameters, grants: grants)
-        switch fields["includeOwn"] {
-        case nil, .null?: includeOwn = false
-        case .bool(let value)?: includeOwn = value
-        default: throw RuleDefinitionError("\"includeOwn\" must be a boolean")
-        }
-        let seconds: Double
-        switch fields["timeoutSeconds"] {
-        case nil, .null?: seconds = RuleLimits.defaultTimeoutSeconds
-        case .number(let value)? where RuleLimits.timeoutRange.contains(value): seconds = value
-        default:
-            throw RuleDefinitionError(
-                "\"timeoutSeconds\" must be a number between \(RuleLimits.timeoutRange.lowerBound) and \(RuleLimits.timeoutRange.upperBound)"
-            )
-        }
-        timeout = .milliseconds(Int((seconds * 1000).rounded()))
+    }
+
+    /// The fields `RuleLimits.options` states.
+    private struct Options: Decodable {
+        let rate: RateSpec?
+        let includeOwn: Bool
+        let timeoutSeconds: Double
     }
 }
 
@@ -92,8 +94,8 @@ struct RuleDefinitionError: Error, CustomStringConvertible, Equatable {
 
 // MARK: - Rate
 
-/// `rate` in a rule definition.
-struct RateSpec: Sendable, Equatable {
+/// `rate` in a rule definition (`RuleLimits.rate`).
+struct RateSpec: Sendable, Equatable, Decodable {
     var throttle: Double?
     var debounce: Double?
     var maxPerMinute: Int?
@@ -104,28 +106,19 @@ struct RateSpec: Sendable, Equatable {
         self.maxPerMinute = maxPerMinute
     }
 
-    init(_ raw: JSONValue?) throws {
-        guard let raw, raw != .null else { return }
-        guard let fields = raw.objectValue else { throw RuleDefinitionError("\"rate\" must be an object") }
-        let known: Set<String> = ["throttleSeconds", "debounceSeconds", "maxPerMinute"]
-        if let unknown = fields.keys.first(where: { !known.contains($0) }) {
-            throw RuleDefinitionError("\"rate\": unknown field \"\(unknown)\"")
-        }
-        func seconds(_ key: String) throws -> Double? {
-            guard let value = fields[key] else { return nil }
-            guard let number = value.numberValue, number > 0, number <= 86_400 else {
-                throw RuleDefinitionError("\"rate.\(key)\" must be a number of seconds in (0, 86400]")
-            }
-            return number
-        }
-        throttle = try seconds("throttleSeconds")
-        debounce = try seconds("debounceSeconds")
-        if let value = fields["maxPerMinute"] {
-            guard let number = value.numberValue, number >= 1, number <= 10_000, number == number.rounded() else {
-                throw RuleDefinitionError("\"rate.maxPerMinute\" must be an integer between 1 and 10000")
-            }
-            maxPerMinute = Int(number)
-        }
+    private enum CodingKeys: String, CodingKey {
+        case throttle = "throttleSeconds"
+        case debounce = "debounceSeconds"
+        case maxPerMinute
+    }
+
+    /// Decoded once the schema has checked each field's bounds; the one
+    /// check between fields is this one's.
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        throttle = try container.decodeIfPresent(Double.self, forKey: .throttle)
+        debounce = try container.decodeIfPresent(Double.self, forKey: .debounce)
+        maxPerMinute = try container.decodeIfPresent(Int.self, forKey: .maxPerMinute)
         if throttle != nil, debounce != nil {
             throw RuleDefinitionError("\"rate\": use throttleSeconds or debounceSeconds, not both")
         }
@@ -516,13 +509,20 @@ extension HandlerHost.LoadedEntry {
         var diagnostic: RuleDiagnostic {
             RuleDiagnostic(tool: .loader, file: file, message: "rule \"\(name)\": \(reason)", fixable: false)
         }
+
+        /// The rule as the engine lists it: failed, with why.
+        var summary: RuleSummary {
+            RuleSummary(
+                id: RuleID.make(file: file, name: name), file: file, event: event, state: .failed, reason: reason,
+                invocations: 0, failures: 0, lastInvokedAt: nil, lastError: nil)
+        }
     }
 
     /// The file's rules, decoded and checked: what the host reports is
     /// untrusted, since the host runs user code. Whether one failure fails
     /// the file is the caller's policy.
     func definitions(
-        file: String, catalog: EventCatalog, observation: ObservationScope
+        catalog: EventCatalog, observation: ObservationScope
     ) -> (definitions: [RuleDefinition], failures: [RuleFailure]) {
         var definitions: [RuleDefinition] = []
         var failures: [RuleFailure] = []

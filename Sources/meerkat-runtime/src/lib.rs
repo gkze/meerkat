@@ -21,8 +21,8 @@ mod tests;
 use std::sync::Arc;
 
 pub use protocol::{
-    DaemonToHost, EffectOutcome, EntryResult, FaultKind, FilePermissions, HandlerError, HostLogLevel, HostModule,
-    HostToDaemon,
+    DaemonToHost, EffectOutcome, EntryResult, FaultKind, FilePermissions, HandlerError, HostEntry, HostLogLevel,
+    HostModule, HostToDaemon,
 };
 
 uniffi::setup_scaffolding!();
@@ -96,6 +96,22 @@ pub fn hold_rule_renames(work: Arc<dyn PathWork>) {
 #[must_use]
 pub fn maximum_message_text_bytes() -> u64 {
     protocol::MAXIMUM_MESSAGE_TEXT as u64
+}
+
+/// `MAXIMUM_RULE_NAME`, for the daemon's check that its own bound on a
+/// rule's name is the same.
+#[uniffi::export]
+#[must_use]
+pub fn maximum_rule_name_bytes() -> u64 {
+    protocol::MAXIMUM_RULE_NAME as u64
+}
+
+/// `MAXIMUM_TEXT`, which the daemon holds its own rule log lines to, so a
+/// rule's log has one limit whoever wrote the line.
+#[uniffi::export]
+#[must_use]
+pub fn maximum_text_bytes() -> u64 {
+    protocol::MAXIMUM_TEXT as u64
 }
 
 /// The TypeScript declarations of the globals rule code runs with (composed

@@ -15,8 +15,9 @@ migration, and there is no compatibility code to keep old ones working.
 - Run `Tools/check` before you open a pull request. A cold build takes tens
   of minutes; [docs/building.md, "Building on another Mac"](docs/building.md#building-on-another-mac)
   moves it to a spare Mac.
-- Pull requests from forks run no CI until a maintainer pushes their commits
-  to a branch here ([docs/development.md, "CI runner"](docs/development.md#ci-runner)
+- Pull requests from forks run only the portable checks on GitHub's Linux
+  runner; the builds and test suites wait until a maintainer pushes their
+  commits to a branch here ([docs/development.md, "CI runner"](docs/development.md#ci-runner)
   says why).
 - Report a vulnerability privately, as [SECURITY.md](SECURITY.md) says, not
   in an issue.

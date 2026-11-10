@@ -29,7 +29,8 @@ struct NotificationPlan: Sendable, Equatable {
         body = spec.body
         sound = spec.sound
         var userInfo = [
-            Key.file: rule.file, Key.rule: rule.name, Key.id: id, Key.actions: Self.encode(spec.actions),
+            Key.file: rule.file, Key.rule: rule.name, Key.id: id,
+            Key.actions: String(decoding: NotificationAction.encoded(spec.actions), as: UTF8.self),
         ]
         userInfo[Key.data] = spec.data?.canonicalString
         self.userInfo = userInfo
@@ -68,8 +69,8 @@ struct NotificationPlan: Sendable, Equatable {
         }
         let name: String
         switch action {
-        case .default: name = "default"
-        case .dismiss: name = "dismiss"
+        case .default: name = NotificationResponse.click
+        case .dismiss: name = NotificationResponse.dismiss
         case .action(let actionID):
             guard actions.contains(where: { $0.id == actionID }) else { return nil }
             name = actionID
@@ -91,13 +92,6 @@ struct NotificationPlan: Sendable, Equatable {
         static let data = "meerkat.data"
     }
 
-    private static func encode(_ actions: [NotificationAction]) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .sortedKeys
-        // Plain Codable values; encoding cannot fail.
-        return String(decoding: (try? encoder.encode(actions)) ?? Data("[]".utf8), as: UTF8.self)
-    }
-
     private static func decodeActions(_ text: String) -> [NotificationAction]? {
         try? JSONDecoder().decode([NotificationAction].self, from: Data(text.utf8))
     }
@@ -112,10 +106,9 @@ struct NotificationCategory: Sendable, Hashable {
 
     init(actions: [NotificationAction]) {
         self.actions = actions
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .sortedKeys
-        let bytes = (try? encoder.encode(actions)) ?? Data()
-        let digest = SHA256.hash(data: bytes).prefix(12).map { String(format: "%02x", $0) }.joined()
+        let digest = SHA256.hash(data: NotificationAction.encoded(actions)).prefix(12).map {
+            String(format: "%02x", $0)
+        }.joined()
         identifier = "meerkat.\(digest)"
     }
 }
@@ -165,5 +158,16 @@ struct CategoryRegistry: Sendable {
     /// Adds categories rebuilt from delivered notifications at startup.
     mutating func restore(_ restored: some Sequence<NotificationCategory>) {
         for category in restored where categories.count < Self.capacity { categories.insert(category) }
+    }
+}
+
+extension NotificationAction {
+    /// The actions as stored with a notification and as hashed into its
+    /// category's id: sorted keys, so equal sets give equal bytes. Strings and
+    /// booleans only, which always encode.
+    static func encoded(_ actions: [NotificationAction]) -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        return (try? encoder.encode(actions)) ?? Data("[]".utf8)
     }
 }

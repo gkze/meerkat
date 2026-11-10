@@ -9,7 +9,8 @@ import Synchronization
 
 /// A `state` event fed by notifications. It registers first and then reports
 /// the current value, so no change is missed between the two. `StateReporter`
-/// orders reads and emits, and a repeat of the last value emits nothing.
+/// orders reads and emits and marks the first as the current value; the hub
+/// leaves out a repeat of the last value.
 func notificationStateSource<Payload: EventPayload & Equatable>(
     center: NotificationCenter,
     names: [Notification.Name],

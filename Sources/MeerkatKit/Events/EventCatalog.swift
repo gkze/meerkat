@@ -8,7 +8,11 @@ public struct EventCatalog: Sendable {
 
     public init(_ kinds: [AnyEventKind]) {
         self.kinds = kinds
-        byName = Dictionary(kinds.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        // Two kinds under one name would leave one unreachable and the
+        // generated declarations describing the other.
+        byName = Dictionary(kinds.map { ($0.name, $0) }) { first, _ in
+            preconditionFailure("event kind \(first.name) declared twice")
+        }
     }
 
     public func kind(named name: String) -> AnyEventKind? {

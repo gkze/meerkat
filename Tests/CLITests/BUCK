@@ -5,6 +5,7 @@ meerkat_swift_test(
     # The built CLI, which the contract tests run.
     env = {"MEERKAT_CLI": "$(location //Sources/meerkat:meerkat)"},
     deps = [
+        "//Sources/MeerkatAgent:MeerkatAgent",
         "//Sources/MeerkatIPC:MeerkatIPC",
         "//Sources/MeerkatKit:MeerkatKit",
         "//Sources/MeerkatRules:MeerkatRules",

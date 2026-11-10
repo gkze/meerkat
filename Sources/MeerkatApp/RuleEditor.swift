@@ -35,6 +35,12 @@ struct RuleEditor: View {
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(RuleEditorTheme.defaultsKey) private var theme: RuleEditorTheme = .system
 
+    /// Spaces per indent, as oxfmt formats rule files, so typing and
+    /// `meerkat rules fmt` agree: the policy's `tabWidth`
+    /// (Sources/meerkat-lint/policy/oxfmtrc.json), which RuleEditorIndentTests
+    /// compares it with.
+    static let indentWidth = 2
+
     /// How long the "Saved and reloaded" confirmation stays.
     static let confirmationDuration: Duration = .seconds(4)
 
@@ -47,12 +53,12 @@ struct RuleEditor: View {
                     error in
                     Label(error, systemImage: "exclamationmark.triangle")
                         .font(.callout)
-                        .foregroundStyle(Theme.text(Theme.warn))
+                        .foregroundStyle(Status.warning.text)
                         .lineLimit(3)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal)
                         .padding(.vertical, 8)
-                        .background(Color.orange.opacity(0.08))
+                        .background(Status.warning.color.opacity(0.08))
                     Divider()
                 }
                 editor
@@ -165,7 +171,7 @@ struct RuleEditor: View {
             if let reloaded {
                 Notice(
                     symbol: reloaded.status.isFailure ? "exclamationmark.circle" : "checkmark.circle",
-                    tint: reloaded.status.isFailure ? .red : .green,
+                    tint: reloaded.status.state.status.color,
                     title: reloaded.status.isFailure ? "Saved with errors" : "Saved and reloaded",
                     detail: "meerkatd compiled \(reloaded.file) · \(reloaded.status.text)")
             }
@@ -183,7 +189,7 @@ struct RuleEditor: View {
             }
             if model.changedOnDisk, let file = model.file {
                 Notice(
-                    symbol: "exclamationmark.triangle", tint: .orange, title: "Changed on disk",
+                    symbol: "exclamationmark.triangle", tint: Status.warning.color, title: "Changed on disk",
                     detail: "Something else changed \(file) while you were editing it.",
                     wide: true
                 ) {
@@ -193,7 +199,7 @@ struct RuleEditor: View {
             }
             if case .unavailable(let reason) = model.serverState {
                 Notice(
-                    symbol: "info.circle", tint: .orange, title: "TypeScript language server unavailable",
+                    symbol: "info.circle", tint: Status.warning.color, title: "TypeScript language server unavailable",
                     detail:
                         "Meerkat.app's tsrs is missing or didn't start (\(reason)). Problems appear when you save, from meerkatd's compile.",
                     wide: true
@@ -273,8 +279,8 @@ struct RuleEditor: View {
                 theme: theme.palette(colorScheme).editorTheme,
                 font: .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
                 wrapLines: false,
-                tabWidth: 2),
-            behavior: .init(indentOption: .spaces(count: 2)),
+                tabWidth: Self.indentWidth),
+            behavior: .init(indentOption: .spaces(count: Self.indentWidth)),
             peripherals: .init(
                 showMinimap: false, showFoldingRibbon: false,
                 codeSuggestionTriggerCharacters: RuleEditorModel.completionTriggers))
@@ -319,7 +325,7 @@ struct RuleEditor: View {
         model.savedAt = nil
         withAnimation {
             reloaded = Reload(
-                file: file, status: rules.status(of: file) ?? FileStatus(text: "No rules", state: .off),
+                file: file, status: rules.status(of: file) ?? .noRules,
                 savedAt: savedAt)
         }
     }
@@ -360,42 +366,8 @@ final class RuleEditorSession {
     }
 }
 
-/// A rule file's state at the daemon's last compile, as the file list and
-/// the reload confirmation show it.
-struct FileStatus: Equatable {
-    enum State { case failed, running, off }
-
-    let text: String
-    let state: State
-
-    var isFailure: Bool { state == .failed }
-
-    var tint: Color {
-        switch state {
-        case .failed: .red
-        case .running: .green
-        case .off: .secondary
-        }
-    }
-}
-
-extension RulesModel {
-    /// Compile or load errors first, then whether its rules run. Nil for a
-    /// file that defines no rules (a library file).
-    func status(of file: String) -> FileStatus? {
-        let failures = loadFailures(in: file)
-        if !failures.isEmpty {
-            return FileStatus(text: failures.count == 1 ? "1 error" : "\(failures.count) errors", state: .failed)
-        }
-        let fileRules = rules.filter { $0.file == file }
-        if fileRules.contains(where: { $0.state == .failed }) {
-            return FileStatus(text: RuleSummary.State.failed.label, state: .failed)
-        }
-        if fileRules.contains(where: { $0.state == .loaded }) {
-            return FileStatus(text: RuleSummary.State.loaded.label, state: .running)
-        }
-        return fileRules.isEmpty ? nil : FileStatus(text: RuleSummary.State.disabled.label, state: .off)
-    }
+extension RuleEditorModel.Problem.Severity {
+    var status: Status { self == .error ? .critical : .warning }
 }
 
 extension RuleEditorModel.Problem {
@@ -478,14 +450,16 @@ private struct ProblemsBar: View {
                 if !problems.isEmpty {
                     // A tinted capsule with status text, as `StatusBadge`:
                     // white on the system orange or red is under 4:1.
-                    let tint = problems.contains { $0.severity == .error } ? Theme.critical : Theme.warn
+                    let worst: RuleEditorModel.Problem.Severity =
+                        problems.contains(where: { $0.severity == .error }) ? .error : .warning
+                    let status = worst.status
                     Text(problems.count, format: .number)
                         .font(.caption.weight(.semibold))
                         .monospacedDigit()
-                        .foregroundStyle(Theme.text(tint))
+                        .foregroundStyle(status.text)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 1)
-                        .background(tint.opacity(0.14), in: .capsule)
+                        .background(status.color.opacity(0.14), in: .capsule)
                         .accessibilityLabel(problems.count == 1 ? "1 problem" : "\(problems.count) problems")
                 }
                 Spacer(minLength: 8)
@@ -500,7 +474,7 @@ private struct ProblemsBar: View {
                 Label {
                     Text("No problems").foregroundStyle(.secondary)
                 } icon: {
-                    Image(systemName: "checkmark.circle").foregroundStyle(.green)
+                    Image(systemName: "checkmark.circle").foregroundStyle(Status.normal.color)
                 }
                 .font(.callout)
             } else {
@@ -549,7 +523,7 @@ private struct ProblemRow: View {
         Button(action: action) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: problem.severity == .error ? "xmark.circle" : "exclamationmark.triangle")
-                    .foregroundStyle(problem.severity == .error ? .red : .orange)
+                    .foregroundStyle(problem.severity.status.color)
                     .accessibilityLabel(problem.severity == .error ? "Error" : "Warning")
                 Text("\(file):\(problem.line + 1):\(problem.character + 1)")
                     .font(.system(.callout, design: .monospaced))
@@ -597,12 +571,12 @@ private struct EditorStatusLine: View {
     var body: some View {
         HStack(spacing: 6) {
             if let cursor, cursor.start.line > 0 {
-                Text("Ln \(cursor.start.line), Col \(cursor.start.column) · Spaces: 2 · UTF-8")
+                Text("Ln \(cursor.start.line), Col \(cursor.start.column) · Spaces: \(RuleEditor.indentWidth) · UTF-8")
                     .monospacedDigit()
             }
             Spacer(minLength: 8)
             Circle()
-                .fill(serverTint)
+                .fill(serverStatus.color)
                 .frame(width: 7, height: 7)
                 .accessibilityHidden(true)
             Text(serverLabel)
@@ -625,11 +599,11 @@ private struct EditorStatusLine: View {
         }
     }
 
-    private var serverTint: Color {
+    private var serverStatus: Status {
         switch model.serverState {
-        case .running: .green
-        case .starting, .stopped: .secondary
-        case .restarting, .unavailable: .orange
+        case .running: .normal
+        case .starting, .stopped: .neutral
+        case .restarting, .unavailable: .warning
         }
     }
 }
@@ -671,7 +645,7 @@ private struct RuleFileList: View {
                         if let status = rules.status(of: file) {
                             Text(status.text)
                                 .font(.caption)
-                                .foregroundStyle(Theme.text(status.tint))
+                                .foregroundStyle(status.state.status.text)
                         }
                     }
                     .tag(file as String?)
@@ -708,95 +682,6 @@ private struct RuleFileList: View {
     private var summary: String {
         let count = rules.rules.filter { !$0.isFileFailure }.count
         return count == 1 ? "1 rule" : "\(count) rules"
-    }
-}
-
-/// What the name sheet names.
-enum FileNaming: Identifiable, Hashable {
-    /// A new file, in the rules folder.
-    case new
-    /// A file, by its path in the rules folder; only its name changes.
-    case rename(String)
-
-    var id: Self { self }
-
-    /// The folder the name is for, relative to the rules folder.
-    var folder: String {
-        switch self {
-        case .new: ""
-        case .rename(let file): (file as NSString).deletingLastPathComponent
-        }
-    }
-}
-
-/// Asks for a rule file's name, checking it as it is typed against
-/// `existing`, the names already in its folder.
-struct FileNameSheet: View {
-    let naming: FileNaming
-    let existing: [String]
-    let commit: (String) -> Void
-    @State private var name = ""
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title).font(.headline)
-            TextField("Name", text: $name, prompt: Text("my-rule.ts"))
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(submit)
-            Text(note)
-                .font(.callout)
-                .foregroundStyle(isValid || name.isEmpty ? Color.secondary : Color.red)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack {
-                Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button(action: submit) {
-                    Text(naming == .new ? "Create" : "Rename")
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!isValid)
-            }
-        }
-        .padding(20)
-        .frame(width: 380)
-        .onAppear {
-            if case .rename(let file) = naming { name = (file as NSString).lastPathComponent }
-        }
-    }
-
-    private var title: String {
-        switch naming {
-        case .new: "New Rule File"
-        case .rename(let file): "Rename “\(file)”"
-        }
-    }
-
-    private var result: Result<String, RuleEditorModel.FileNameProblem> {
-        var existing = existing
-        if case .rename(let file) = naming { existing.removeAll { $0 == (file as NSString).lastPathComponent } }
-        return RuleEditorModel.fileName(name, existing: existing)
-    }
-
-    private var isValid: Bool { (try? result.get()) != nil }
-
-    private var note: String {
-        switch result {
-        case .success(let file):
-            switch naming {
-            case .new: "Creates \(file) in the rules folder; meerkatd loads it when it's saved."
-            case .rename: "Rule ids include the file name, so its rules get new ids."
-            }
-        case .failure(.empty): naming == .new ? "Starts as a timer rule that logs, for you to change." : ""
-        case .failure(let problem): problem.description
-        }
-    }
-
-    private func submit() {
-        guard case .success(let file) = result else { return }
-        dismiss()
-        commit(file)
     }
 }
 

@@ -2,9 +2,9 @@ load("//buck2/rules/swift:defs.bzl", "clang_module")
 load("//buck2/rules:meerkat.bzl", "meerkat_swift_library")
 load("@prelude//rust:cargo_buildscript.bzl", "buildscript_run")
 load("@prelude//rust:clippy_configuration.bzl", "clippy_configuration")
-load("//buck2/rules:check.bzl", "command", "command_test")
+load("//buck2/rules:check.bzl", "checked_in_copy")
 load("//buck2/rules:rust.bzl", "cargo_env", "meerkat_rust_crate")
-load(":deno.bzl", "DENO_LIBRARIES", "DENO_VERSION")
+load(":deno.bzl", "DENO_LIBRARIES", "DENO_RUNTIME_VERSION", "DENO_VERSION")
 
 # The rule-handler runtime: Deno, embedded in meerkatd and exported to Swift
 # through UniFFI. Swift links `:meerkat_runtime[staticlib]`, the one static
@@ -23,9 +23,9 @@ ENV, MANIFEST_DIR = cargo_env("meerkat-runtime", "0.1.0", "Sources/meerkat-runti
     for library, sha256 in DENO_LIBRARIES.items()
 ]
 
-# Clippy's pedantic group warns, and :clippy fails on
-# any warning (Tools/check's `-D warnings`). The crate has no unsafe code
-# (UniFFI generates the FFI); any added must state why it is sound.
+# Clippy's pedantic group warns, and :clippy fails on any warning. The crate
+# has no unsafe code (UniFFI generates the FFI); any added must state why it
+# is sound.
 LINTS = [
     "-Wclippy::pedantic",
     "-Wclippy::undocumented_unsafe_blocks",
@@ -37,14 +37,12 @@ LINTS = [
     "-Aclippy::default_trait_access",
 ]
 
-# build.rs composes Deno's libraries and types/ into OUT_DIR/deno.d.ts and sets
-# DENO_VERSION and DENO_RUNTIME_VERSION.
+# build.rs composes Deno's libraries and types/ into OUT_DIR/deno.d.ts.
 rust_binary(
     name = "build-script-build",
     srcs = ["build.rs"],
     crate = "build_script_build",
     crate_root = "build.rs",
-    edition = "2024",
     env = ENV | {"DENO_VERSION": DENO_VERSION},
     rustc_flags = MANIFEST_DIR,
     deps = [
@@ -74,7 +72,12 @@ meerkat_rust_crate(
     library = True,
     cargo_name = "meerkat-runtime",
     lints = LINTS,
-    env = {"OUT_DIR": "$(location :build-script-run[out_dir])"},
+    # The release deno.bzl pins, which worker.rs reports and tests against.
+    env = {
+        "DENO_RUNTIME_VERSION": DENO_RUNTIME_VERSION,
+        "DENO_VERSION": DENO_VERSION,
+        "OUT_DIR": "$(location :build-script-run[out_dir])",
+    },
     rustc_flags = ["@$(location :build-script-run[rustc_flags])"],
     # protected_cases.json: the cases protected.rs and the daemon's
     # CapabilityGrants both run (MeerkatDaemonTests reads it by path).
@@ -105,34 +108,26 @@ clippy_configuration(
 )
 
 # Sources/meerkat-rules/deno.d.ts is the copy of the composed declarations that
-# editors and `meerkat rules check` read: :declarations_test fails while it is
-# stale, and `buck2 run` :regenerate rewrites it.
-DECLARATIONS = "$(location :build-script-run[out_dir])/deno.d.ts"
-
-command(
-    name = "regenerate",
-    command = ["/bin/cp", "-f", DECLARATIONS, "Sources/meerkat-rules/deno.d.ts"],
-    visibility = ["PUBLIC"],
+# editors and `meerkat rules check` read.
+checked_in_copy(
+    test = "declarations_test",
+    generated = "$(location :build-script-run[out_dir])/deno.d.ts",
+    path = "Sources/meerkat-rules/deno.d.ts",
 )
 
-command_test(
-    name = "declarations_test",
-    command = [
-        "/bin/sh",
-        "-c",
-        'cmp -s "$1" "$2" || { echo "Sources/meerkat-rules/deno.d.ts is stale; regenerate with: buck2 run //Sources/meerkat-runtime:regenerate" >&2; exit 1; }',
-        "declarations_test",
-        DECLARATIONS,
-        "$(location //Sources/meerkat-rules:deno.d.ts)",
-    ],
-)
-
-# The archive, with what it links against, for the bindings' C module: one link
-# node, so it is linked once.
+# The archive, for the bindings' C module: one link node, so it is linked once.
 prebuilt_cxx_library(
     name = "linkable",
     static_lib = ":meerkat_runtime[staticlib]",
-    exported_linker_flags = [
+)
+
+# The rule runtime's C ABI and Swift API, generated from that archive by
+# bindgen/ and checked in. `linker_flags` are what the archive links against,
+# which Package.swift states too (//:package_swift_test).
+clang_module(
+    name = "CMeerkatRuntime",
+    headers = ["CMeerkatRuntime/include/meerkat_runtime.h"],
+    linker_flags = [
         "-lz",
         "-liconv",
         "-framework",
@@ -146,25 +141,14 @@ prebuilt_cxx_library(
         "-framework",
         "CoreFoundation",
     ],
-)
-
-# The rule runtime's C ABI and Swift API, generated from that archive by
-# bindgen/ and checked in.
-
-clang_module(
-    name = "CMeerkatRuntime",
-    headers = ["CMeerkatRuntime/include/meerkat_runtime.h"],
     deps = [":linkable"],
     visibility = ["PUBLIC"],
 )
 
-# Built without ExistentialAny, which the generator does not write; not
-# formatted or linted, being generated.
 meerkat_swift_library(
     name = "MeerkatRuntimeBindings",
     generated = True,
     srcs = glob(["MeerkatRuntimeBindings/*.swift"]),
-    upcoming_features = ["MemberImportVisibility", "ImmutableWeakCaptures"],
     deps = [":CMeerkatRuntime"],
 )
 

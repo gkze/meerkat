@@ -34,7 +34,7 @@ final class ExplorerModel {
         case idle
         case starting
         case live
-        case failed(String)
+        case failed(DaemonFault)
     }
 
     static let eventLimit = 500
@@ -55,15 +55,14 @@ final class ExplorerModel {
     /// once when that kind's detail appears.
     private var pendingParameters: (kind: String, text: String)?
 
-    private let client: DaemonClient
+    private let client: any DaemonConnection
     private var stream: Task<Void, Never>?
     /// Bumped by every start and stop, so a superseded stream's late
     /// completion cannot overwrite the state of the one that replaced it.
     private var generation = 0
     private var nextEventID = 0
 
-    /// `client` is the app's one connection to the daemon, shared by every page.
-    init(client: DaemonClient) {
+    init(client: any DaemonConnection) {
         self.client = client
     }
 
@@ -72,7 +71,7 @@ final class ExplorerModel {
     /// since the page may not be on screen to see the selection change.
     func open(_ kind: String, parameters: JSONValue? = nil) {
         if selectedKind != kind { reset() }
-        pendingParameters = parameters.map { (kind, $0.compactText) }
+        pendingParameters = parameters.map { (kind, $0.canonicalString) }
         selectedKind = kind
     }
 
@@ -138,7 +137,7 @@ final class ExplorerModel {
                 }
                 self?.update(.idle, for: generation)
             } catch {
-                self?.update(.failed("\(error)"), for: generation)
+                self?.update(.failed(DaemonFault(error)), for: generation)
             }
         }
     }

@@ -1,5 +1,6 @@
 import ArgumentParser
 import Foundation
+import MeerkatAgent
 import MeerkatKit
 import MeerkatRules
 import Testing
@@ -7,6 +8,9 @@ import Testing
 @testable import MeerkatIPC
 @testable import MeerkatStore
 @testable import meerkat
+
+/// The CLI's, not Swift Testing's of the same name.
+typealias ExitStatus = meerkat.ExitStatus
 
 /// Parsing contracts for the command-line tool. These exercise the parsers
 /// only; sampling itself is covered by MeerkatKitTests.
@@ -20,11 +24,10 @@ struct MeerkatCLITests {
         #expect(throws: (any Error).self) { try Meerkat.parseAsRoot(["--window", "20"]) }
     }
 
-    @Test func defaultsMatchDocumentedValues() throws {
+    /// A bare `sample` is one run, stored under a label that says none was
+    /// given, kept as long as meerkat.json's budget allows.
+    @Test func aBareSampleIsOneUnlabelledRun() throws {
         let sample = try Sample.parse([])
-        #expect(sample.window == 10)
-        #expect(sample.top == 10)
-        #expect(sample.churnDepth == 5)
         #expect(sample.repeatCount == 1)
         #expect(sample.label == "unlabelled")
         #expect(sample.retain == nil)
@@ -106,14 +109,14 @@ struct MeerkatCLITests {
         let rules = FileManager.default.temporaryDirectory.appendingPathComponent("CLITests-\(UUID())")
         try FileManager.default.createDirectory(at: rules, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: rules) }
-        #expect(try Sample.recordingLimits(in: rules).maxAge == SampleStore.Limits.standard.maxAge)
+        let file = DaemonPaths.configurationFile(in: rules)
+        #expect(try Sample.recordingLimits(file: file) == .standard)
 
-        let file = rules.appendingPathComponent("meerkat.json")
         try Data(#"{ "samples": { "maxAgeDays": 90 } }"#.utf8).write(to: file)
-        #expect(try Sample.recordingLimits(in: rules).maxAge == 90 * 86_400)
+        #expect(try Sample.recordingLimits(file: file).maxAge == 90 * 86_400)
 
         try Data("{".utf8).write(to: file)
-        #expect(throws: (any Error).self) { try Sample.recordingLimits(in: rules) }
+        #expect(throws: (any Error).self) { try Sample.recordingLimits(file: file) }
     }
 
     /// A mistyped folder must not read as rules that all pass.
@@ -125,9 +128,10 @@ struct MeerkatCLITests {
         #expect(try Rules.existingDirectory(folder.path).path == folder.path)
     }
 
-    /// A check runs on a copy with Meerkat's configuration added, so the
-    /// folder it checks is left as it was; fixing works in place.
-    @Test func checkingWritesNothingIntoTheFolder() throws {
+    /// A check runs on a copy with Meerkat's configuration added, as the
+    /// daemon writes it, so the folder it checks is left as it was; fixing
+    /// works in place.
+    @Test func checkingWritesNothingIntoTheFolder() async throws {
         let rules = FileManager.default.temporaryDirectory.appendingPathComponent("CLITests-\(UUID())")
         defer { try? FileManager.default.removeItem(at: rules) }
         try FileManager.default.createDirectory(at: rules, withIntermediateDirectories: true)
@@ -135,10 +139,11 @@ struct MeerkatCLITests {
 
         let (copy, cleanup) = try Rules.folder(for: rules, writing: false)
         #expect(copy != rules)
-        try RuleCompiler.writeEditorSupport(
-            in: copy, declarations: TypeScriptDeclarations.render(), runtimeDeclarations: nil)
+        try await Rules.editorSupport(linter: nil).write(in: copy)
         #expect(FileManager.default.fileExists(atPath: copy.appendingPathComponent("a.ts").path))
         #expect(FileManager.default.fileExists(atPath: copy.appendingPathComponent("tsconfig.json").path))
+        let schema = copy.appendingPathComponent(MeerkatConfiguration.schemaPath)
+        #expect(try String(contentsOf: schema, encoding: .utf8) == MeerkatConfiguration.jsonSchema())
         #expect(try FileManager.default.contentsOfDirectory(atPath: rules.path) == ["a.ts"])
         cleanup()
         #expect(!FileManager.default.fileExists(atPath: copy.path))
@@ -149,7 +154,7 @@ struct MeerkatCLITests {
     /// Dotfile managers link the rules folder. The check must copy the
     /// folder, not the link, or it writes into the real one; and a relative
     /// link inside must still reach its file from the copy.
-    @Test func checkingALinkedFolderWritesNothingIntoIt() throws {
+    @Test func checkingALinkedFolderWritesNothingIntoIt() async throws {
         let fileManager = FileManager.default
         let base = fileManager.temporaryDirectory.appendingPathComponent("CLITests-\(UUID())")
         defer { try? fileManager.removeItem(at: base) }
@@ -166,8 +171,7 @@ struct MeerkatCLITests {
 
         let (copy, cleanup) = try Rules.folder(for: linked, writing: false)
         defer { cleanup() }
-        try RuleCompiler.writeEditorSupport(
-            in: copy, declarations: TypeScriptDeclarations.render(), runtimeDeclarations: nil)
+        try await Rules.editorSupport(linter: nil).write(in: copy)
         #expect(try fileManager.contentsOfDirectory(atPath: real.path).sorted() == ["a.ts", "b.ts"])
         #expect(fileManager.fileExists(atPath: copy.appendingPathComponent("tsconfig.json").path))
         #expect(
@@ -224,16 +228,6 @@ struct MeerkatCLITests {
         #expect(try Data(contentsOf: files[0]) == bytes)
     }
 
-    /// The diagnose skill names where rules' samples are kept; it must be
-    /// the default the daemon uses.
-    @Test func theDiagnoseSkillNamesTheDefaultSampleStore() {
-        let store = DaemonPaths.standard(environment: [:], preferences: { _ in nil }).sampleDatabase.path
-        let home = NSHomeDirectory()
-        #expect(store.hasPrefix(home + "/"))
-        let named = "~" + store.dropFirst(home.count)
-        #expect(AgentSkill.named("meerkat-diagnose")?.instructions.contains("`\(named)`") == true)
-    }
-
     /// Text other programs chose can't start a line or drive the terminal.
     @Test func controlCharactersAreEscapedForTheTerminal() {
         #expect(terminalSafe("ok\n2026-11-03 error other.ts#guard") == #"ok\n2026-11-03 error other.ts#guard"#)
@@ -254,7 +248,7 @@ struct MeerkatCLITests {
             failures: 0, lastInvokedAt: nil, lastError: nil)
         let rules = Rules.output(
             RulesReport(
-                rules: [rule], diagnostics: [diagnostic], compiledAt: nil,
+                rulesDirectory: "/r", rules: [rule], diagnostics: [diagnostic], compiledAt: nil,
                 lint: LintReport(diagnostics: [diagnostic], lintedAt: 0)))
         let dryRun = Rules.DryRun.output(
             DryRunReport(outcome: .chooseRule, diagnostics: [diagnostic], rules: [name, "\(name)2"]))
@@ -336,13 +330,20 @@ struct OutputContractTests {
     /// `main` writes what `outcome` says. A check's findings are its output,
     /// so its bare `ExitCode` adds nothing; anything else says what failed.
     @Test func failuresKeepTheirStatusAndMessage() {
-        let failure = Meerkat.outcome(of: CommandFailure("no daemon", status: ExitStatus.unavailable))
+        let failure = Meerkat.outcome(of: CommandFailure("no daemon", status: .unavailable))
         #expect(failure.status == 69 && failure.message == "no daemon")
         let check = Meerkat.outcome(of: ExitCode.failure)
         #expect(check.status == 1 && check.message == nil)
         let usage = Meerkat.outcome(of: ValidationError("--top must be greater than 0"))
         #expect(usage.status == ExitCode.validationFailure.rawValue)
         #expect(usage.message?.contains("--top must be greater than 0") == true)
+    }
+
+    /// The help an agent reads lists every status the tool exits with, and
+    /// no two mean the same code.
+    @Test func theHelpListsEveryExitStatus() {
+        #expect(Meerkat.configuration.discussion.contains(ExitStatus.summary))
+        #expect(Set(ExitStatus.allCases.map(\.code)).count == ExitStatus.allCases.count)
     }
 
     /// The line `--json` writes is one object on one line, whatever the
@@ -405,9 +406,9 @@ struct OutputContractTests {
 
 /// What `meerkat sample` does when a sample can't be taken.
 struct SampleRunTests {
-    /// The samples written before stay written, retention still runs, and
-    /// the failure is reported with any problem before it.
-    @Test func aFailedSampleEndsTheRunButKeepsWhatCameBefore() throws {
+    /// The samples written before stay written, each with its retention,
+    /// and the failure is reported with any problem before it.
+    @Test func aFailedSampleEndsTheRunButKeepsWhatCameBefore() async throws {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent("CLITests-\(UUID()).db").path
         defer { try? FileManager.default.removeItem(atPath: path) }
         let store = try SampleStore(path: path)
@@ -416,7 +417,7 @@ struct SampleRunTests {
         let command = try Sample.parse(["--repeat", "5", "--label", "run", "--retain", "2"])
         var taken = 0
         var shown: [Int] = []
-        let (samples, problems) = command.record(
+        let (samples, problems) = await command.record(
             into: store,
             sampling: {
                 taken += 1
@@ -541,57 +542,15 @@ struct CommandLineContractTests {
     }
 }
 
-/// `compare` and MCP's `samples_compare` share `SampleComparison`.
-struct SampleComparisonTests {
-    static func samples(_ cpu: [Double], swap: Double = 0) -> [[String: Double]] {
-        cpu.map { ["cpu_usage_pct": $0, "swap_mb": swap] }
-    }
-
-    @Test func twoLabelsHaveADeltaAndItsWarnings() throws {
-        let comparison = SampleComparison([
-            ("before", Self.samples([10, 12, 11])),
-            ("after", Self.samples([30, 31, 29])),
-        ])
-        #expect(comparison.labels.map(\.label) == ["before", "after"])
-        #expect(comparison.labels[0].metrics["cpu_usage_pct"] == Spread([10, 11, 12]))
-        let change = try #require(comparison.delta?["cpu_usage_pct"])
-        #expect(change.change == 19)
-        #expect(change.percent.map { abs($0 - 172.727) < 0.01 } == true)
-        // Separate ranges, and swap didn't move on either side.
-        #expect(comparison.overlapping.isEmpty)
-        #expect(comparison.noisy.isEmpty)
-        // A zero median has a change but no percentage.
-        #expect(comparison.delta?["swap_mb"] == SampleComparison.Change(change: 0, percent: nil))
-    }
-
-    @Test func overlapAndNoiseAreFlagged() {
-        let comparison = SampleComparison([("a", Self.samples([10, 40])), ("b", Self.samples([20, 30]))])
-        #expect(comparison.overlapping == ["cpu_usage_pct"])
-        #expect(comparison.noisy == ["cpu_usage_pct"])
-    }
-
-    /// Records group by label in the order labels first appear; with other
-    /// than two there is no delta.
-    @Test func recordsGroupByLabel() {
-        let records = [
-            StoredMetrics(label: "b", metrics: ["cpu_usage_pct": 1]),
-            StoredMetrics(label: "a", metrics: ["cpu_usage_pct": 2]),
-            StoredMetrics(label: "b", metrics: ["cpu_usage_pct": 3]),
-            StoredMetrics(label: "c", metrics: [:]),
-        ]
-        let comparison = SampleComparison(records)
-        #expect(comparison.labels.map(\.label) == ["b", "a", "c"])
-        #expect(comparison.labels.map(\.count) == [2, 1, 1])
-        #expect(comparison.labels[2].metrics.isEmpty)
-        #expect(comparison.delta == nil && comparison.overlapping.isEmpty)
-    }
-
-    /// One process under a short name and a full path is one process.
+/// What `analyze` makes of a store.
+struct AnalyzeTests {
+    /// One program across samples and instances is one line, busiest first,
+    /// ties by name.
     @Test func analysisGroupsProcessesByName() {
         let analysis = Analyze.analysis(
             labels: [],
             usage: [
-                .init(sampleID: 1, name: "/usr/libexec/mds", cpuPct: 10),
+                .init(sampleID: 1, name: "mds", cpuPct: 10),
                 .init(sampleID: 2, name: "mds", cpuPct: 30),
                 .init(sampleID: 2, name: "zsh", cpuPct: 20),
                 .init(sampleID: 1, name: "bash", cpuPct: 20),
@@ -601,50 +560,71 @@ struct SampleComparisonTests {
     }
 }
 
-/// The daemon client's side of surviving a daemon restart.
-struct DaemonClientTests {
+/// What a daemon failure exits with: one mapping, for a request and for a
+/// stream read inside `withDaemon` alike.
+struct DaemonFailureTests {
     /// A subscription a restarted daemon could not take back is the daemon
     /// being unavailable (69), not a failed request (1), and `watch` must
     /// reach that mapping while it reads its stream.
     @Test func aWatchWhoseSubscriptionIsLostExitsUnavailable() async throws {
         let watch = try #require(try Meerkat.parseAsRoot(["events", "watch", "cpu.sample"]) as? Events.Watch)
         let failure = await #expect(throws: CommandFailure.self) { try await watch.run(on: LosingDaemon()) }
-        #expect(failure?.status == ExitStatus.unavailable)
+        #expect(failure?.status == .unavailable)
     }
 
-    /// A daemon that takes a request and never answers is not answering,
-    /// which a bounded ping reports in time.
-    @Test func aSilentDaemonDoesNotAnswerAPing() async {
-        let started = ContinuousClock.now
-        await #expect(throws: DaemonDidNotAnswer.self) {
-            try await SilentDaemon().daemonIdentity(within: .milliseconds(100))
+    /// One error of each `DaemonFailure` class (MeerkatIPCTests classifies
+    /// every error): unavailable is 69, a refusal or a different build 1.
+    @Test(
+        arguments: [
+            (DaemonClient.ClientError.unreachable("down"), ExitStatus.unavailable),
+            (.daemon("no such rule"), .failure),
+            (.differentBuild("unknown case"), .failure),
+        ] as [(DaemonClient.ClientError, ExitStatus)])
+    func aDaemonErrorExitsByWhoseItIs(error: DaemonClient.ClientError, status: ExitStatus) async {
+        let failure = await #expect(throws: CommandFailure.self) {
+            try await withDaemon(LosingDaemon()) { _ -> Void in throw error }
         }
-        #expect(started.duration(to: .now) < .seconds(5))
+        #expect(failure?.status == status)
     }
 
-    @Test func anAnsweringDaemonGivesItsIdentityInTime() async throws {
-        let identity = try await AnsweringDaemon().daemonIdentity(within: .seconds(5))
-        #expect(identity == DaemonIdentity(pid: 42, startedAt: 1_000))
+    /// `meerkat mcp` ends a session by who can fix it. meerkatd turns a
+    /// message away only for the session's state (backed up, closing),
+    /// which a new bridge's session doesn't share, so that is 69 like a
+    /// restart; the client's own line, or a different build, is 1.
+    @Test(
+        arguments: [
+            (DaemonClient.ClientError.daemon("MCP session has 1024 messages waiting"), ExitStatus.unavailable),
+            (.daemon("the session is closed"), .unavailable),
+            (.unreachable("down"), .unavailable),
+            (.resubscribeFailed(kind: "cpu.sample", reason: "starting"), .unavailable),
+            (.differentBuild("unknown case"), .failure),
+        ] as [(DaemonClient.ClientError, ExitStatus)])
+    func theMCPBridgeEndsByWhoCanFixIt(error: DaemonClient.ClientError, status: ExitStatus) {
+        #expect(MCPBridge.failure(error).status == status)
     }
 
-    @Test func theCallersCancellationEndsABoundedRequest() async {
-        let waiting = Task { try await SilentDaemon().send(.status, within: .seconds(3600)) }
-        try? await Task.sleep(for: .milliseconds(50))
-        waiting.cancel()
-        await #expect(throws: CancellationError.self) { try await waiting.value }
+    @Test func theMCPBridgesOwnRefusalIsTheClients() {
+        let tooLong = CommandFailure("an input line is longer than 4194304 bytes")
+        #expect(MCPBridge.failure(tooLong).status == .failure)
+        // stdin failing: a new bridge may get further.
+        #expect(MCPBridge.failure(CocoaError(.fileReadUnknown)).status == .unavailable)
     }
 
-    /// Each subscription is checked against the daemon that accepted it: a
-    /// new subscription that reached the new daemon first must not make the
-    /// old daemon's subscription look current.
-    @Test func onlySubscriptionsAnotherDaemonAcceptedAreRecreated() {
-        let old = DaemonIdentity(pid: 100, startedAt: 1_000)
-        let new = DaemonIdentity(pid: 200, startedAt: 2_000)
-        let accepted: [UInt64: DaemonIdentity?] = [1: old, 2: new, 3: nil]
-        #expect(DaemonClient.stale(accepted, current: new) == [1])
-        #expect(DaemonClient.stale(accepted, current: old) == [2])
-        // The same pid with a later start is a different daemon.
-        #expect(DaemonClient.stale([1: old], current: DaemonIdentity(pid: 100, startedAt: 3_000)) == [1])
+    /// `agent install` registered but heard no daemon: 75, which trying
+    /// again can fix; its other failures are ordinary ones.
+    @Test func aSilentInstallExitsRegisteredButSilent() throws {
+        let silent = Agent.Install.failure(AgentRegistration.RegistrationError.silent(within: .seconds(30)))
+        #expect((silent as? CommandFailure)?.status == .registeredButSilent)
+        let refused = Agent.Install.failure(AgentRegistration.RegistrationError.failed("refused"))
+        #expect(refused is AgentRegistration.RegistrationError)
+    }
+
+    /// The command's own failures keep their status.
+    @Test func anErrorThatIsNotTheDaemonsPassesThrough() async {
+        let failure = await #expect(throws: CommandFailure.self) {
+            try await withDaemon(LosingDaemon()) { _ -> Void in throw CommandFailure("no file", status: .noInput) }
+        }
+        #expect(failure?.status == .noInput)
     }
 }
 
@@ -657,28 +637,5 @@ private struct LosingDaemon: DaemonConnection {
         AsyncThrowingStream {
             $0.finish(throwing: DaemonClient.ClientError.resubscribeFailed(kind: kind, reason: "gone"))
         }
-    }
-}
-
-/// Takes requests and never answers them, ignoring cancellation, like an
-/// XPC reply that never comes.
-private struct SilentDaemon: DaemonConnection {
-    func send(_ request: DaemonRequest) async throws -> DaemonReply {
-        await withUnsafeContinuation { (_: UnsafeContinuation<Void, Never>) in }
-        throw CancellationError()
-    }
-
-    func subscribe(_ kind: String, parameters: JSONValue) async throws -> AsyncThrowingStream<EventEnvelope, any Error>
-    {
-        AsyncThrowingStream { _ in }
-    }
-}
-
-private struct AnsweringDaemon: DaemonConnection {
-    func send(_ request: DaemonRequest) async throws -> DaemonReply { .pong(pid: 42, startedAt: 1_000) }
-
-    func subscribe(_ kind: String, parameters: JSONValue) async throws -> AsyncThrowingStream<EventEnvelope, any Error>
-    {
-        AsyncThrowingStream { _ in }
     }
 }

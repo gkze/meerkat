@@ -1,8 +1,16 @@
-# The Deno release whose declarations rule code is checked against. A test in
-# src/worker.rs fails when the linked deno_runtime is not that release's
-# (DENO_RUNTIME_VERSION in build.rs), so moving that pin means updating this
-# version and the hashes below.
+# The Deno release the runtime embeds: every pin that moves with it is here.
+# DENO_VERSION's declarations are what rule code is checked against, and its
+# license is in THIRD_PARTY_NOTICES (Tools/Notices). A test in src/worker.rs
+# fails when the linked deno_runtime is not DENO_RUNTIME_VERSION, the one that
+# release is built on (its Cargo.toml), so the exact pin in
+# buck2/third_party/rust/Cargo.toml cannot move without this version and the
+# hashes below.
 DENO_VERSION = "2.9.8"
+
+DENO_RUNTIME_VERSION = "0.268.0"
+
+# The SHA-256 of the release's LICENSE.md.
+DENO_LICENSE = "f62497fffecc0852960c8d3e6934b9db86d16396e9b604072e923892cae3a588"
 
 # Deno's own libraries, unchanged, at that release.
 DENO_LIBRARIES = {

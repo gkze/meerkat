@@ -7,20 +7,50 @@ import SwiftUI
 
 /// The process a card is about: one instance, so a reused pid is not it.
 struct ProcessTarget: Hashable, Identifiable {
-    let pid: Int32
-    let startedAt: Double
+    let identity: ProcessIdentity
     let name: String
     let path: String?
     let uid: UInt32
 
     var id: Self { self }
+    var pid: Int32 { identity.pid }
+    /// Unix epoch milliseconds.
+    var startedAt: Double { identity.startedAt }
 
-    init(_ p: ProcessDelta) {
-        pid = p.pid
-        startedAt = p.startedAt
+    /// Nil for a row whose start time no process can have: it names no
+    /// instance, so it opens no card.
+    init?(_ p: ProcessDelta) {
+        guard let identity = p.identity else { return nil }
+        self.identity = identity
         name = DisplayName.process(p.name)
         path = p.path
         uid = p.uid
+    }
+}
+
+/// Account names by uid, cached: the tables ask every second.
+@MainActor
+enum UserName {
+    private static var cache: [UInt32: String] = [:]
+
+    /// The uid itself when the account has no name.
+    static func of(_ uid: UInt32) -> String {
+        if let hit = cache[uid] { return hit }
+        let name = getpwuid(uid).flatMap { String(validatingCString: $0.pointee.pw_name) } ?? "\(uid)"
+        cache[uid] = name
+        return name
+    }
+}
+
+/// A process row's menu, wherever processes are listed.
+struct ProcessMenu: View {
+    let target: ProcessTarget
+    @Binding var card: ProcessTarget?
+
+    var body: some View {
+        Button("Show Details") { card = target }
+        Button("Show in Finder") { ProcessControl.reveal(target) }
+            .disabled(target.path == nil)
     }
 }
 
@@ -34,82 +64,77 @@ final class ProcessCardModel {
     let target: ProcessTarget
     private(set) var latest: ProcessDelta?
     private(set) var running = true
-    private(set) var cpu = RollingSeries<Double>()
-    private(set) var memory = RollingSeries<Double>()
-    private(set) var energy = RollingSeries<Double>()
-    private(set) var disk = RollingSeries<Double>()
+    private(set) var cpu = ProcessCardModel.tileSeries
+    private(set) var memory = ProcessCardModel.tileSeries
+    private(set) var energy = ProcessCardModel.tileSeries
+    private(set) var disk = ProcessCardModel.tileSeries
     /// Direct children now: what "helpers" means here.
     private(set) var helpers: [String] = []
     private(set) var problem: String?
 
     private let client: any DaemonConnection
-    private let retryDelay: Duration
+    private let retry: FeedRetry
+    private let back: DaemonReturn
     /// Whether the process still runs, checked before following it again.
     private let isRunning: @Sendable (ProcessIdentity) -> Bool
     private var task: Task<Void, Never>?
     private var samples = 0
+    /// Seconds between the card's samples, and how many its tiles chart:
+    /// the last minute.
+    private static let interval = 1.0
     private static let history = 60
-    /// The longest the card waits before following the process again, as
-    /// for the Overview's feeds (`MetricsModel`).
-    private static let longestRetry: Duration = .seconds(60)
+    private static var tileSeries: RollingSeries<Double> { RollingSeries(capacity: history, spacing: interval) }
 
     init(
-        target: ProcessTarget, client: any DaemonConnection, retryDelay: Duration = .seconds(5),
+        target: ProcessTarget, client: any DaemonConnection, retry: FeedRetry = FeedRetry(),
+        back: DaemonReturn = DaemonReturn(),
         isRunning: @escaping @Sendable (ProcessIdentity) -> Bool = { identity in
-            ProcessTable.record(pid: identity.pid)?.identity == identity
+            ProcessTable.record(of: identity) != nil
         }
     ) {
         self.target = target
         self.client = client
-        self.retryDelay = retryDelay
+        self.retry = retry
+        self.back = back
         self.isRunning = isRunning
     }
 
     /// Follows the process until it exits. A feed the daemon refuses or
     /// ends, a lost connection, or a feed that ends with no word while the
-    /// process runs is the card's `problem`, and the card follows it again,
-    /// waiting 5 s and doubling to a minute; the next sample clears it. A
-    /// process that has exited meanwhile is not followed again.
+    /// process runs is the card's `problem`, and the card follows it again
+    /// (`follow`); the next sample clears it. A process that has exited
+    /// meanwhile is not followed again.
     func start() {
         guard task == nil else { return }
         refreshHelpers()
         let client = client
-        let parameters = ProcessSampleParameters(pid: target.pid, startedAt: target.startedAt)
-        let identity = ProcessIdentity(pid: target.pid, startedAt: target.startedAt)
-        let (firstDelay, isRunning) = (retryDelay, self.isRunning)
+        let identity = target.identity
+        let parameters = ProcessSampleParameters(
+            pid: identity.pid, startedAt: identity.startedAt, interval: Self.interval)
+        let (retry, back, isRunning) = (retry, back, self.isRunning)
         task = Task { [weak self] in
-            var delay = firstDelay
-            while true {
-                let reason: String
-                do {
-                    for try await (payload, _) in try await client.events(
-                        ProcessSampleEvent.self, parameters: parameters)
-                    {
-                        guard let self else { return }
-                        if self.problem != nil { self.problem = nil }
-                        delay = firstDelay
-                        self.apply(payload)
-                        if !payload.running { return }
+            await follow(
+                retry: retry, back: back,
+                subscribe: { try await client.events(ProcessSampleEvent.self, parameters: parameters) },
+                event: { sample in
+                    guard let self else { return false }
+                    if self.problem != nil { self.problem = nil }
+                    self.apply(sample.0)
+                    return sample.0.running
+                },
+                stopped: { end in
+                    guard let self else { return false }
+                    guard isRunning(identity) else {
+                        self.running = false
+                        self.problem = nil
+                        return false
                     }
-                    if Task.isCancelled { return }
-                    reason = "meerkatd stopped following this process"
-                } catch is CancellationError {
-                    return
-                } catch DaemonClient.ClientError.daemon(let message) {
-                    reason = message
-                } catch {
-                    reason = "\(error)"
-                }
-                guard let self else { return }
-                guard isRunning(identity) else {
-                    self.running = false
-                    self.problem = nil
-                    return
-                }
-                self.problem = reason
-                do { try await Task.sleep(for: delay) } catch { return }
-                delay = min(delay * 2, Self.longestRetry)
-            }
+                    switch end {
+                    case .ended(nil): self.problem = "meerkatd stopped following this process"
+                    case .notSubscribed(let fault), .ended(let fault?): self.problem = fault.description
+                    }
+                    return true
+                })
         }
     }
 
@@ -123,21 +148,27 @@ final class ProcessCardModel {
         guard let p = payload.process else { return }
         latest = p
         samples += 1
-        cpu.append(p.cpuPct, limit: Self.history)
+        cpu.append(p.cpuPct)
         // Another user's process reports CPU only: a counter this user
         // can't read adds no point, so its tile shows "–" over an empty
         // chart rather than a line at a zero nobody measured.
-        if let footprint = p.footprintMB { memory.append(footprint, limit: Self.history) }
-        if let watts = p.energyWatts { energy.append(watts, limit: Self.history) }
-        if let written = p.diskWriteMBps { disk.append(written, limit: Self.history) }
+        if let footprint = p.footprintMB { memory.append(footprint) }
+        if let watts = p.energyWatts { energy.append(watts) }
+        if let written = p.diskWriteMBps { disk.append(written) }
         if samples % 5 == 1 { refreshHelpers() }
     }
 
     private func refreshHelpers() {
-        let pid = target.pid
+        let identity = target.identity
         // An unreadable table keeps the last list rather than showing none.
         guard let table = try? ProcessTable.all() else { return }
-        helpers = table.filter { $0.parentPid == pid }.map(\.command).sorted()
+        // Only while this instance runs: another process may hold its pid
+        // (or, in sample mode, never did).
+        guard table.contains(where: { $0.identity == identity }) else {
+            helpers = []
+            return
+        }
+        helpers = table.filter { $0.parentPid == identity.pid }.map(\.command).sorted()
     }
 }
 
@@ -163,23 +194,16 @@ struct ProcessCard: View {
         self.metrics = metrics
         self.app = app
         // One-time seed: the card is recreated for another process.
-        _model = State(initialValue: ProcessCardModel(target: target, client: app.client))
+        _model = State(initialValue: ProcessCardModel(target: target, client: app.daemon, back: app.back))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             ProcessCardHeader(target: target)
             ProcessTiles(model: model)
-            if let problem = model.problem {
-                // Why the sample feed stopped, in the daemon's words where
-                // it gave some; the model follows the process again, and the
-                // tiles keep their last values meanwhile.
-                Label("Not updating: \(problem). Trying again.", systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .help(problem)
-            }
+            // The model follows the process again, and the tiles keep their
+            // last values meanwhile.
+            if let problem = model.problem { FeedFailureNote(reason: problem) }
             Text("What Meerkat sees")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
@@ -276,9 +300,10 @@ private struct ProcessCardHeader: View {
     private var subtitle: String {
         let started = Date(epochMilliseconds: target.startedAt)
         let ago = started.formatted(.relative(presentation: .named))
-        let user = getpwuid(target.uid).flatMap { String(validatingCString: $0.pointee.pw_name) }
-        return ["pid \(target.pid)", user, "started \(started.formatted(date: .omitted, time: .shortened)), \(ago)"]
-            .compactMap { $0 }.joined(separator: " · ")
+        return [
+            "pid \(target.pid)", UserName.of(target.uid),
+            "started \(started.formatted(date: .omitted, time: .shortened)), \(ago)",
+        ].joined(separator: " · ")
     }
 }
 
@@ -376,7 +401,8 @@ private struct ProcessFacts: View {
         VStack(alignment: .leading, spacing: 10) {
             if !model.running {
                 ProcessFact(
-                    symbol: "xmark.circle", tint: .secondary, title: "Exited", detail: "It is no longer running.")
+                    symbol: "xmark.circle", tint: Status.neutral.color, title: "Exited",
+                    detail: "It is no longer running.")
             }
             if let first = held.first {
                 ProcessFact(
@@ -388,17 +414,17 @@ private struct ProcessFacts: View {
             }
             if !model.helpers.isEmpty {
                 ProcessFact(
-                    symbol: "arrow.triangle.branch", tint: .secondary,
+                    symbol: "arrow.triangle.branch", tint: Status.neutral.color,
                     title: model.helpers.count == 1 ? "Running 1 helper" : "Running \(model.helpers.count) helpers",
                     detail: model.helpers.prefix(4).joined(separator: ", ") + (model.helpers.count > 4 ? ", …" : ""))
             }
             if processRules.isEmpty {
                 ProcessFact(
-                    symbol: "wand.and.rays", tint: .secondary, title: "No rule listens to process events",
+                    symbol: "wand.and.rays", tint: Status.neutral.color, title: "No rule listens to process events",
                     detail: "Make one to get told, throttle it or record it")
             } else {
                 ProcessFact(
-                    symbol: "wand.and.rays", tint: .secondary,
+                    symbol: "wand.and.rays", tint: Status.neutral.color,
                     title: processRules.count == 1
                         ? "1 rule listens to process events" : "\(processRules.count) rules listen to process events",
                     detail: processRules.map(\.file).joined(separator: ", "))
@@ -439,11 +465,11 @@ enum ProcessControl {
     /// The app bundle for an app's executable, the file otherwise.
     static func reveal(_ target: ProcessTarget) {
         guard let path = target.path else { return }
-        var url = URL(fileURLWithPath: path)
         if let range = path.range(of: ".app/Contents/MacOS/") {
-            url = URL(fileURLWithPath: String(path[..<range.lowerBound]) + ".app")
+            Finder.reveal(String(path[..<range.lowerBound]) + ".app")
+        } else {
+            Finder.reveal(path)
         }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     enum QuitOutcome: Equatable {
@@ -477,10 +503,7 @@ enum ProcessControl {
     /// anything else; `force` is SIGKILL. The pid is checked against the
     /// start time first, so a reused pid is never signalled.
     static func quit(_ target: ProcessTarget, force: Bool) -> QuitOutcome {
-        guard
-            ProcessTable.record(pid: target.pid)?.identity
-                == ProcessIdentity(pid: target.pid, startedAt: target.startedAt)
-        else { return .exited }
+        guard ProcessTable.record(of: target.identity) != nil else { return .exited }
         if let app = NSRunningApplication(processIdentifier: target.pid) {
             return (force ? app.forceTerminate() : app.terminate()) ? .sent : .declined
         }

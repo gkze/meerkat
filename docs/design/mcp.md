@@ -142,9 +142,13 @@ reconnects must send `subscriptions/listen` again. The bridge cannot
 reconnect for the client without parsing MCP. So the bridge checks the
 daemon's pid and start time every 2 s and exits (status 69) when they change
 or the daemon is unreachable. The client sees the transport close, restarts
-the stdio server, and listens again (D6). A client line over the daemon's
-4 MiB message limit ends the bridge with status 1 instead: the input is at
-fault, and a new bridge would refuse it too.
+the stdio server, and listens again (D6). The daemon turns a message away
+only for the session's state, never for what it says (MCP answers that in
+band): 1024 messages waiting, or the session closing as the daemon shuts
+down. Those end the bridge with 69 too, since a new session starts empty. A
+client line over the daemon's 4 MiB message limit, or a daemon of a
+different build, ends it with status 1 instead: a new bridge would meet it
+too.
 
 A Streamable HTTP transport is a possible later addition for clients that
 cannot start a process. It would need a bearer token (from the Keychain,
@@ -539,10 +543,17 @@ command and resolve each `meerkat://` URI and tool they name.
   `pasteboard.changed` carries a counter; `session.logins` carries user
   names, terminals and a remote login's host), so a new one can't be open
   without a decision.
-- **No permission prompts from MCP.** Subscribing over MCP to a kind that
-  needs a TCC permission the user has not granted fails with the Settings
-  pane, as it does for a rule, and never shows a prompt attributed to
-  Meerkat.app at a moment the user did not choose.
+- **No permission prompts from MCP.** Sampling over MCP a kind that needs a
+  TCC permission the user has not granted fails with the Settings pane, and
+  so does a kind that runs without it but would ask as it starts
+  (`network.wifi` before Location is decided): it never shows a prompt
+  attributed to Meerkat.app at a moment the user did not choose. A kind that
+  runs without it once the user refused (`network.wifi`) is sampled, with
+  less in it.
+- **A hidden tool can't be called.** A tool the policy hides now
+  (`system_sample` while a kind it reads is denied) is left out of
+  `tools/list` and refused when called, whatever the tool's own call
+  checks.
 - **Mutations are marked.** Every tool carries MCP annotations: today all
   are `readOnlyHint`, and a tool that changes state will carry
   `destructiveHint` and `idempotentHint`, which mean something only then, so

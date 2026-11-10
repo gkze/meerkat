@@ -1,5 +1,10 @@
 load("@prelude//cfg/exec_platform:marker.bzl", "get_exec_platform_marker")
 
+# The hosts, `<os>-<cpu>`, that something here runs on, each a config_setting
+# of ./BUCK: macOS, where everything builds, and Linux, which runs the
+# `portable` checks (.github/workflows/ci.yml).
+HOSTS = ["macos-arm64", "linux-arm64"]
+
 def _execution_platform_impl(ctx: AnalysisContext) -> list[Provider]:
     configuration = ctx.attrs.platform[PlatformInfo].configuration
     platform = ExecutionPlatformInfo(

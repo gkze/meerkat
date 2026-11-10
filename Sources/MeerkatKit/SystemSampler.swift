@@ -1,9 +1,13 @@
 import Foundation
 
 /// One complete `SystemSample`: memory, load, a process window and optional
-/// path churn. Shared by `meerkat sample` and the daemon's `store.record`
-/// effect, so a recorded sample means the same thing whichever took it.
+/// path churn. Shared by `meerkat sample`, MCP's `system_sample` and the
+/// daemon's `store.record` effect, so a recorded sample means the same thing
+/// whichever took it.
 public enum SystemSampler {
+    /// What a sample measures. `Options()` is the CLI's and MCP's defaults,
+    /// which read them from here; `store.record` declares longer ones of its
+    /// own (`EffectCatalog`).
     public struct Options: Sendable, Equatable {
         /// The window, in seconds, that CPU, I/O and churn are measured over.
         public var window: Double
@@ -12,7 +16,11 @@ public enum SystemSampler {
         public var systemOnly: Bool
         /// Also count FSEvents activity under this directory.
         public var churnPath: String?
+        /// Path components per churn bucket, counted from `/`.
         public var churnDepth: Int
+
+        /// What `systemOnly` means, wherever a schema offers it.
+        public static let systemOnlyDoc = "Only processes whose executable ships with macOS."
 
         public init(
             window: Double = 10, top: Int = 10, systemOnly: Bool = false,
@@ -26,10 +34,25 @@ public enum SystemSampler {
         }
     }
 
+    /// The busiest churn buckets a sample keeps.
+    static let churnBuckets = 12
+
+    /// Takes a sample over `options.window`. The sampler sleeps through the
+    /// window, so it runs on a dispatch thread, not on one of the few Swift
+    /// concurrency threads every actor in the daemon shares. It can't be
+    /// interrupted: a cancelled caller waits out the window.
+    public static func sample(_ options: Options) async throws -> SystemSample {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<SystemSample, any Error>) in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(with: Result { try measure(options) })
+            }
+        }
+    }
+
     /// Blocks for the window. Churn, when asked for, is counted over the
     /// same window as the processes and CPU, so a writer in the process rows
     /// is in the same sample's churn; memory and load are read at its end.
-    public static func sample(_ options: Options) throws -> SystemSample {
+    private static func measure(_ options: Options) throws -> SystemSample {
         // System services need the full ranking before filtering, otherwise a
         // user-space process can crowd the daemons out of the top-N cut. The
         // host's tick counters bracket the same window as the snapshots.
@@ -40,10 +63,7 @@ public enum SystemSampler {
             let after = try ProcessSampler.snapshot()
             let ticksAfter = HostSampler.cpuTicks()
             let cpuPercent = ticksBefore.flatMap { start in
-                ticksAfter.flatMap { end -> Double? in
-                    guard end.total > start.total, end.busy >= start.busy else { return nil }
-                    return Double(end.busy - start.busy) / Double(end.total - start.total) * 100
-                }
+                ticksAfter.flatMap { HostSampler.usagePercent(from: start, to: $0) }
             }
             return (before, after, cpuPercent)
         }
@@ -53,13 +73,13 @@ public enum SystemSampler {
         if let churnPath = options.churnPath {
             let expanded = (churnPath as NSString).expandingTildeInPath
             (churn, window) = try PathChurnMonitor(root: expanded, depth: options.churnDepth)
-                .measure(during: processWindow)
+                .measure(topBuckets: churnBuckets, during: processWindow)
         } else {
             window = try processWindow()
         }
 
         let memory = try MemorySampler.sample()
-        let load = try MemorySampler.loadAverages()
+        let load = try HostSampler.loadAverages()
 
         let raw = ProcessSampler.deltas(
             previous: window.before, current: window.after, top: options.systemOnly ? .max : options.top)
@@ -75,7 +95,7 @@ public enum SystemSampler {
             timestamp: formatter.string(from: Date()),
             host: ProcessInfo.processInfo.hostName,
             cpuCount: ProcessInfo.processInfo.processorCount,
-            windowSeconds: max(window.after.takenAt.timeIntervalSince(window.before.takenAt), 0.001),
+            windowSeconds: window.after.window(since: window.before),
             cpuUsagePercent: window.cpuPercent,
             load1: load.0, load5: load.1, load15: load.2,
             memory: memory,

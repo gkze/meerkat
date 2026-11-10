@@ -36,7 +36,7 @@ private struct EditorSettings: View {
                 }
                 RuleEditorThemePreview(theme: theme)
             } footer: {
-                Text("Themes follow the app's appearance. Dracula and Nord are always dark.")
+                Text("Themes follow the app's appearance. \(Self.darkOnly) are always dark.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -44,6 +44,10 @@ private struct EditorSettings: View {
         .formStyle(.grouped)
         .fixedSize(horizontal: false, vertical: true)
     }
+
+    /// "Dracula and Nord".
+    private static let darkOnly = RuleEditorTheme.allCases.filter(\.isDarkOnly).map(\.title)
+        .formatted(.list(type: .and))
 }
 
 private struct GeneralSettings: View {
@@ -102,7 +106,7 @@ private struct GeneralSettings: View {
                 if let error = agent.error {
                     Text(error)
                         .font(.caption)
-                        .foregroundStyle(Theme.text(Theme.critical))
+                        .foregroundStyle(Status.critical.text)
                         .lineLimit(3)
                         .textSelection(.enabled)
                 }
@@ -131,47 +135,80 @@ private struct GeneralSettings: View {
 }
 
 /// Asks for the Automation permission that rules' Apple Events effects
-/// need (`appearance.setDark` controls System Events). macOS shows that
-/// prompt only to an app in the foreground, never to meerkatd, and its
-/// answer covers both, so the app asks here. Nothing is checked until the
-/// button is clicked: checking starts System Events.
+/// need, one app at a time, for every app the effect catalog sends them to
+/// (`EffectDescriptor.automation`). macOS shows that prompt only to an app
+/// in the foreground, never to meerkatd, and its answer covers both, so the
+/// app asks here. Nothing is checked until the button is clicked: checking
+/// starts the target app.
 private struct AutomationSection: View {
-    private static let systemEvents = "com.apple.systemevents"
-    @State private var status: AutomationPermission.Status?
-    @State private var asking = false
+    private struct Target: Identifiable {
+        let target: AutomationTarget
+        var effects: [String]
+        var id: String { target.bundleId }
+    }
+
+    /// Each target once, with the effects that need it, in catalog order.
+    private static let targets: [Target] = EffectCatalog.standard.effects.reduce(into: []) { targets, effect in
+        guard let target = effect.automation else { return }
+        if let index = targets.firstIndex(where: { $0.target == target }) {
+            targets[index].effects.append(effect.kind)
+        } else {
+            targets.append(Target(target: target, effects: [effect.kind]))
+        }
+    }
 
     var body: some View {
         Section {
-            LabeledContent("System Events") {
-                HStack(spacing: 6) {
-                    if asking { ProgressView().controlSize(.small) }
-                    Text(label)
-                }
-                .foregroundStyle(.secondary)
-            }
-            if status != .granted {
-                Button("Allow Meerkat to Control System Events…") {
-                    Task {
-                        asking = true
-                        status = await AutomationPermission.request(Self.systemEvents)
-                        asking = false
-                    }
-                }
-                .disabled(asking)
-            }
-            if status == .denied,
-                let url = URL(
-                    string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Automation")
-            {
-                Button("Open Automation Settings…") { Finder.open(url) }
+            ForEach(Self.targets) { entry in
+                AutomationRow(target: entry.target, effects: entry.effects)
             }
         } header: {
             Text("Automation")
         } footer: {
-            Text(footer)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
+            Text(
+                "Rules' effects that control another app send it Apple Events. macOS asks only an app in the "
+                    + "foreground, so Meerkat asks here on meerkatd's behalf."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct AutomationRow: View {
+    let target: AutomationTarget
+    /// The effects that send `target` Apple Events, for the explanation.
+    let effects: [String]
+    @State private var status: AutomationPermission.Status?
+    @State private var asking = false
+
+    var body: some View {
+        LabeledContent(target.name) {
+            HStack(spacing: 6) {
+                if asking { ProgressView().controlSize(.small) }
+                Text(label)
+            }
+            .foregroundStyle(.secondary)
+        }
+        Text(explanation)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+        if status != .granted {
+            Button("Allow Meerkat to Control \(target.name)…") {
+                Task {
+                    asking = true
+                    status = await AutomationPermission.request(target.bundleId)
+                    asking = false
+                }
+            }
+            .disabled(asking)
+        }
+        if status == .denied,
+            let url = URL(
+                string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Automation")
+        {
+            Button("Open Automation Settings…") { Finder.open(url) }
         }
     }
 
@@ -185,14 +222,13 @@ private struct AutomationSection: View {
         }
     }
 
-    private var footer: String {
-        if status == .denied {
-            return "Turn on System Events under Meerkat in Privacy & Security › Automation. "
-                + "If it is already on, macOS kept an earlier answer: run "
-                + "tccutil reset AppleEvents com.gkze.meerkat in Terminal, then click Allow again."
-        }
-        return "Rules that switch dark mode (appearance.setDark) send Apple Events to System Events. "
-            + "macOS asks only an app in the foreground, so Meerkat asks here on meerkatd's behalf."
+    private var explanation: String {
+        let used = "Used by \(effects.joined(separator: ", "))."
+        guard status == .denied else { return used }
+        return used + " Turn on \(target.name) under Meerkat in Privacy & Security › Automation. "
+            + "If it is already on, macOS kept an earlier answer: run "
+            + "tccutil reset AppleEvents \(Bundle.main.bundleIdentifier ?? "com.gkze.meerkat") in Terminal, "
+            + "then click Allow again."
     }
 }
 

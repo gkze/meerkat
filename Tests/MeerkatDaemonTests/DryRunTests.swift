@@ -42,12 +42,11 @@ struct DryRunTests {
             let configuration = RuleEngine.Configuration(
                 rulesDirectory: rules, cacheDirectory: cache, toolchain: toolchain,
                 runtime: DenoRuntime.handlerRuntime, reloadDebounce: .milliseconds(50))
-            let executor = EffectExecutor(
-                store: store, ownProcesses: hub.environment.ownProcesses, notifier: notifier,
-                sampleDatabasePath: root.appendingPathComponent("samples.db").path)
-            engine = RuleEngine(configuration: configuration, hub: hub, store: store, executor: executor)
-            runner = RuleDryRunner(
-                configuration: configuration, hub: hub, store: store, permissionStatus: permissionStatus)
+            let wired = ruleEngine(
+                configuration, hub: hub, store: store, notifier: notifier,
+                sampleDatabase: root.appendingPathComponent("samples.db"), permissionStatus: permissionStatus)
+            engine = wired.engine
+            runner = wired.runner
         }
 
         func marker(_ name: String) -> String { root.appendingPathComponent(name).path }
@@ -231,7 +230,7 @@ struct DryRunTests {
     @Test(arguments: ["missing.ts", "../keep.ts", "lib/keep.ts"])
     func onlyAFileInTheFolderRuns(file: String) async throws {
         let harness = try Harness()
-        await #expect(throws: RuleDryRunner.Failure.self) { try await harness.runner.runSaved(file: file, rule: nil) }
+        await #expect(throws: Refusal.self) { try await harness.runner.runSaved(file: file, rule: nil) }
         await harness.cleanup()
     }
 
@@ -335,7 +334,7 @@ struct DryRunTests {
         #expect(report.runs[1].logs.isEmpty)
         #expect(report.runs[2].result == .skipped(reason: "the daemon's own event (no includeOwn)"))
 
-        await #expect(throws: RuleDryRunner.Failure.self) {
+        await #expect(throws: Refusal.self) {
             try await harness.runner.run(
                 DryRunRequest(file: "picky.ts", text: text, events: .given([DryRunEvent(payload: ["nope": 1])])))
         }
@@ -406,6 +405,10 @@ struct DryRunTests {
             ))
         #expect(report.runs.count == 2, "\(report)")
         #expect(report.runs[0].result == .timedOut(seconds: 0.2))
+        // The fault line is the run's that caused it, however soon the host
+        // stopped after it.
+        #expect(report.runs[0].logs.contains { $0.level == .error && $0.message.hasPrefix("runaway.ts#runaway ") })
+        #expect(!report.fileLogs.contains { $0.message.hasPrefix("runaway.ts#runaway ") })
         guard case .interrupted = report.runs[1].result else {
             Issue.record("\(report.runs[1])")
             return
@@ -454,7 +457,7 @@ struct DryRunTests {
     /// a real status depends on what launched the tests.
     @Test func samplingAKindWithoutItsPermissionStartsNoSource() async throws {
         let harness = try Harness(permissionStatus: { _ in .denied })
-        let failure = await #expect(throws: RuleDryRunner.Failure.self) {
+        let failure = await #expect(throws: Refusal.self) {
             try await harness.runner.run(
                 DryRunRequest(
                     file: "focus.ts",
@@ -469,7 +472,7 @@ struct DryRunTests {
                         """,
                     events: .sampled(seconds: 1, maxEvents: 1)))
         }
-        #expect(failure?.description.contains("accessibility") == true)
+        #expect(failure?.description.contains("Accessibility") == true)
         #expect(harness.hub.statistics().isEmpty)
         await harness.cleanup()
     }
@@ -497,7 +500,7 @@ struct DryRunTests {
             Issue.record("\(report)")
             return
         }
-        #expect(message.contains("accessibility"))
+        #expect(message.contains("Accessibility"))
         await harness.cleanup()
     }
 
@@ -569,7 +572,7 @@ struct DryRunTests {
         // ends; the second asks within that.
         let started = try await eventually { harness.runner.isRunning }
         #expect(started)
-        let second = await #expect(throws: RuleDryRunner.Failure.self) {
+        let second = await #expect(throws: Refusal.self) {
             try await harness.runner.run(DryRunRequest(file: "b.ts", text: "", events: .given([])))
         }
         #expect(second?.description.contains("already running") == true, "\(String(describing: second))")
@@ -580,7 +583,7 @@ struct DryRunTests {
     @Test(arguments: ["../up.ts", "lib/a.ts", ".hidden.ts", "a.d.ts", "a.js", ".ts", ""])
     func namesOutsideTheDirectoryAreRefused(file: String) async throws {
         let harness = try Harness()
-        await #expect(throws: RuleDryRunner.Failure.self) {
+        await #expect(throws: Refusal.self) {
             try await harness.runner.run(DryRunRequest(file: file, text: "", events: .given([])))
         }
         await harness.cleanup()
@@ -647,6 +650,10 @@ struct DryRunProtocolTests {
 
 /// `EffectSimulator`, without a runtime.
 struct EffectSimulatorTests {
+    /// Every permission granted and no path protected: what is checked is
+    /// the simulation, not the grants.
+    static let anyGrantedAuthorizer = EffectAuthorizer(permissionStatus: { _ in .granted }, protectedPaths: [])
+
     private func rule(_ capabilities: JSONValue = [:]) throws -> RuleDefinition {
         try RuleDefinition(
             file: "a.ts", raw: ["name": "r", "on": "memory.pressure", "capabilities": capabilities], catalog: .standard)
@@ -668,7 +675,7 @@ struct EffectSimulatorTests {
     }
 
     @Test func aDeletedKeyIsGoneForTheRestOfTheRun() throws {
-        var simulator = EffectSimulator(authorizer: EffectAuthorizer()) { _, _ in "stored" }
+        var simulator = EffectSimulator(authorizer: Self.anyGrantedAuthorizer) { _, _ in "stored" }
         let definition = try rule()
         let get: JSONValue = ["kind": "state.get", "key": "k"]
         #expect(
@@ -679,7 +686,7 @@ struct EffectSimulatorTests {
     }
 
     @Test func anInvalidRequestIsRefused() throws {
-        var simulator = EffectSimulator(authorizer: EffectAuthorizer()) { _, _ in nil }
+        var simulator = EffectSimulator(authorizer: Self.anyGrantedAuthorizer) { _, _ in nil }
         let result = simulator.perform(["kind": "no.such.effect"], for: try rule())
         guard case .refused = result.effect.outcome, case .failure = result.outcome else {
             Issue.record("\(result.effect)")
@@ -689,10 +696,10 @@ struct EffectSimulatorTests {
 
     /// What the executor refuses, a dry run refuses: both go through `admit`.
     @Test func requestChecksApplyInADryRun() throws {
-        var simulator = EffectSimulator(authorizer: EffectAuthorizer()) { _, _ in nil }
+        var simulator = EffectSimulator(authorizer: Self.anyGrantedAuthorizer) { _, _ in nil }
         let large = String(repeating: "x", count: 1 << 20)
         let tooLarge = simulator.perform(["kind": "state.set", "key": "k", "value": .string(large)], for: try rule())
-        #expect(tooLarge.outcome == .failure(message: "state.set: values are limited to 1 MiB of JSON"))
+        #expect(tooLarge.outcome == .failure(message: "state.set: value is limited to 1 MiB of JSON"))
 
         let definition = try RuleDefinition(
             file: "a.ts",
@@ -713,7 +720,7 @@ struct EffectSimulatorTests {
     /// permission, and what they return isn't the rule's yet.
     @Test func onlyStateIsRead() throws {
         var simulator = EffectSimulator(
-            authorizer: EffectAuthorizer(permissionStatus: { _ in .granted })
+            authorizer: EffectAuthorizer(permissionStatus: { _ in .granted }, protectedPaths: [])
         ) { _, _ in nil }
         let definition = try rule(["clipboard": ["read": true]])
         let result = simulator.perform(["kind": "clipboard.read"], for: definition)

@@ -16,18 +16,21 @@ use deno_runtime::deno_permissions::{Permissions, PermissionsContainer, Permissi
 use deno_runtime::permissions::RuntimePermissionDescriptorParser;
 use deno_runtime::worker::{MainWorker, WorkerOptions, WorkerServiceOptions};
 use deno_runtime::{BootstrapOptions, FeatureChecker};
+use serde::Serialize;
+use serde_json::value::RawValue;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use crate::host::Shared;
+use crate::host::{self, Shared};
 use crate::loader::{MemoryLoader, RuleModules, module_specifier};
 use crate::protected::{GuardedFs, Protected};
-use crate::protocol::{FilePermissions, HandlerError, HostLogLevel, HostToDaemon, MAXIMUM_MESSAGE_TEXT};
+use crate::protocol::{FilePermissions, HandlerError, HostLogLevel, HostToDaemon, MAXIMUM_MESSAGE_TEXT, MAXIMUM_TEXT};
 use crate::watchdog::WorkerId;
 
 type Sys = sys_traits::impls::RealSys;
 type Parser = RuntimePermissionDescriptorParser<Sys>;
 
-/// The Deno release these crates are (`DENO_VERSION` in build.rs).
+/// The Deno release these crates are (`DENO_VERSION` in deno.bzl), which
+/// rule code reads as `Deno.version.deno`.
 pub const DENO_VERSION: &str = env!("DENO_VERSION");
 /// Each file's JavaScript heap. Past it the file's worker is stopped rather
 /// than letting V8 abort the daemon. Memory outside the heap (`ArrayBuffer`
@@ -37,22 +40,49 @@ const HEAP_LIMIT: usize = 256 << 20;
 /// More than V8's largest single object: a string reaches about 512 MiB and
 /// an array about 1 GiB.
 const LARGEST_ALLOCATION: usize = 2 << 30;
-/// Longest log message, error message or stack, and log label, in bytes;
-/// longer ones are cut. Well within `MAXIMUM_MESSAGE_TEXT`, so what rule code
-/// logs or throws never stops the host.
-const MAXIMUM_TEXT: usize = 64 << 10;
+/// Marks text `cut` shortened.
+const CUT: &str = " [cut]";
 
 /// Why a worker past `HEAP_LIMIT` stopped, following the file's or rule's
 /// name.
 pub fn heap_exhausted() -> String {
-    format!("passed its JavaScript heap limit of {} MB", HEAP_LIMIT >> 20)
+    format!("passed its JavaScript heap limit of {} MiB", HEAP_LIMIT >> 20)
 }
 
 pub enum Inbound {
-    /// A message for the JavaScript dispatcher, as JSON.
-    Js(String),
+    Js(JsMessage),
     /// Replaces what the file's code may do through Deno's APIs.
     Permit(FilePermissions),
+}
+
+/// A message for runtime.js's dispatcher (`dispatch`), which handles these
+/// and throws on any other `type`. JSON the daemon sent goes in as it came,
+/// checked to be JSON where the host received it.
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum JsMessage {
+    /// The file to load, by the name the host gives it and its module URL,
+    /// with the daemon's effect table.
+    Load {
+        file: String,
+        url: String,
+        effects: Box<RawValue>,
+    },
+    /// Run the handler called `name`, handing it `rule`, its id.
+    Invoke {
+        invocation: u64,
+        rule: String,
+        name: String,
+        event: Box<RawValue>,
+    },
+    EffectSucceeded {
+        local: u64,
+        value: Box<RawValue>,
+    },
+    EffectFailed {
+        local: u64,
+        message: String,
+    },
 }
 
 /// How the host stops a worker from another thread.
@@ -339,7 +369,7 @@ const CROSS_FILE_OPS: [&str; 2] = ["op_lock_manager_request", "op_lock_manager_q
 /// reach a protected path through a symlink. Its other `cp` ops only prepare
 /// those, so the whole family is off: copy with `copyFile` and `mkdir`.
 ///
-/// What was audited, at `DENO_RUNTIME_VERSION` (build.rs), and must be again
+/// What was audited, at `DENO_RUNTIME_VERSION` (deno.bzl), and must be again
 /// when it moves: every op and native class of `deno_fs`, `deno_node`,
 /// `deno_node_sqlite`, `deno_io`, `deno_net`, `deno_kv`, `deno_cache` and
 /// `deno_webstorage` that creates, links, renames, clones or writes a path.
@@ -417,7 +447,22 @@ async fn op_meerkat_next(state: Rc<RefCell<OpState>>) -> Option<String> {
     let mut inbox = inbox.lock().await;
     loop {
         match inbox.recv().await? {
-            Inbound::Js(text) => return Some(text),
+            Inbound::Js(message) => match serde_json::to_string(&message) {
+                Ok(text) => return Some(text),
+                // Strings, numbers and checked JSON: not reached. An
+                // invocation is still answered, or the daemon would wait on
+                // it until it stops the host as unresponsive.
+                Err(error) => {
+                    let (host, id) = context(&state.borrow());
+                    let reason = format!("could not encode a message for the runtime: {error}");
+                    match message {
+                        JsMessage::Invoke { invocation, .. } => {
+                            host.invocation_done(id, invocation, Some(HandlerError::new(reason)));
+                        }
+                        _ => host.send(HostToDaemon::Log { rule: None, level: HostLogLevel::Error, message: reason }),
+                    }
+                }
+            },
             Inbound::Permit(permissions) => {
                 let result = apply(&mut state.borrow_mut(), &permissions);
                 if let Err(error) = result {
@@ -433,15 +478,16 @@ async fn op_meerkat_next(state: Rc<RefCell<OpState>>) -> Option<String> {
     }
 }
 
-/// Text cut to `MAXIMUM_TEXT` bytes, on a character boundary.
+/// Text cut to at most `MAXIMUM_TEXT` bytes, on a character boundary, its
+/// end marked.
 pub(crate) fn cut(mut text: String) -> String {
     if text.len() > MAXIMUM_TEXT {
-        let mut end = MAXIMUM_TEXT;
+        let mut end = MAXIMUM_TEXT - CUT.len();
         while !text.is_char_boundary(end) {
             end -= 1;
         }
         text.truncate(end);
-        text.push_str(" [cut]");
+        text.push_str(CUT);
     }
     text
 }
@@ -460,12 +506,10 @@ fn handler_error(text: String) -> HandlerError {
 fn op_meerkat_loaded(state: &mut OpState, #[string] definitions: Option<String>, #[string] error: Option<String>) {
     let (host, id) = context(state);
     let result = match (definitions, error) {
-        (Some(text), _) if text.len() > MAXIMUM_MESSAGE_TEXT => Err(HandlerError::new(format!(
-            "its rule definitions take {} bytes; at most {MAXIMUM_MESSAGE_TEXT} fit in one message",
-            text.len()
-        ))),
-        (Some(text), _) => serde_json::from_str::<Vec<serde_json::Value>>(&text)
-            .map_err(|e| HandlerError::new(format!("the file did not report its rules: {e}"))),
+        (Some(text), _) => host::definitions_fit(text.len()).and_then(|()| {
+            serde_json::from_str::<Vec<serde_json::Value>>(&text)
+                .map_err(|e| HandlerError::new(format!("the file did not report its rules: {e}")))
+        }),
         (None, Some(text)) => Err(handler_error(text)),
         (None, None) => Err(HandlerError::new("the file did not report its rules")),
     };
@@ -545,18 +589,19 @@ mod tests {
         }
     }
 
-    /// The declarations in types/deno/ describe the Deno release built on
-    /// `DENO_RUNTIME_VERSION` (build.rs). The default `deno_version` of
-    /// `deno_runtime` is its own crate version, so this compares that with
+    /// The declarations rule code is checked against, and the version it
+    /// reads, are `DENO_VERSION`'s, a Deno release built on
+    /// `DENO_RUNTIME_VERSION` (both in deno.bzl). The default `deno_version`
+    /// of `deno_runtime` is its own crate version, so this compares that with
     /// the `deno_runtime` actually linked.
     #[test]
-    fn the_copied_declarations_match_the_linked_deno_runtime() {
+    fn the_pinned_deno_release_matches_the_linked_deno_runtime() {
         assert_eq!(
             BootstrapOptions::default().deno_version,
             env!("DENO_RUNTIME_VERSION"),
-            "deno_runtime changed: copy types/deno/ from the deno release built on it, re-audit the ops that \
-             write around the guarded file system (`UNGUARDED_WRITE_OPS`), then update DENO_VERSION and \
-             DENO_RUNTIME_VERSION in build.rs"
+            "deno_runtime changed: re-audit the ops that write around the guarded file system \
+             (`UNGUARDED_WRITE_OPS`), then in Sources/meerkat-runtime/deno.bzl set DENO_VERSION to the Deno \
+             release built on it, with its libraries' hashes, and DENO_RUNTIME_VERSION to match"
         );
     }
 

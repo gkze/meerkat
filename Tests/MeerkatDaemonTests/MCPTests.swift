@@ -33,10 +33,11 @@ struct MCPTests {
         try peer.notify("notifications/initialized")
 
         let tools = try await peer.request("tools/list")
+        // In the table's order; no system_sample, since the fixture's catalog
+        // has none of the kinds it reads.
         #expect(
-            tools["result"]?["tools"]?.arrayValue?.map { $0["name"] } == [
-                "events_sample", "samples_compare", "resource_read", "rules_check", "rules_dry_run",
-            ])
+            tools["result"]?["tools"]?.arrayValue?.compactMap { $0["name"]?.stringValue }
+                == ["events_sample", "samples_compare", "resource_read", "rules_check", "rules_dry_run"])
         // Caching hints belong to 2026-07-28 results only.
         #expect(tools["result"]?["ttlMs"] == nil)
         #expect(tools["result"]?["resultType"] == nil)
@@ -112,9 +113,8 @@ struct MCPTests {
         let tools = try #require(response["result"]?["tools"]?.arrayValue)
         // No system_sample: the fixture's catalog has none of the kinds it reads.
         #expect(
-            tools.compactMap { $0["name"]?.stringValue }.sorted() == [
-                "events_sample", "resource_read", "rules_check", "rules_dry_run", "samples_compare",
-            ])
+            tools.compactMap { $0["name"]?.stringValue }
+                == ["events_sample", "samples_compare", "resource_read", "rules_check", "rules_dry_run"])
         for tool in tools { #expect(tool["annotations"]?["readOnlyHint"] == true) }
     }
 
@@ -160,12 +160,21 @@ struct MCPTests {
         #expect(unknown["error"]?["code"] == -32602)
     }
 
+    /// What the server tells every client at `initialize` names only its
+    /// own tools and prompts.
+    @Test func instructionsNameRealToolsAndPrompts() {
+        let text = MCPService.instructions
+        let tools = text.matches(of: /\b[a-z]+_[a-z_]+\b/).map { String($0.0) }
+        #expect(!tools.isEmpty)
+        for name in tools { #expect(MCPService.toolNames.contains(name), "\(name)") }
+        let prompts = text.matches(of: /\bmeerkat-[a-z]+\b/).map { String($0.0) }
+        #expect(!prompts.isEmpty)
+        for name in prompts { #expect(AgentSkill.named(name) != nil, "\(name)") }
+    }
+
     /// The skills may not name what this server doesn't have.
     @Test func skillsNameRealResourcesAndTools() throws {
-        let tools = [
-            MCPService.sampleToolName, SystemSampleTool.name, MCPService.compareToolName, MCPService.readToolName,
-            MCPService.checkToolName, MCPService.dryRunToolName,
-        ]
+        let tools = MCPService.toolNames
         for skill in AgentSkill.all {
             let uris = skill.instructions.matches(of: /`(meerkat:\/\/[^`]+)`/).map { String($0.1) }
             for uri in uris {
@@ -184,13 +193,13 @@ struct MCPTests {
 
     /// A sample carries what process.top, cpu.sample and memory.sample
     /// do, so it is offered only while the policy allows all three, and a
-    /// call checks again.
+    /// call is refused while it is hidden.
     @Test func systemSampleNeedsThePolicyToAllowWhatItReads() async throws {
         #expect(SystemSampleTool(policy: .standard, catalog: .standard).deniedKinds.isEmpty)
         let denying = MCPPolicy(.init(events: .init(deny: ["process.*"])))
         let denied = SystemSampleTool(policy: denying, catalog: .standard)
         #expect(denied.deniedKinds == ["process.top"])
-        #expect(throws: SystemSampleTool.Failure.self) { try denied.request([:]) }
+        #expect(denied.denial?.contains("denies process.top") == true)
 
         let peer = try Peer()
         let result = try await tool(SystemSampleTool.name, [:], on: peer)
@@ -206,16 +215,16 @@ struct MCPTests {
         for arguments: JSONValue in [
             ["window": 0], ["window": 31], ["top": 0], ["top": 51], ["top": 2.5], ["churn": "~"], ["window": "5"],
         ] {
-            #expect(throws: SystemSampleTool.Failure.self, "\(arguments)") { try sampler.request(arguments) }
+            #expect(throws: Refusal.self, "\(arguments)") { try sampler.request(arguments) }
         }
         // The window's ceiling is the policy's.
         let short = SystemSampleTool(policy: MCPPolicy(.init(limits: .init(sampleSeconds: 5))), catalog: .standard)
         #expect(try short.request([:]).window == 5)
-        #expect(throws: SystemSampleTool.Failure.self) { try short.request(["window": 6]) }
+        #expect(throws: Refusal.self) { try short.request(["window": 6]) }
     }
 
     @Test func systemSampleMeasuresAWindow() async throws {
-        let sample = try await SystemSampleTool.run(.init(window: 0.2, top: 3))
+        let sample = try await SystemSampler.sample(.init(window: 0.2, top: 3))
         #expect(sample.windowSeconds > 0)
         #expect(sample.processes.count <= 3)
     }
@@ -434,7 +443,8 @@ struct MCPTests {
         #expect(try await peer.call(["kind": "test.tick", "maxEvents": 3])["isError"] == true)
         let tools = try await peer.request("tools/list", modern: true)
         let maxEvents = tools["result"]?["tools"]?.arrayValue?.first?["inputSchema"]?["properties"]?["maxEvents"]
-        #expect(maxEvents?["description"]?.stringValue?.contains("1 to 2, default 2") == true)
+        #expect(maxEvents?["maximum"] == 2)
+        #expect(maxEvents?["default"] == 2)
         // Leaving maxEvents out stays valid under a ceiling below the default.
         let capped = try await peer.call(["kind": "test.tick"])
         #expect(capped["isError"] == false)
@@ -456,7 +466,7 @@ struct MCPTests {
         let result = try await peer.call(["kind": "test.secret"])
         #expect(result["isError"] == true)
         let text = result["content"]?.arrayValue?.first?["text"]?.stringValue ?? ""
-        #expect(text.contains("accessibility"))
+        #expect(text.contains("Accessibility"))
         #expect(peer.hub.statistics().isEmpty)
     }
 
@@ -541,7 +551,8 @@ enum SecretEvent: EventKind {
     typealias Payload = EmptyPayload
 
     static let descriptor = EventDescriptor(
-        "test.secret", "test", mechanism: .push, semantics: .occurrence, loss: .none, permission: .accessibility,
+        "test.secret", "test", mechanism: .push, semantics: .occurrence, loss: .none,
+        permission: .required(.accessibility),
         observation: .open, source: "test")
 
     static func makeSource(

@@ -1,4 +1,5 @@
 load("//buck2/rules:meerkat.bzl", "meerkat_swift_test")
+load("//buck2/third_party/js:defs.bzl", "js_tool")
 
 # The end-to-end tests run rules in the real runtime, and check and lint them
 # with the toolchains Meerkat.app bundles.
@@ -7,7 +8,7 @@ meerkat_swift_test(
     env = {
         "MEERKAT_LINT_TOOLCHAIN": "$(location //Tools/Bundler:lint-toolchain)",
         "MEERKAT_RUNTIME_TYPES": "$(location //Sources/meerkat-rules:deno.d.ts)",
-        "MEERKAT_TSRS": "$(location //buck2/third_party/js:tsrs)/tsrs",
+        "MEERKAT_TSRS": js_tool("tsrs"),
     },
     deps = [
         "//Sources/MeerkatDaemon:MeerkatDaemon",

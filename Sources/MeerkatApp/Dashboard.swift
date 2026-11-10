@@ -25,7 +25,7 @@ struct Dashboard: View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: 14) {
                 if case .unavailable(let fault) = model.connection {
-                    ConnectionBanner(fault: fault, agent: app.agent) { model.reconnect() }
+                    ConnectionBanner(fault: fault, agent: app.agent)
                 }
                 LazyVGrid(columns: columns, spacing: 14) {
                     opening(.cpu) {
@@ -67,7 +67,7 @@ struct Dashboard: View {
         }
         .buttonStyle(CardButtonStyle())
         .environment(\.cardOpensPage, true)
-        .environment(\.feedFailure, model.feedFailure(resource))
+        .environment(\.feedFailure, model.feedFailure(resource, on: .card))
         .accessibilityHint("Opens the \(resource.title) page")
         .accessibilityActions(actions)
     }
@@ -132,33 +132,6 @@ enum Resource: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    /// The event kinds its card and page show, so a failed feed is reported
-    /// where its numbers stop.
-    var feeds: [String] {
-        switch self {
-        case .cpu: [CPUSampleEvent.descriptor.name, ThermalStateEvent.descriptor.name, ProcessTopEvent.descriptor.name]
-        case .memory:
-            [MemorySampleEvent.descriptor.name, MemoryPressureEvent.descriptor.name, ProcessTopEvent.descriptor.name]
-        case .disk: [DiskSampleEvent.descriptor.name, ProcessTopEvent.descriptor.name]
-        case .network: [NetworkSampleEvent.descriptor.name, NetworkPathEvent.descriptor.name]
-        case .power:
-            [
-                BatterySampleEvent.descriptor.name, PowerSourceEvent.descriptor.name,
-                LowPowerModeEvent.descriptor.name, PowerAssertionsEvent.descriptor.name,
-            ]
-        case .files: [FSChurnEvent.descriptor.name]
-        }
-    }
-
-    /// `feeds`, plus what only its page shows: the CPU, Memory, Disk and
-    /// Power pages' process tables read `process.list`, which no card does.
-    var pageFeeds: [String] {
-        switch self {
-        case .cpu, .memory, .disk, .power: feeds + [ProcessListEvent.descriptor.name]
-        case .network, .files: feeds
-        }
-    }
-
     var tint: Color {
         switch self {
         case .cpu: Theme.cpu
@@ -172,14 +145,6 @@ enum Resource: String, CaseIterable, Identifiable, Hashable {
 }
 
 extension MetricsModel {
-    /// Why some of `resource`'s numbers have stopped, in the daemon's words;
-    /// nil while all its feeds run. `onPage` adds the feeds only its page
-    /// shows (`Resource.pageFeeds`).
-    func feedFailure(_ resource: Resource, onPage: Bool = false) -> String? {
-        let reasons = (onPage ? resource.pageFeeds : resource.feeds).compactMap { feedFailures[$0] }
-        return reasons.isEmpty ? nil : reasons.joined(separator: " · ")
-    }
-
     /// Active, wired and compressed pages: memory apps and the system hold.
     /// Decimal megabytes, like `MemorySample`.
     var memoryInUseMB: Double? {
@@ -196,9 +161,7 @@ extension MetricsModel {
         case .memory: return memoryInUseMB.map(MemorySize.text(megabytes:))
         case .disk: return Format.megabytesPerSecond(diskWriteMBps)
         case .network: return RateUnit.text(networkReceivedMBps)
-        case .power:
-            guard case .reported(let sample) = battery, let watts = sample.systemPowerWatts else { return nil }
-            return Format.watts(watts)
+        case .power: return battery.sample?.systemPowerWatts.map { Format.watts($0) }
         case .files: return churn.map { "\($0.totalEvents)" }
         }
     }
@@ -219,7 +182,8 @@ extension Readout {
 
 extension MetricsModel {
     /// Where a reading shows. An Overview card is narrower than a resource
-    /// page, and shows less exact figures.
+    /// page, and shows less exact figures, and some feeds drive only one of
+    /// them (`Feed.cards`, `Feed.pages`).
     enum ReadingPlace { case card, page }
 
     func reading(_ resource: Resource, on place: ReadingPlace) -> ResourceReading {
@@ -245,8 +209,7 @@ extension MetricsModel {
                 context: "Downloading · uploading " + RateUnit.text(networkSentMBps),
                 value: RateUnit.number(received.value), unit: received.unit)
         case .power:
-            var sample: BatterySamplePayload?
-            if case .reported(let reported) = battery { sample = reported }
+            let sample = battery.sample
             return ResourceReading(
                 context: sample?.caption ?? "System draw",
                 value: sample.map { Format.number($0.systemPowerWatts ?? 0, digits: 1) } ?? "–", unit: "W")
@@ -276,12 +239,34 @@ extension MetricsModel {
     }
 
     /// The system's own low-battery warning levels.
-    var batteryTint: Color? {
+    var batteryStatus: Status? {
         switch powerSource?.warningLevel {
-        case .early?: Theme.warn
-        case .final?: Theme.critical
+        case .early?: .warning
+        case .final?: .critical
         default: nil
         }
+    }
+
+    /// The battery's charge, health and cycles, as the Power card and page
+    /// both lead with them; dashes until a reading.
+    var batteryStats: [StatRow.Item] {
+        let sample = battery.sample
+        return [
+            .init(label: "Battery", value: batteryText ?? "–", status: batteryStatus),
+            .init(
+                label: "Health", value: sample?.healthPercent.map { Format.percent($0) } ?? "–",
+                status: (sample?.healthPercent ?? 100) < 80 ? .warning : nil),
+            .init(label: "Cycles", value: sample?.cycleCount.map(String.init) ?? "–"),
+        ]
+    }
+}
+
+/// Shown on the Power card and page while Low Power Mode is on.
+struct LowPowerBadge: View {
+    let isOn: Bool
+
+    var body: some View {
+        if isOn { StatusBadge(text: "Low Power Mode", status: .warning) }
     }
 }
 
@@ -318,6 +303,13 @@ struct MemoryPart {
 }
 
 // MARK: - Shared
+
+/// What a list says until it has rows, where a card and its page list the
+/// same thing.
+enum EmptyList {
+    static let traffic = "No traffic in this interval"
+    static let churn = "Watching for changes…"
+}
 
 /// Diagnostic: MEERKAT_PLAIN=1 swaps charts for blank space so the
 /// same binary can attribute its own rendering cost.
@@ -501,12 +493,7 @@ struct ThermalBadge: View {
     let state: ThermalStatePayload.State
 
     var body: some View {
-        switch state {
-        case .nominal: EmptyView()
-        case .fair: StatusBadge(text: state.label, tint: .secondary)
-        case .serious: StatusBadge(text: state.label, tint: Theme.warn)
-        case .critical: StatusBadge(text: state.label, tint: Theme.critical)
-        }
+        if state != .nominal { StatusBadge(text: state.label, status: state.status) }
     }
 }
 
@@ -518,6 +505,14 @@ extension ThermalStatePayload.State {
         case .fair: return "Warm"
         case .serious: return "Hot"
         case .critical: return "Overheating"
+        }
+    }
+
+    var status: Status {
+        switch self {
+        case .nominal, .fair: return .neutral
+        case .serious: return .warning
+        case .critical: return .critical
         }
     }
 }
@@ -561,10 +556,25 @@ struct PressureBadge: View {
     let level: PressureLevel
 
     var body: some View {
-        switch level {
-        case .normal: StatusBadge(text: "Pressure normal", tint: Theme.normal)
-        case .warning: StatusBadge(text: "Pressure elevated", tint: Theme.warn)
-        case .critical: StatusBadge(text: "Pressure critical", tint: Theme.critical)
+        StatusBadge(text: "Pressure \(level.word)", status: level.status)
+    }
+}
+
+extension PressureLevel {
+    /// "elevated": the badge's and the Memory page's word for it.
+    var word: String {
+        switch self {
+        case .normal: return "normal"
+        case .warning: return "elevated"
+        case .critical: return "critical"
+        }
+    }
+
+    var status: Status {
+        switch self {
+        case .normal: return .normal
+        case .warning: return .warning
+        case .critical: return .critical
         }
     }
 }
@@ -615,9 +625,8 @@ private struct NetworkCard: View {
             let interfaces = (model.network?.interfaces ?? [])
                 .sorted { $0.totalBytesPerSecond > $1.totalBytesPerSecond }
             let peak = max(interfaces.prefix(3).map(\.totalBytesPerSecond).max() ?? 1, 1)
-            RankedList(
-                title: "Interfaces", items: interfaces, id: \.name, lanes: 3, empty: "No traffic in this interval"
-            ) { interface in
+            RankedList(title: "Interfaces", items: interfaces, id: \.name, lanes: 3, empty: EmptyList.traffic) {
+                interface in
                 BarRow(
                     label: interface.name, value: RateUnit.text(interface.totalBytesPerSecond / 1e6),
                     fraction: interface.totalBytesPerSecond / peak, tint: Theme.network, monospaced: true)
@@ -637,33 +646,21 @@ private struct PowerCard: View {
 
     var body: some View {
         ProbeCard(resource: .power) {
-            if model.lowPowerMode { StatusBadge(text: "Low Power Mode", tint: Theme.warn) }
+            LowPowerBadge(isOn: model.lowPowerMode)
         } content: {
             switch model.battery {
             case .unavailable(let reason):
                 // Permanent for this Mac, so the card settles on this layout.
                 QuietLine("This Mac reports no battery telemetry")
                     .help(reason)
-            case .waiting:
-                // The reported layout with dashes, so the first battery
-                // reading (up to 5 s in) does not grow the card.
-                readings(nil)
-            case .reported(let sample):
-                readings(sample)
+            case .waiting, .reported:
+                // While waiting, the reported layout with dashes, so the
+                // first battery reading (up to 5 s in) does not grow the card.
+                Readout(model.reading(.power, on: .card))
+                ChartSlot { ResourceChart(resource: .power, model: model) }
+                StatRow(items: model.batteryStats)
             }
         }
-    }
-
-    @ViewBuilder private func readings(_ sample: BatterySamplePayload?) -> some View {
-        Readout(model.reading(.power, on: .card))
-        ChartSlot { ResourceChart(resource: .power, model: model) }
-        StatRow(items: [
-            .init(label: "Battery", value: model.batteryText ?? "–", tint: model.batteryTint),
-            .init(
-                label: "Health", value: sample?.healthPercent.map { Format.percent($0) } ?? "–",
-                tint: (sample?.healthPercent ?? 100) < 80 ? Theme.warn : nil),
-            .init(label: "Cycles", value: sample?.cycleCount.map(String.init) ?? "–"),
-        ])
     }
 }
 
@@ -688,9 +685,7 @@ private struct ChurnCard: View {
             // result.
             let buckets = c?.buckets ?? []
             let peak = max(buckets.prefix(4).map(\.events).max() ?? 1, 1)
-            RankedList(
-                title: "Busiest folders", items: buckets, id: \.path, lanes: 4, empty: "Watching for changes…"
-            ) { b in
+            RankedList(title: "Busiest folders", items: buckets, id: \.path, lanes: 4, empty: EmptyList.churn) { b in
                 BarRow(
                     label: DisplayName.cluster(b.path), value: "\(b.events)",
                     fraction: Double(b.events) / Double(peak), tint: Theme.churn, monospaced: true)
@@ -711,7 +706,7 @@ private struct ProcessDetailActions: View {
 
     var body: some View {
         // The lanes the card shows; `RankedList` lists three.
-        ForEach(model[keyPath: processes].prefix(3).map(ProcessTarget.init)) { target in
+        ForEach(model[keyPath: processes].prefix(3).compactMap(ProcessTarget.init)) { target in
             Button("Show details for \(target.name)") { card = target }
         }
     }
@@ -730,17 +725,16 @@ private struct ProcessBarRow<Row: View>: View {
     @ViewBuilder let row: () -> Row
 
     var body: some View {
-        let target = ProcessTarget(process)
-        row()
-            .contentShape(.rect)
-            .onTapGesture { card = target }
-            .accessibilityAddTraits(.isButton)
-            .help("Show details for \(target.name)")
-            .contextMenu {
-                Button("Show Details") { card = target }
-                Button("Show in Finder") { ProcessControl.reveal(target) }
-                    .disabled(target.path == nil)
-            }
+        if let target = ProcessTarget(process) {
+            row()
+                .contentShape(.rect)
+                .onTapGesture { card = target }
+                .accessibilityAddTraits(.isButton)
+                .help("Show details for \(target.name)")
+                .contextMenu { ProcessMenu(target: target, card: $card) }
+        } else {
+            row()
+        }
     }
 }
 
@@ -752,14 +746,13 @@ private struct ProcessBarRow<Row: View>: View {
 private struct ConnectionBanner: View {
     let fault: DaemonFault
     let agent: AgentControl
-    let fixed: () -> Void
 
     var body: some View {
         let problem = DaemonProblem(fault: fault, agent: agent.status)
         HStack(alignment: .center, spacing: 12) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.title2)
-                .foregroundStyle(Theme.warn)
+                .foregroundStyle(Status.warning.color)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(problem.title).font(.headline)
@@ -770,12 +763,15 @@ private struct ConnectionBanner: View {
                     .textSelection(.enabled)
             }
             Spacer(minLength: 8)
-            AgentFixButton(problem: problem, agent: agent, fixed: fixed)
+            // The feeds come back on their own once the agent does
+            // (`DaemonReturn`).
+            AgentFixButton(problem: problem, agent: agent)
         }
         .padding(14)
-        .background(Theme.warn.opacity(0.10), in: .rect(cornerRadius: Theme.cardRadius))
+        .background(Status.warning.color.opacity(0.10), in: .rect(cornerRadius: Theme.cardRadius))
         .overlay {
-            RoundedRectangle(cornerRadius: Theme.cardRadius).strokeBorder(Theme.warn.opacity(0.35), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: Theme.cardRadius)
+                .strokeBorder(Status.warning.color.opacity(0.35), lineWidth: 0.5)
         }
         .task { agent.refresh() }
     }

@@ -29,10 +29,12 @@ final class AppState {
     /// sheet, so it sits on the window rather than on a process card.
     var newRuleFor: ProcessTarget?
 
-    /// One XPC session and one heartbeat for every page. The Event Explorer,
-    /// process cards and the agent controls always use it; the other models
-    /// take `daemon`, which sample data replaces.
-    let client: DaemonClient
+    /// The daemon every page and process card asks: one XPC session and one
+    /// heartbeat, or sample data's stand-in (`Stand`).
+    let daemon: any DaemonConnection
+    /// Fired when meerkatd may be back, by the client and by `agent`: every
+    /// subscription the app follows retries, or refreshes, at once.
+    let back: DaemonReturn
     let metrics: MetricsModel
     let explorer: ExplorerModel
     let rules: RulesModel
@@ -44,22 +46,44 @@ final class AppState {
     let ruleEditor = RuleEditorSession()
 
     init() {
-        let client = DaemonClient()
-        self.client = client
-        let daemon = Self.daemon(client)
-        metrics = MetricsModel(client: daemon)
-        explorer = ExplorerModel(client: client)
-        rules = RulesModel(client: daemon)
-        dryRun = RuleDryRunModel(client: daemon)
-        health = HealthModel(client: daemon)
-        agent = AgentControl(client: client)
+        let back = DaemonReturn()
+        self.back = back
+        let stand = Stand.chosen(DaemonClient(reconnected: { back.fire() }))
+        daemon = stand.daemon
+        metrics = MetricsModel(client: stand.daemon, hostName: stand.hostName, back: back)
+        explorer = ExplorerModel(client: stand.daemon)
+        rules = RulesModel(client: stand.daemon, rulesDirectory: stand.rulesDirectory, back: back)
+        dryRun = RuleDryRunModel(client: stand.daemon)
+        health = HealthModel(client: stand.daemon, back: back)
+        agent = AgentControl(backend: stand.agent, back: back)
     }
 
-    private static func daemon(_ client: DaemonClient) -> any DaemonConnection {
-        #if DEBUG
-            if SampleData.isEnabled { return SampleDaemon() }
-        #endif
-        return client
+    /// What the models read from outside the app: the daemon, the Mac's
+    /// name, the agent's registration and the rules folder. The one place
+    /// sample data (`MEERKAT_SAMPLE_DATA=1`, debug builds) takes their place,
+    /// so that it shows made-up figures, the Mac's name included, and
+    /// nothing it does reaches the installed daemon, its registration or its
+    /// rules: the editor writes to a scratch folder.
+    private struct Stand {
+        let daemon: any DaemonConnection
+        let hostName: @Sendable () -> String
+        let agent: AgentBackend
+        /// Where the rules folder is until the daemon says.
+        let rulesDirectory: URL
+
+        @MainActor
+        static func chosen(_ client: DaemonClient) -> Stand {
+            #if DEBUG
+                if SampleData.isEnabled {
+                    return Stand(
+                        daemon: SampleDaemon(), hostName: { SampleData.host }, agent: SampleData.agent(),
+                        rulesDirectory: SampleData.rulesDirectory)
+                }
+            #endif
+            return Stand(
+                daemon: client, hostName: { ProcessInfo.processInfo.hostName }, agent: .system(client),
+                rulesDirectory: DaemonPaths.standard().rulesDirectory)
+        }
     }
 
     /// Opens `kind` in the event explorer, with `parameters` ready to

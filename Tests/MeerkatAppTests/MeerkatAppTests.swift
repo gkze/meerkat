@@ -5,6 +5,7 @@ import MeerkatIPC
 import MeerkatKit
 import MeerkatRules
 import SwiftUI
+import Synchronization
 import Testing
 
 @testable import MeerkatApp
@@ -18,15 +19,21 @@ struct SamplingTests {
     /// subscribe.
     @Test(arguments: [SamplingRates.relaxed, .normal, .live])
     func presetsPassTheDaemonsValidation(rates: SamplingRates) throws {
-        try rates.cpuParameters.validate()
-        try rates.chartParameters.validate()
-        try rates.diskParameters.validate()
-        try rates.networkParameters.validate()
-        try rates.processParameters().validate()
-        try rates.listParameters.validate()
-        try rates.churnParameters.validate()
-        try SamplingRates.batteryParameters.validate()
-        try SamplingRates.assertionParameters.validate()
+        for feed in MetricsModel.feeds { try feed.validate(rates) }
+    }
+
+    /// A feed's parameters follow only the rates it lists: the Sampling
+    /// pane checks a field against just those feeds, so one that also read
+    /// another field could be offered a rate the daemon refuses.
+    @Test func feedsFollowOnlyTheRatesTheyList() throws {
+        for feed in MetricsModel.feeds {
+            let base = try #require(feed.encodedParameters(.normal), "\(feed.kind)")
+            for field in SamplingField.allCases where !feed.rates.contains(field) {
+                var changed = SamplingRates.normal
+                changed[keyPath: field.keyPath] *= 3
+                #expect(feed.encodedParameters(changed) == base, "\(feed.kind) follows \(field)")
+            }
+        }
     }
 
     /// Each Custom menu shows its current selection, even off the ladder
@@ -44,7 +51,7 @@ struct SamplingTests {
         let updated = SamplingField.rows.setting(10, in: .live)
         #expect(updated.rows == 10)
         #expect(updated.rank >= 10)
-        try updated.processParameters().validate()
+        for feed in MetricsModel.feeds { try feed.validate(updated) }
     }
 
     /// Custom falls back to Normal until rates are stored, and stored rates
@@ -80,6 +87,50 @@ struct DaemonProblemTests {
         #expect(!resubscribe.isDifferentBuild)
         #expect(DaemonProblem(fault: resubscribe, agent: .enabled).title == "meerkatd isn't answering")
         #expect(DaemonProblem(fault: resubscribe, agent: .notRegistered).title == "meerkatd isn't installed")
+        #expect(resubscribe.title(.refresh) == "Lost contact with meerkatd")
+    }
+
+    private static let contexts: [FaultContext] = [.load(agent: .enabled), .refresh, .dryRun, .subscription]
+
+    /// A refusal is the daemon answering: never "isn't answering" or "lost
+    /// contact", its own words, and no agent action to offer.
+    @Test func aRefusalIsNotASilentDaemon() {
+        let fault = DaemonFault.refused("rules are reloading")
+        #expect(!fault.concernsTheAgent)
+        for context in Self.contexts {
+            #expect(!fault.title(context).contains("isn't answering"), "\(context)")
+            #expect(!fault.title(context).contains("Lost contact"), "\(context)")
+        }
+        for context in [FaultContext.load(agent: .enabled), .refresh, .dryRun] {
+            #expect(fault.explanation(context) == "rules are reloading", "\(context)")
+        }
+    }
+
+    /// Everywhere it is shown, a different build is fixed by the same
+    /// restart.
+    @Test func aDifferentBuildSaysRestartEverywhere() {
+        let fault = DaemonFault.differentBuild("unknown case")
+        #expect(fault.concernsTheAgent)
+        for context in Self.contexts where context != .refresh {
+            #expect(fault.explanation(context).contains("meerkat agent restart"), "\(context)")
+        }
+    }
+
+    /// Only meerkatd's own answer is about one request, which every model
+    /// then reports in place; the rest are about the connection.
+    @Test func onlyTheDaemonsAnswerIsARefusal() {
+        #expect(DaemonFault(DaemonClient.ClientError.daemon("no such kind")) == .refused("no such kind"))
+        let connection: [any Error] = [
+            DaemonClient.ClientError.unreachable("down"), DaemonClient.ClientError.unexpectedReply("status"),
+            DaemonClient.ClientError.resubscribeFailed(kind: "cpu.sample", reason: "starting"),
+            CocoaError(.fileNoSuchFile),
+        ]
+        for error in connection {
+            guard case .unreachable = DaemonFault(error) else {
+                Issue.record("\(error) is not about the connection")
+                continue
+            }
+        }
     }
 }
 
@@ -125,11 +176,11 @@ struct ProcessCounterTests {
 struct RollingSeriesTests {
     @Test("each series numbers its own samples one by one, as SlidingPlot needs to glide")
     func numbering() {
-        var disk = RollingSeries<Double>()
-        var network = RollingSeries<Double>()
+        var disk = RollingSeries<Double>(capacity: 2, spacing: 1)
+        var network = RollingSeries<Double>(capacity: 2, spacing: 1)
         for value in 1...3 {
-            disk.append(Double(value), limit: 2)
-            network.append(Double(value), limit: 2)
+            disk.append(Double(value))
+            network.append(Double(value))
         }
         #expect(disk.points.map(\.id) == [2, 3])
         #expect(network.points.map(\.id) == [2, 3])
@@ -138,13 +189,13 @@ struct RollingSeriesTests {
 
     @Test("a filling series spans its whole window, so each sample moves the chart one slot")
     func windowWhileFilling() {
-        var series = RollingSeries<Double>()
-        series.append(1, limit: 5)
+        var series = RollingSeries<Double>(capacity: 5, spacing: 1)
+        series.append(1)
         #expect(windowDomain(series) == -4...1)
-        series.append(2, limit: 5)
+        series.append(2)
         #expect(windowDomain(series) == -3...2)
         #expect(series.drawn.map(\.id) == [1, 2])
-        for value in 3...7 { series.append(Double(value), limit: 5) }
+        for value in 3...7 { series.append(Double(value)) }
         #expect(windowDomain(series) == 2...7)
         #expect(series.points.map(\.id) == [3, 4, 5, 6, 7])
         // The spare departed sample covers an interrupted glide's left edge.
@@ -154,18 +205,33 @@ struct RollingSeriesTests {
 
     @Test("clearing keeps numbering, so a mark never reuses an id")
     func clearing() {
-        var series = RollingSeries<Double>()
-        series.append(1, limit: 5)
+        var series = RollingSeries<Double>(capacity: 5, spacing: 1)
+        series.append(1)
         series.clear()
-        series.append(2, limit: 5)
+        series.append(2)
         #expect(series.points.map(\.id) == [2])
         #expect(series.departed.isEmpty)
     }
 
+    /// The axis names the time the window covers, before the first sample
+    /// too, and new rates restart it at the new spacing.
+    @Test("a series spans its window at its spacing")
+    func span() {
+        var series = RollingSeries<Double>(capacity: 120, spacing: 1)
+        #expect(series.span == 120)
+        series.append(1)
+        series.restart(capacity: 240, spacing: 0.5)
+        #expect(series.points.isEmpty)
+        #expect(series.span == 120)
+        series.append(2)
+        #expect(series.points.map(\.id) == [2])
+        #expect(SamplingStep.span(RollingSeries<Double>(capacity: 24, spacing: 25).span) == "10 min")
+    }
+
     @Test("a mapped series keeps its numbering and what scrolled out")
     func mapping() {
-        var series = RollingSeries<Double>()
-        for value in 1...4 { series.append(Double(value), limit: 2) }
+        var series = RollingSeries<Double>(capacity: 2, spacing: 1)
+        for value in 1...4 { series.append(Double(value)) }
         let doubled = series.map { $0 * 2 }
         #expect(doubled.points.map(\.id) == [3, 4])
         #expect(doubled.points.map(\.value) == [6, 8])
@@ -174,8 +240,8 @@ struct RollingSeriesTests {
 
     @Test("a series remembers only as many departed samples as the scale uses")
     func departedIsBounded() {
-        var series = RollingSeries<Double>()
-        for value in 0..<(StickyTop.memory + 10) { series.append(Double(value), limit: 3) }
+        var series = RollingSeries<Double>(capacity: 3, spacing: 1)
+        for value in 0..<(StickyTop.memory + 10) { series.append(Double(value)) }
         #expect(series.departed.count == StickyTop.memory)
         #expect(series.departed.last.map { $0.id + 1 } == series.points.first?.id)
     }
@@ -223,22 +289,38 @@ struct StickyTopTests {
 
     @Test("an empty series has no peak")
     func empty() {
-        var series = RollingSeries<Double>()
+        var series = RollingSeries<Double>(capacity: 2, spacing: 1)
         #expect(peak(series) == nil)
-        series.append(5, limit: 2)
+        series.append(5)
         series.clear()
         #expect(peak(series) == nil)
     }
 
     @Test("a spike holds the top while drawn, then shrinks 6% a sample")
     func decay() {
-        var series = RollingSeries<Double>()
-        for value in [10.0, 1] { series.append(value, limit: 2) }
+        var series = RollingSeries<Double>(capacity: 2, spacing: 1)
+        for value in [10.0, 1] { series.append(value) }
         #expect(peak(series) == 10)
-        series.append(1, limit: 2)
+        series.append(1)
         #expect(abs(peak(series)! - 9.4) < 1e-9)
-        series.append(1, limit: 2)
+        series.append(1)
         #expect(abs(peak(series)! - 10 * 0.94 * 0.94) < 1e-9)
+    }
+
+    @Test("a chart's range starts at zero and leaves headroom over the peak")
+    func range() {
+        var series = RollingSeries<Double>(capacity: 2, spacing: 1)
+        #expect(StickyTop.range(of: series, headroom: 1.5) { $0 } == 0...1.5)
+        series.append(10)
+        #expect(StickyTop.range(of: series, headroom: 1.5) { $0 } == 0...15)
+        series.clear()
+        series.append(0)
+        #expect(StickyTop.range(of: series, headroom: 1.5) { $0 }.upperBound > 0)
+        // A rate chart's floor holds a near-idle trace near the bottom.
+        series.append(0.0002)
+        #expect(StickyTop.range(of: series, headroom: 1.25, floor: 0.001, empty: 0.001) { $0 } == 0...0.001)
+        series.clear()
+        #expect(StickyTop.range(of: series, headroom: 1.25, floor: 0.001, empty: 0.001) { $0 } == 0...(0.001 * 1.25))
     }
 
     /// The top used to be kept in view state and advanced once a sample:
@@ -246,13 +328,13 @@ struct StickyTopTests {
     /// series it must draw the same top.
     @Test("the top is the one the per-sample recurrence reached")
     func matchesTheRecurrence() {
-        var series = RollingSeries<Double>()
+        var series = RollingSeries<Double>(capacity: 6, spacing: 1)
         var kept: Double?
         var seed: UInt64 = 7
         for _ in 0..<40 {
             seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
             let value = seed >> 60 == 0 ? 50 : Double(seed >> 59)
-            series.append(value, limit: 6)
+            series.append(value)
             let window = series.points.map(\.value).max()!
             kept = max(window, (kept ?? window) * 0.94)
             #expect(abs(peak(series)! - kept!) < 1e-9)
@@ -346,13 +428,16 @@ struct RuleFileSourceTests {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("AppRuleSources-\(UUID())")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        var files = ["new-rule.ts": RuleEditorModel.template(for: "new-rule.ts")]
+        var files = ["new-rule.ts": RuleFileSource.template(for: "new-rule.ts")]
         for action in ProcessRuleDraft.Action.allCases {
             for otherUser in [false, true] {
-                var draft = ProcessRuleDraft(process: "worker", otherUser: otherUser)
-                draft.action = action
-                draft.fileName = "worker-\(action.rawValue)-\(otherUser ? "all" : "own").ts"
-                files[draft.fileName] = draft.source
+                for metric in ProcessHotParameters.Metric.allCases {
+                    var draft = ProcessRuleDraft(process: "worker", otherUser: otherUser)
+                    draft.action = action
+                    draft.metric = metric
+                    draft.fileName = "worker-\(action.rawValue)-\(metric.rawValue)-\(otherUser ? "all" : "own").ts"
+                    files[draft.fileName] = draft.source
+                }
             }
         }
         for (name, text) in files { try Data(text.utf8).write(to: directory.appendingPathComponent(name)) }
@@ -368,7 +453,7 @@ struct RuleFileSourceTests {
     @Test func aLongDurationStaysWithinTheRateLimit() {
         var draft = ProcessRuleDraft(process: "worker")
         draft.minutes = 1440
-        #expect(draft.source.contains("throttleSeconds: 86400"))
+        #expect(draft.source.contains("throttleSeconds: \(Int(RuleLimits.rateSeconds.maximum!))"))
     }
 }
 
@@ -376,21 +461,16 @@ struct RuleFileSourceTests {
     /// The rules folder is the daemon's, which can move at a restart.
     @MainActor
     struct RulesFolderTests {
-        /// A daemon whose `RulesDirectory` the test moves.
+        /// A daemon whose `RulesDirectory` the test moves. Its rules report
+        /// says where the folder is; nothing else is asked.
         private actor MovingDaemon: DaemonConnection {
             var folder = "/rules/one"
             func move(to folder: String) { self.folder = folder }
 
             func send(_ request: DaemonRequest) async throws -> DaemonReply {
                 switch request {
-                case .rules: return .rules(RulesReport(rules: [], diagnostics: [], compiledAt: nil))
-                case .status:
-                    let s = SampleData.status(uptime: 1)
-                    return .status(
-                        DaemonStatus(
-                            version: s.version, pid: s.pid, startedAt: s.startedAt, executablePath: s.executablePath,
-                            rulesDirectory: folder, handlerHost: s.handlerHost, sources: s.sources, rules: s.rules,
-                            configuration: s.configuration))
+                case .rules:
+                    return .rules(RulesReport(rulesDirectory: folder, rules: [], diagnostics: [], compiledAt: nil))
                 default: throw DaemonClient.ClientError.unexpectedReply("\(request)")
                 }
             }
@@ -437,10 +517,60 @@ struct RuleFileSourceTests {
             #expect(try await daemon.rules() == report)
         }
 
-        @Test("status keeps the real rules folder, so the Rules page's folder does not change")
+        /// What the editor saves in sample mode must not reach the installed
+        /// daemon, which loads every file in its folder.
+        @Test("the rules folder is a scratch one, never the daemon's")
         func rulesFolder() async throws {
-            let status = try await SampleDaemon().status()
-            #expect(status.rulesDirectory == DaemonPaths.standard().rulesDirectory.path)
+            let daemon = SampleDaemon()
+            let folders = [try await daemon.status().rulesDirectory, try await daemon.rules().rulesDirectory]
+            #expect(folders.allSatisfy { $0 == SampleData.rulesDirectory.path })
+            let installed = DaemonPaths.standard().rulesDirectory.standardizedFileURL
+            #expect(SampleData.rulesDirectory.standardizedFileURL != installed)
+        }
+
+        /// The Rules page, the editor and Open File agree in sample mode:
+        /// every file the report names is in the folder.
+        @Test("the rules folder holds every file the sample report names")
+        func rulesFolderFiles() {
+            let report = SampleData.rules
+            let named = Set(
+                report.rules.map(\.file) + (report.diagnostics + (report.lint?.diagnostics ?? [])).compactMap(\.file))
+            for file in named {
+                let url = SampleData.rulesDirectory.appendingPathComponent(file)
+                #expect(FileManager.default.fileExists(atPath: url.path), "\(file)")
+            }
+        }
+
+        /// The sample files are rules as the real declarations type them,
+        /// but for the one the report says fails to compile.
+        @Test("the sample rule files type-check, but for the failing one")
+        func sampleSourcesTypeCheck() async throws {
+            let toolchain = try #require(TypeScriptToolchain.locate(), "set MEERKAT_TSRS, as buck2 test does")
+            let runtime = try #require(toolchain.runtimeDeclarations, "set MEERKAT_RUNTIME_TYPES, as buck2 test does")
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("SampleRules-\(UUID())")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            for (file, text) in SampleData.sources {
+                try Data(text.utf8).write(to: directory.appendingPathComponent(file))
+            }
+            let output = try await RuleCompiler(toolchain: toolchain).compile(
+                rulesDirectory: directory, workDirectory: directory.appendingPathComponent(".work"),
+                declarations: TypeScriptDeclarations.render(),
+                runtimeDeclarations: try String(contentsOf: runtime, encoding: .utf8))
+            let failing = SampleData.rules.diagnostics.filter { $0.tool == .compiler }
+            #expect(output.diagnostics.map(\.file) == failing.map(\.file), "\(output.diagnostics)")
+            #expect(output.diagnostics.map(\.code) == failing.map(\.code))
+        }
+
+        @Test("the explorer's catalog and a process card's feed have sample replies")
+        func explorerAndCard() async throws {
+            let daemon = SampleDaemon()
+            #expect(try await daemon.catalog() == CatalogEntry.entries())
+            let parameters = ProcessSampleParameters(pid: 980, startedAt: 1_700_000_000_000)
+            let samples = try await daemon.events(ProcessSampleEvent.self, parameters: parameters)
+            let first = try #require(try await samples.first { _ in true })
+            #expect(first.0.running)
+            #expect(first.0.process?.pid == 980)
         }
 
         @Test("dropped reports arrive once, with past times, oldest first")
@@ -484,28 +614,54 @@ struct RuleFileSourceTests {
             #expect(try await silent.value.isEmpty)
         }
 
-        private func decodes<Kind: EventKind>(_ kind: Kind.Type, _ parameters: Kind.Parameters) async throws {
-            for try await (_, envelope) in try await SampleDaemon().events(kind, parameters: parameters) {
-                #expect(envelope.kind == Kind.descriptor.name)
-                return
-            }
-        }
-
-        @Test("the Overview's feeds decode as their kinds' payloads")
+        /// Every feed the Overview keeps has a sample payload, which decodes
+        /// as its kind's: a missing one leaves a page blank in sample mode,
+        /// and one that doesn't decode drops the connection.
+        @Test("every Overview feed has a payload that decodes")
+        @MainActor
         func feeds() async throws {
-            let rates = SamplingRates.normal
-            try await decodes(CPUSampleEvent.self, rates.cpuParameters)
-            try await decodes(MemorySampleEvent.self, rates.chartParameters)
-            try await decodes(MemoryPressureEvent.self, NoParameters())
-            try await decodes(DiskSampleEvent.self, rates.diskParameters)
-            try await decodes(NetworkSampleEvent.self, rates.networkParameters)
-            try await decodes(BatterySampleEvent.self, SamplingRates.batteryParameters)
-            try await decodes(PowerSourceEvent.self, NoParameters())
-            try await decodes(ThermalStateEvent.self, NoParameters())
-            try await decodes(LowPowerModeEvent.self, NoParameters())
-            try await decodes(ProcessTopEvent.self, rates.processParameters())
-            try await decodes(ProcessListEvent.self, rates.listParameters)
-            try await decodes(FSChurnEvent.self, rates.churnParameters)
+            let daemon = DeliveryRecorder(SampleDaemon())
+            let model = MetricsModel(client: daemon, isVisible: { true })
+            model.start()
+            defer { model.stop() }
+            let kinds = Set(MetricsModel.feeds.map(\.kind))
+            try await waitUntil { daemon.delivered == kinds }
+            try await Task.sleep(for: .milliseconds(300))
+            #expect(model.connection == .connected)
+            #expect(model.feedFailures.isEmpty)
+            #expect(model.networkPath != nil)
+            #expect(model.assertions != nil)
+        }
+    }
+
+    /// Passes a daemon through, noting the kinds it delivered an event of.
+    private final class DeliveryRecorder: DaemonConnection {
+        private let base: any DaemonConnection
+        private let kinds = Mutex(Set<String>())
+        var delivered: Set<String> { kinds.withLock { $0 } }
+
+        init(_ base: any DaemonConnection) { self.base = base }
+
+        func send(_ request: DaemonRequest) async throws -> DaemonReply { try await base.send(request) }
+
+        func subscribe(_ kind: String, parameters: JSONValue) async throws
+            -> AsyncThrowingStream<EventEnvelope, any Error>
+        {
+            let events = try await base.subscribe(kind, parameters: parameters)
+            return AsyncThrowingStream { continuation in
+                let relay = Task {
+                    do {
+                        for try await envelope in events {
+                            self.kinds.withLock { _ = $0.insert(kind) }
+                            continuation.yield(envelope)
+                        }
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+                continuation.onTermination = { _ in relay.cancel() }
+            }
         }
     }
 #endif
@@ -532,25 +688,14 @@ struct StatusTextTests {
     private func contrast(_ a: Double, _ b: Double) -> Double { (max(a, b) + 0.05) / (min(a, b) + 0.05) }
 
     @Test func statusTextIsReadableOnLightSurfaces() {
-        let pairs: [(text: NSColor, fill: NSColor)] = [
-            (.normalText, .systemGreen), (.warnText, .systemOrange), (.criticalText, .systemRed),
-        ]
-        for (text, fill) in pairs {
-            let word = luminance(text, in: .aqua)
-            #expect(contrast(word, 1) >= 4.5, "\(fill) on white")
+        for status in Status.allCases where status != .neutral {
+            let word = luminance(status.nsText, in: .aqua)
+            #expect(contrast(word, 1) >= 4.5, "\(status) on white")
             // `StatusBadge`'s capsule: a 14% tint of the status colour.
-            let capsule = luminance(fill.withAlphaComponent(0.14), in: .aqua)
-            #expect(contrast(word, capsule) >= 4.5, "\(fill) on its capsule")
-            // What it replaces did not: the reason it exists.
-            #expect(contrast(luminance(fill, in: .aqua), 1) < 4.5, "\(fill)")
+            let capsule = luminance(status.nsColor.withAlphaComponent(0.14), in: .aqua)
+            #expect(contrast(word, capsule) >= 4.5, "\(status) on its capsule")
+            // The fill colour as text did not: the reason `text` exists.
+            #expect(contrast(luminance(status.nsColor, in: .aqua), 1) < 4.5, "\(status)")
         }
-    }
-
-    @Test func onlyStatusColoursChangeAsText() {
-        #expect(Theme.text(Theme.warn) != Theme.warn)
-        #expect(Theme.text(Theme.critical) != Theme.critical)
-        #expect(Theme.text(Theme.normal) != Theme.normal)
-        #expect(Theme.text(.secondary) == .secondary)
-        #expect(Theme.text(Theme.cpu) == Theme.cpu)
     }
 }
