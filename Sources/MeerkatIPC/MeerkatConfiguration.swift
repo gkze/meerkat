@@ -321,11 +321,14 @@ extension MeerkatConfiguration.MCP.Events {
     public static let rawKinds: Set<String> = [
         "log.entry", "darwin.notification", "distributed.notification", "power.assertions",
     ]
+    /// Which hosts each process talks to: what the user is doing, from the
+    /// network filter. Denied like a permission's kinds, though it needs none.
+    public static let destinationKinds: Set<String> = ["network.flows"]
     public static let rawFamilies: Set<String> = ["iokit"]
 
     public static func deniedByDefault(_ descriptor: EventDescriptor) -> Bool {
         descriptor.permission != nil || rawKinds.contains(descriptor.name)
-            || rawFamilies.contains(descriptor.family)
+            || destinationKinds.contains(descriptor.name) || rawFamilies.contains(descriptor.family)
     }
 
     public func allows(_ descriptor: EventDescriptor) -> Bool {

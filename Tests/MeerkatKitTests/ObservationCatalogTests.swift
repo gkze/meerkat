@@ -44,7 +44,8 @@ struct ObservationCatalogTests {
             ])
         #expect(
             byClass[.named] == [
-                "window.focused", "input.activity", "pasteboard.changed", "camera.inUse", "audio.inUse",
+                "network.flows", "window.focused", "input.activity", "pasteboard.changed", "camera.inUse",
+                "audio.inUse",
                 "network.wifi", "bluetooth.devices", "session.logins", "log.entry", "darwin.notification",
                 "distributed.notification", "iokit.attached", "iokit.detached", "power.assertions",
             ])

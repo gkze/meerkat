@@ -25,9 +25,10 @@ Acceptance criteria:
    (`SMAppService`) whether the CLI or the app does it.
 2. An event catalog covering what macOS exposes to an unprivileged user
    process, plus what it exposes behind a privacy (TCC) permission the user
-   grants, requested only when a rule subscribes; each event's delivery
-   guarantees and permission are stated in its descriptor and in the
-   generated TypeScript types.
+   grants, requested only when a rule subscribes, plus the network filter,
+   a system extension the user turns on ([network-filter.md](network-filter.md));
+   each event's delivery guarantees and permission are stated in its
+   descriptor and in the generated TypeScript types.
 3. Rules are `*.ts` files in `~/.config/meerkat/rules/`, hot-reloaded on
    change, type-checked at load (a rule that fails to type-check is not run),
    executed in an isolated, interruptible runtime the daemon can restart.
@@ -457,7 +458,7 @@ undocumented Apple interface, `†` an event that needs a privacy permission
 | Family | Events | Mechanism |
 |---|---|---|
 | memory, cpu | `memory.pressure`, `memory.sample`, `cpu.sample` | dispatch memory-pressure source; `host_statistics64`, `vm.swapusage`; `host_statistics` ticks, `getloadavg` |
-| throughput | `disk.sample`, `network.sample` | `IOBlockStorageDriver` "Statistics"; `NET_RT_IFLIST2` `if_data64` |
+| throughput | `disk.sample`, `network.sample`, `network.flows` | `IOBlockStorageDriver` "Statistics"; `NET_RT_IFLIST2` `if_data64`; the network filter's per-flow statistics ([network-filter.md](network-filter.md)) |
 | process | `process.spawned`, `process.exited`, `process.exec`, `process.hot`, `process.top`, `process.list`, `process.sample` | kqueue `EVFILT_PROC` on every pid, `KERN_PROC_ALL` rescan on fork (at most every 50 ms) and every 2 s; `proc_pid_rusage` + `ps` |
 | fs | `fs.change`, `fs.churn` | FSEvents, file-level |
 | volume, disk | `volume.mounted`, `volume.willUnmount`, `volume.unmounted`, `volume.renamed`, `volume.space`, `disk.appeared`, `disk.disappeared` | NSWorkspace; kqueue `EVFILT_FS` (`VQ_*`) + `statfs`; DiskArbitration |
@@ -565,12 +566,10 @@ Not included, and why:
   events that could veto an action): needs the restricted
   `com.apple.developer.endpoint-security.client` entitlement, which Apple
   grants to a team on request, and a root system extension or LaunchDaemon.
-- Per-process network flows: a NetworkExtension content filter, which needs
-  the NetworkExtension capability in a provisioning profile, a system
-  extension, and the app in `/Applications`.
 - GPU, Neural Engine and CPU-frequency power, temperatures and fan speeds
-  (IOReport, SMC) and per-process network bytes (NetworkStatistics): private
-  frameworks with no stability promise.
+  (IOReport, SMC) and per-process network bytes through NetworkStatistics:
+  private frameworks with no stability promise. Per-process network bytes
+  come from the network filter instead ([network-filter.md](network-filter.md)).
 - Screen recording in use, Focus / Do Not Disturb, and launchd job changes:
   no public interface an unprivileged process can observe.
 
@@ -1119,8 +1118,8 @@ ends every subscriber's stream with the reason, which reaches clients as
 subscription never stays open on a source that has stopped producing.
 
 A polling source (`memory.sample`, `cpu.sample`, `battery.sample`, `disk.sample`,
-`network.sample`, `process.hot`, `process.top`, `process.list`, `process.sample`,
-`power.assertions`) skips a tick whose reading fails, and its status `detail` counts
+`network.sample`, `network.flows`, `process.hot`, `process.top`, `process.list`,
+`process.sample`, `power.assertions`) skips a tick whose reading fails, and its status `detail` counts
 the skips. Five failures in a row are no longer a passing hiccup, so the source
 fails as above (`PollingSource.failureLimit`). A source whose first read fails,
 such as the process tracker unable to read the process table, refuses to start

@@ -26,6 +26,7 @@ public struct EventCatalog: Sendable {
         AnyEventKind(CPUSampleEvent.self),
         AnyEventKind(DiskSampleEvent.self),
         AnyEventKind(NetworkSampleEvent.self),
+        AnyEventKind(NetworkFlowsEvent.self),
         // process
         AnyEventKind(ProcessSpawnedEvent.self),
         AnyEventKind(ProcessExitedEvent.self),
