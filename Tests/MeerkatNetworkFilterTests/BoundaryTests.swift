@@ -213,3 +213,40 @@ struct UsageDifferTests {
         #expect(second.next(after).processes == [.test(1): ByteTotals(bytesIn: 100)])
     }
 }
+
+struct HostLeaseTests {
+    @Test func startsInactiveAndLastsItsDuration() {
+        var lease = HostLease(duration: 60)
+        #expect(!lease.isActive(at: 0))
+        lease.request(wantsHosts: true, at: 100)
+        #expect(lease.isActive(at: 100))
+        #expect(lease.isActive(at: 159.9))
+        #expect(!lease.isActive(at: 160))
+    }
+
+    @Test func aRequestWithoutHostsDoesNotRenewIt() {
+        var lease = HostLease(duration: 60)
+        lease.request(wantsHosts: true, at: 0)
+        lease.request(wantsHosts: false, at: 50)
+        #expect(!lease.isActive(at: 61))
+    }
+
+    /// A clock that went backwards is no reason to keep destinations.
+    @Test func aTimeBeforeTheRequestIsInactive() {
+        var lease = HostLease(duration: 60)
+        lease.request(wantsHosts: true, at: 100)
+        #expect(!lease.isActive(at: 99))
+    }
+
+    @Test func theBuildNamesBothVersions() {
+        #expect(
+            FilterService.build(info: ["CFBundleShortVersionString": "0.2.0", "CFBundleVersion": "21"]) == "0.2.0 (21)")
+        #expect(FilterService.build(info: nil) == "development (0)")
+    }
+
+    @Test func repliesRoundTrip() throws {
+        for reply in [FilterReply.refused("no"), .snapshot(FilterProtocolTests().sample())] {
+            #expect(try JSONDecoder().decode(FilterReply.self, from: JSONEncoder().encode(reply)) == reply)
+        }
+    }
+}

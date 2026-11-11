@@ -106,3 +106,45 @@ public struct FilterSnapshot: Codable, Sendable, Equatable {
         return self
     }
 }
+
+/// The extension's answer: its totals, or why it will not give them.
+public enum FilterReply: Codable, Sendable, Equatable {
+    case snapshot(FilterSnapshot)
+    case refused(String)
+}
+
+extension FilterService {
+    /// The build both bundles carry (`CFBundleShortVersionString` and
+    /// `CFBundleVersion`, which the bundler writes into each from the same
+    /// values): the extension and meerkatd talk only within one build.
+    public static func build(info: [String: Any]?) -> String {
+        let short = info?["CFBundleShortVersionString"] as? String ?? "development"
+        let version = info?["CFBundleVersion"] as? String ?? "0"
+        return "\(short) (\(version))"
+    }
+}
+
+/// Whether to keep the per-endpoint table: only while some daemon has asked
+/// for hosts within `duration`. A daemon that stops asking, or goes away,
+/// lets the table go without having to say so.
+public struct HostLease: Sendable, Equatable {
+    public static let standardDuration: Double = 60
+
+    public let duration: Double
+    private var lastAsked: Double?
+
+    public init(duration: Double = Self.standardDuration) {
+        precondition(duration > 0, "a lease must last")
+        self.duration = duration
+    }
+
+    /// Records a request at monotonic time `now` (seconds).
+    public mutating func request(wantsHosts: Bool, at now: Double) {
+        if wantsHosts { lastAsked = now }
+    }
+
+    public func isActive(at now: Double) -> Bool {
+        guard let lastAsked else { return false }
+        return now >= lastAsked && now - lastAsked < duration
+    }
+}

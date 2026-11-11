@@ -19,6 +19,7 @@ load("//buck2/third_party/tools:defs.bzl", "tool")
 # //buck2/conformance (outside these directories).
 _SWIFTPM_ROOTS = [
     "//Sources/MeerkatApp:MeerkatApp",
+    "//Sources/MeerkatNetworkFilterExtension:MeerkatNetworkFilterExtension",
     "//Sources/meerkat:meerkat",
     "//Sources/meerkatd:meerkatd",
     "//Tests/CLITests:CLITests",

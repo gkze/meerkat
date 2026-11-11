@@ -96,6 +96,7 @@ let package = Package(
         .executableTarget(name: "meerkatd", dependencies: ["MeerkatDaemon"]),
         .target(name: "MeerkatAgent", dependencies: ["MeerkatIPC", "MeerkatKit"]),
         .target(name: "MeerkatNetworkFilter"),
+        .executableTarget(name: "MeerkatNetworkFilterExtension", dependencies: ["MeerkatNetworkFilter"]),
         .executableTarget(
             name: "meerkat",
             dependencies: [
