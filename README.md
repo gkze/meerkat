@@ -54,6 +54,11 @@ Rule notifications come from Meerkat, under its own entry in System Settings ›
 Notifications. If macOS has it turned off, `notify` fails and says so; turn
 on Meerkat there.
 
+Which processes use the network, and how much, comes from an optional network
+filter you turn on in Meerkat › Settings › Network. It is a system extension
+that allows all traffic and reads none of it; it needs Meerkat in
+`/Applications` ([how it works](docs/design/network-filter.md)).
+
 ## Install
 
 You need macOS 27 or later on Apple silicon. Releases are signed with a
@@ -61,7 +66,8 @@ Developer ID and notarized by Apple.
 
 1. Download `Meerkat-<version>.zip` from
    [Releases](https://github.com/gkze/meerkat/releases) and open it.
-2. Move `Meerkat.app` to `/Applications` (or `~/Applications`) and open it.
+2. Move `Meerkat.app` to `/Applications` (or `~/Applications`, without the
+   network filter) and open it.
 3. Put the CLI on your `PATH`; the command below assumes `/Applications`, so
    use `~/Applications` there if you moved the app:
 

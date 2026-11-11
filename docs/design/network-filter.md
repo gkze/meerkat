@@ -1,6 +1,8 @@
 # Network filter: which process the traffic belongs to
 
-Status: decisions confirmed 2026-11-11; not built yet. It amends acceptance criterion 2 and
+Status: built 2026-11-11 (MeerkatNetworkFilter, MeerkatNetworkFilterExtension,
+the process events, `network.flows`, the bundler, Settings › Network). Not
+yet run signed on a Mac: the end-to-end checks below wait on the profiles. It amends acceptance criterion 2 and
 the "Not included" list in [meerkatd.md](meerkatd.md), which ruled this out.
 
 Contents: [Question](#question) · [Sources compared](#sources-compared) ·
@@ -119,12 +121,14 @@ group), and meerkatd connects as a client.
   and `process.hot` gains metrics `networkInMBps`, `networkOutMBps` and
   `networkMBps`. They are present whatever the process's user is: unlike disk
   and energy, the filter sees every process.
-- `process.top` can rank by network.
-- **New `PermissionNeed`, `networkFilter`:** `process.hot` on a network
-  metric `.required` (refused, with where to turn it on); other metrics and
-  `process.top` `.improves` (the network fields are absent without it). It
-  shows in `meerkat events list`, the generated declarations and the app like
-  the TCC permissions do.
+- `process.top` and `process.list` rows carry the network fields.
+- **Needing the filter is checked where a source starts**, not as a TCC
+  permission (it has none of a permission's asking or status): `process.hot`
+  on a network metric and `network.flows` are refused with where to turn the
+  filter on; elsewhere the network fields are absent without it. The
+  descriptors say so in their summaries, which reach `meerkat events list`
+  and the generated declarations. Ranking `process.top` by network is not
+  built yet.
 - **New kind `network.flows`, observed by name** (`observe: { allow:
   ["network.flows"] }`), like `window.focused`: per window, each process's
   bytes in and out per remote host. The host is the flow's `remoteHostname`
