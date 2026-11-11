@@ -29,9 +29,9 @@ extension DaemonPaths {
             cacheDirectory.standardizedFileURL.path, state, samples, samples + "-wal", samples + "-shm",
             DaemonPaths.preferencesFile.path,
         ]
-        // Contents/MacOS/meerkatd inside Meerkat.app.
-        let bundle = executable.resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent()
+        // All of Meerkat.app, not only the daemon's own bundle nested in it:
+        // a rule that rewrote the CLI or the compiler would run as Meerkat.
+        let bundle = AppBundle.containing(executable: executable.resolvingSymlinksInPath())
         if bundle.pathExtension == "app" { write.append(bundle.path) }
         let withResolved = { (paths: [String]) in
             paths.flatMap { path in

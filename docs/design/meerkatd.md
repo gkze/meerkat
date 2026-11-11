@@ -326,8 +326,13 @@ Meerkat.app/Contents/
   PkgInfo                           APPL????
   MacOS/MeerkatApp                  SwiftUI dashboard (daemon client)
   MacOS/meerkat                    CLI (daemon client, one-shot sampler)
-  MacOS/meerkatd                   the LaunchAgent, with the Deno rule
+  Library/LoginItems/Meerkat.app/Contents/
+    Info.plist                      CFBundleIdentifier com.gkze.meerkat.daemon,
+                                    named Meerkat, LSUIElement
+    MacOS/meerkatd                  the LaunchAgent, with the Deno rule
                                     runtime embedded (allow-jit)
+    Resources/Assets.car, AppIcon.icns
+                                    the app's icon, for its notifications
   Library/LaunchAgents/com.gkze.meerkat.daemon.plist
   Resources/typescript/             tsrs + lib.*.d.ts and deno.d.ts
   Resources/lint/                   Oxlint, Oxfmt, tsrslint and
@@ -970,7 +975,7 @@ dispatcher before `match`; the source stays shared.
 |---|---|---|
 | `log` | always | Rule log in the store and `os_log`. `console.*` routes here. |
 | `state` | always | Per-rule persistent key–value JSON. |
-| `notify` | `notify: true` | User notification from the app bundle: title, subtitle, body, `id` (posting it again replaces; `notify.withdraw(id)` removes), `group`, `sound`, up to 4 `actions` (buttons or a reply field) and `data` (≤ 4 KiB JSON) returned with the response. Ids are scoped to the rule (`NotificationPlan.identifier`), so no rule can replace or withdraw another's. |
+| `notify` | `notify: true` | User notification from the daemon's own bundle ("Posting identity" below): title, subtitle, body, `id` (posting it again replaces; `notify.withdraw(id)` removes), `group`, `sound`, up to 4 `actions` (buttons or a reply field) and `data` (≤ 4 KiB JSON) returned with the response. Ids are scoped to the rule (`NotificationPlan.identifier`), so no rule can replace or withdraw another's. |
 | `process.signal` | `process: { signal: true }` | `stop`, `continue`, `terminate`, `kill`, `hangup`, `interrupt`; same-user processes only, targeted by pid plus start time. |
 | `process.priority` | `process: { priority: true }` | `setpriority(PRIO_DARWIN_PROCESS)`: background or normal. |
 | `exec` | `exec: { allow: ["/abs/path", ...] }` | Run an allowed executable with an argv array, no shell, in its own process group. On timeout the child and its group get SIGTERM, then SIGKILL; one second after the child exits, anything in the group still holding its output is killed. Returns status, stdout and stderr (each capped at 1 MiB). |
@@ -999,6 +1004,32 @@ center replaces its whole category set on each registration, so one actor
 (`UserNotifier`) owns it: categories are keyed by a hash of their actions,
 rebuilt from delivered notifications after a restart, bounded at 64 with
 eviction of unused ones. MeerkatApp never registers categories.
+
+### Posting identity
+
+`UNUserNotificationCenter` serves only a process that is its bundle's main
+executable. As a helper in `Contents/MacOS`, meerkatd ran under
+Meerkat.app's identity, and `requestAuthorization` failed at once with
+`UNErrorDomain` 1 (not allowed): no prompt, and no entry in System Settings
+(seen on 0.2.0-alpha.2, 2026-11-11). So meerkatd is the main executable of
+its own bundle, `Contents/Library/LoginItems/Meerkat.app`
+(`AppBundle.daemonBundle`): bundle identifier `com.gkze.meerkat.daemon`
+(the launchd label), `LSUIElement`, and the app's name, version and icon,
+which a banner and the Notifications list show. There it gets its own
+Notifications entry, posts, and receives responses through its delegate,
+which a banner closed on screen confirmed.
+
+The bundle's file name is what Privacy & Security's lists show for the
+permissions charged to it (it read "MeerkatDaemon" under that name), so it
+is named Meerkat. Automation still works through the app's request
+(`appearance.setDark` ran with no prompt after the move). Everything the
+daemon reads from the bundle (the compiler, the lint tools, the notices) is
+Meerkat.app's: `AppBundle.containing` resolves the nested bundle to the app
+above it, and the protected paths cover the whole app.
+
+A notification permission macOS recorded as denied stays denied; only
+System Settings › Notifications › Meerkat turns it back on, and `notify`
+fails with that instruction.
 
 ## IPC
 

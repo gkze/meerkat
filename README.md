@@ -50,9 +50,9 @@ is refused, and the error says to move it aside). The app, the CLI and the
 daemon ship together and expect to be the same build; after an upgrade,
 `meerkat agent install` restarts the daemon from the new bundle.
 
-Known gap in this release: whether `notify` can raise macOS's notification
-permission prompt from the daemon is unresolved, so rule notifications may
-not appear.
+Rule notifications come from Meerkat, under its own entry in System Settings ›
+Notifications. If macOS has it turned off, `notify` fails and says so; turn
+on Meerkat there.
 
 ## Install
 

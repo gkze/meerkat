@@ -54,8 +54,10 @@ struct FileGrantTests {
             rulesDirectory: URL(fileURLWithPath: "/u/rules"), cacheDirectory: URL(fileURLWithPath: "/u/cache"),
             ruleDatabase: URL(fileURLWithPath: "/u/state/rules.db"),
             sampleDatabase: URL(fileURLWithPath: "/u/data/s.db"))
+        // The daemon runs from its own bundle nested in the app; the whole
+        // app is protected, not only that bundle.
         let protected = paths.protected(
-            executable: URL(fileURLWithPath: "/Applications/Meerkat.app/Contents/MacOS/meerkatd"))
+            executable: URL(fileURLWithPath: "/Applications/Meerkat.app/" + DaemonService.daemonProgram))
         #expect(protected.read == ["/u/state"])
         #expect(
             protected.write == [
