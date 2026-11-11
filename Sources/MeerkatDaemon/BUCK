@@ -9,6 +9,7 @@ meerkat_swift_library(
         "//Sources/CICU:CICU",
         "//Sources/MeerkatIPC:MeerkatIPC",
         "//Sources/MeerkatKit:MeerkatKit",
+        "//Sources/MeerkatNetworkFilter:MeerkatNetworkFilter",
         "//Sources/MeerkatRules:MeerkatRules",
         "//Sources/MeerkatStore:MeerkatStore",
         "//Sources/meerkat-runtime:MeerkatRuntimeBindings",

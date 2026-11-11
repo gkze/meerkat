@@ -89,6 +89,7 @@ let package = Package(
             name: "MeerkatDaemon",
             dependencies: [
                 "MeerkatKit", "MeerkatIPC", "MeerkatStore", "MeerkatRules", "MeerkatRuntimeBindings", "CICU",
+                "MeerkatNetworkFilter",
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Logging", package: "swift-log"),
             ]
