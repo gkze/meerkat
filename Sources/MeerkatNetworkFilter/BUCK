@@ -1,0 +1,9 @@
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_library")
+
+# The network filter's pure core: the ledger the system extension keeps, its
+# only verdict, and the messages between it and meerkatd. No NetworkExtension
+# here, so every property is testable without the extension
+# (docs/design/network-filter.md).
+meerkat_swift_library(
+    name = "MeerkatNetworkFilter",
+)

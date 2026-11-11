@@ -1,0 +1,8 @@
+load("//buck2/rules:meerkat.bzl", "meerkat_swift_test")
+
+meerkat_swift_test(
+    name = "MeerkatNetworkFilterTests",
+    deps = [
+        "//Sources/MeerkatNetworkFilter:MeerkatNetworkFilter",
+    ],
+)

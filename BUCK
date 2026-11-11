@@ -27,6 +27,7 @@ _SWIFTPM_ROOTS = [
     "//Tests/MeerkatDaemonTests:MeerkatDaemonTests",
     "//Tests/MeerkatIPCTests:MeerkatIPCTests",
     "//Tests/MeerkatKitTests:MeerkatKitTests",
+    "//Tests/MeerkatNetworkFilterTests:MeerkatNetworkFilterTests",
     "//Tests/ReleaseVersionTests:ReleaseVersionTests",
     "//Tools/Bundler:bundle",
     "//Tools/Release:release",

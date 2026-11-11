@@ -95,6 +95,7 @@ let package = Package(
         ),
         .executableTarget(name: "meerkatd", dependencies: ["MeerkatDaemon"]),
         .target(name: "MeerkatAgent", dependencies: ["MeerkatIPC", "MeerkatKit"]),
+        .target(name: "MeerkatNetworkFilter"),
         .executableTarget(
             name: "meerkat",
             dependencies: [
@@ -134,8 +135,9 @@ let package = Package(
                 .product(name: "SQLiteData", package: "sqlite-data"),
             ]
         ),
-        .testTarget(name: "MeerkatIPCTests", dependencies: ["MeerkatIPC", "MeerkatKit"]),
+        .testTarget(name: "MeerkatIPCTests", dependencies: ["MeerkatIPC", "MeerkatKit", "MeerkatNetworkFilter"]),
         .testTarget(name: "MeerkatAgentTests", dependencies: ["MeerkatAgent", "MeerkatIPC", "MeerkatKit"]),
+        .testTarget(name: "MeerkatNetworkFilterTests", dependencies: ["MeerkatNetworkFilter"]),
         .testTarget(
             name: "CLITests",
             dependencies: [
