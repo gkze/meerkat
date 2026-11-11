@@ -122,6 +122,7 @@ private struct GeneralSettings: View {
             }
 
             AutomationSection()
+            NetworkFilterSection()
         }
         .formStyle(.grouped)
         .fixedSize(horizontal: false, vertical: true)
@@ -131,6 +132,40 @@ private struct GeneralSettings: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             agent.refresh()
         }
+    }
+}
+
+/// Turns the network filter on and off (docs/design/network-filter.md):
+/// installing a system extension and configuring a content filter are the
+/// app's to do, each confirmed by the user in System Settings.
+private struct NetworkFilterSection: View {
+    @State private var setup = NetworkFilterSetup()
+
+    var body: some View {
+        Section {
+            LabeledContent("Network filter") {
+                HStack(spacing: 6) {
+                    if setup.busy { ProgressView().controlSize(.small) }
+                    Text(setup.status.summary)
+                }
+                .foregroundStyle(.secondary)
+            }
+            Text(setup.status.explanation)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+            switch setup.status {
+            case .off, .failed:
+                Button("Turn On…") { Task { await setup.turnOn() } }.disabled(setup.busy)
+            case .on, .awaitingApproval:
+                Button("Turn Off") { Task { await setup.turnOff() } }.disabled(setup.busy)
+            case .notInThisBuild, .needsApplications:
+                EmptyView()
+            }
+        } header: {
+            Text("Network")
+        }
+        .task { await setup.refresh() }
     }
 }
 

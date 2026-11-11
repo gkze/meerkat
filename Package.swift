@@ -112,6 +112,7 @@ let package = Package(
         .executableTarget(
             name: "MeerkatApp",
             dependencies: [
+                "MeerkatNetworkFilter",
                 "MeerkatKit", "MeerkatIPC", "MeerkatAgent", "MeerkatRules",
                 .product(name: "CodeEditSourceEditor", package: "CodeEditSourceEditor"),
                 .product(name: "CodeEditTextView", package: "CodeEditTextView"),

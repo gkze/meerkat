@@ -8,6 +8,8 @@ meerkat_swift_executable(
         "//Sources/MeerkatAgent:MeerkatAgent",
         "//Sources/MeerkatIPC:MeerkatIPC",
         "//Sources/MeerkatKit:MeerkatKit",
+        # The network filter's identifiers, for Settings › Network.
+        "//Sources/MeerkatNetworkFilter:MeerkatNetworkFilter",
         # Locates tsrs for the rule editor's language server.
         "//Sources/MeerkatRules:MeerkatRules",
         # The rule editor (docs/design/rule-editor.md).
