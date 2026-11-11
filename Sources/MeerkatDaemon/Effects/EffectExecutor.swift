@@ -454,7 +454,7 @@ struct EffectAuthorizer: Sendable {
         }
         if let permission = effect.permission, permissionStatus(permission) != .granted {
             throw EffectError.failed(
-                "\(request.kind) needs \(permission.named): allow meerkatd in \(permission.settingsPane)"
+                "\(request.kind) needs \(permission.named): enable Meerkat in \(permission.settingsPane)"
             )
         }
     }

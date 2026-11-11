@@ -357,7 +357,7 @@
                   "version": "0.9.0",
                   "pid": 48213,
                   "startedAt": \(now - 9_480_000),
-                  "executablePath": "/Users/example/Applications/Meerkat.app/Contents/MacOS/meerkatd",
+                  "executablePath": "/Users/example/Applications/Meerkat.app/Contents/Library/LoginItems/Meerkat.app/Contents/MacOS/meerkatd",
                   "rulesDirectory": "\(rulesDirectory.path)",
                   "handlerHost": {"state": "running", "workers": 5, "restarts": 1,
                                   "lastExit": "heavy-writers.ts#renice held the JavaScript thread for 5.2 s"},

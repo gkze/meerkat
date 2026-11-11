@@ -15,9 +15,12 @@ public enum DaemonService {
     public static let appExecutable = "MeerkatApp"
     public static let daemonExecutable = "meerkatd"
     public static let cliExecutable = "meerkat"
+    /// The daemon's bundle identifier, also the launchd label and the Mach
+    /// service: one name for the agent and the bundle people see.
+    public static let daemonBundleIdentifier = label
     /// The daemon as the agent's plist names it (`BundleProgram`), relative
     /// to the bundle.
-    public static let daemonProgram = AppBundle.executables + "/" + daemonExecutable
+    public static let daemonProgram = AppBundle.daemonBundle + "/" + AppBundle.executables + "/" + daemonExecutable
     /// The CLI, relative to the bundle: what an MCP client starts and a
     /// `meerkat` on PATH links to.
     public static let cliPath = AppBundle.executables + "/" + cliExecutable

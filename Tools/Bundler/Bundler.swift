@@ -161,8 +161,10 @@ struct Bundle: ParsableCommand {
         step("compiling the app icon (actool)")
         let iconKeys = try compileIcon(root: root, into: resources)
 
+        let build = try buildNumber(root: root)
+        if variant == .full { try assembleNotifier(iconKeys: iconKeys, build: build, staging: staging) }
         try write(
-            plist: infoPlist(build: try buildNumber(root: root)).merging(iconKeys) { $1 },
+            plist: infoPlist(build: build).merging(iconKeys) { $1 },
             to: contents.appendingPathComponent("Info.plist"))
         try Data("APPL????".utf8).write(to: contents.appendingPathComponent("PkgInfo"))
 
@@ -172,7 +174,7 @@ struct Bundle: ParsableCommand {
         // privacy database see.
         if variant == .full {
             try signResourceExecutables(in: resources, identity: identity)
-            try signDaemonAndCLI(in: macOS, identity: identity, scratch: staging)
+            try signDaemonAndCLI(in: staging, identity: identity, scratch: staging)
         }
         // The app asks for the Automation permission meerkatd's Apple Events
         // effects need (macOS prompts only a foreground app), and the
@@ -219,10 +221,18 @@ struct Bundle: ParsableCommand {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         }
 
-        let executables = [(DaemonService.cliExecutable, parts.cli), (DaemonService.daemonExecutable, parts.daemon)]
-        for (product, path) in executables {
-            try fileManager.copyItem(at: URL(fileURLWithPath: path), to: macOS.appendingPathComponent(product))
+        try fileManager.copyItem(
+            at: URL(fileURLWithPath: parts.cli), to: macOS.appendingPathComponent(DaemonService.cliExecutable))
+        // The daemon is the main executable of its own bundle: the notification
+        // center posts only for a bundle's main executable, and a helper here
+        // is refused even permission to ask (AppBundle.daemonBundle).
+        let notifier = bundle.appendingPathComponent(AppBundle.daemonBundle)
+        for directory in [AppBundle.executables, AppBundle.resources] {
+            try fileManager.createDirectory(
+                at: notifier.appendingPathComponent(directory), withIntermediateDirectories: true)
         }
+        try fileManager.copyItem(
+            at: URL(fileURLWithPath: parts.daemon), to: bundle.appendingPathComponent(DaemonService.daemonProgram))
         for item in try fileManager.contentsOfDirectory(atPath: typescript.path) {
             try fileManager.copyItem(
                 at: typescript.appendingPathComponent(item), to: typescriptDirectory.appendingPathComponent(item))
@@ -242,6 +252,38 @@ struct Bundle: ParsableCommand {
         try Data("Third-party notices: \(AppBundle.resources)/\(notices.lastPathComponent)".utf8)
             .write(to: notices.deletingLastPathComponent().appendingPathComponent("Credits.html"))
         try write(plist: self.agentPlist, to: agentPlist)
+    }
+
+    /// The daemon's bundle: the app's name, version and compiled icon, so a
+    /// banner and System Settings show the Meerkat logo under the identity the
+    /// daemon posts with.
+    private func assembleNotifier(iconKeys: [String: Any], build: String, staging: URL) throws {
+        let fileManager = FileManager.default
+        let notifier = staging.appendingPathComponent(AppBundle.daemonBundle)
+        let resources = notifier.appendingPathComponent(AppBundle.resources)
+        let appResources = staging.appendingPathComponent(AppBundle.resources)
+        for name in try fileManager.contentsOfDirectory(atPath: appResources.path)
+        where name == "Assets.car" || name.hasSuffix(".icns") {
+            try fileManager.copyItem(
+                at: appResources.appendingPathComponent(name), to: resources.appendingPathComponent(name))
+        }
+        var plist: [String: Any] = [
+            "CFBundleIdentifier": DaemonService.daemonBundleIdentifier,
+            "CFBundleExecutable": DaemonService.daemonExecutable,
+            "CFBundleName": "Meerkat",
+            "CFBundleDisplayName": "Meerkat",
+            "CFBundlePackageType": "APPL",
+            "CFBundleShortVersionString": appVersion.bundleShortVersion,
+            "CFBundleVersion": build,
+            "CFBundleInfoDictionaryVersion": "6.0",
+            "LSMinimumSystemVersion": minimumSystemVersion,
+            // No Dock icon and no window: it exists to host the daemon under an
+            // identity macOS lets post notifications.
+            "LSUIElement": true,
+        ]
+        plist.merge(iconKeys) { $1 }
+        try write(plist: plist, to: notifier.appendingPathComponent("Contents/Info.plist"))
+        try Data("APPL????".utf8).write(to: notifier.appendingPathComponent("Contents/PkgInfo"))
     }
 
     /// Signs every executable the bundle carries as a resource (tsrs and
@@ -271,7 +313,7 @@ struct Bundle: ParsableCommand {
     }
 
     /// Signs the daemon and the CLI, which the bundle's signature then seals.
-    private func signDaemonAndCLI(in macOS: URL, identity: String, scratch staging: URL) throws {
+    private func signDaemonAndCLI(in bundle: URL, identity: String, scratch staging: URL) throws {
         // V8, embedded in meerkatd, compiles JavaScript to machine code;
         // under the hardened runtime that takes MAP_JIT, which this allows.
         // The hardened runtime also blocks sending Apple Events without the
@@ -283,12 +325,18 @@ struct Bundle: ParsableCommand {
             plist: ["com.apple.security.cs.allow-jit": true, "com.apple.security.automation.apple-events": true],
             to: entitlements)
         defer { try? FileManager.default.removeItem(at: entitlements) }
+        // Inside-out: the daemon binary, then its bundle (which seals its
+        // Info.plist and icon), then the CLI. The app's signature seals all.
+        let notifier = bundle.appendingPathComponent(AppBundle.daemonBundle)
         try sign(
-            macOS.appendingPathComponent(DaemonService.daemonExecutable), identity: identity,
-            identifier: "\(DaemonService.bundleIdentifier).daemon",
+            bundle.appendingPathComponent(DaemonService.daemonProgram), identity: identity,
+            identifier: DaemonService.daemonBundleIdentifier, entitlements: entitlements)
+        try sign(
+            notifier, identity: identity, identifier: DaemonService.daemonBundleIdentifier,
             entitlements: entitlements)
         try sign(
-            macOS.appendingPathComponent(DaemonService.cliExecutable), identity: identity,
+            bundle.appendingPathComponent(AppBundle.executables)
+                .appendingPathComponent(DaemonService.cliExecutable), identity: identity,
             identifier: "\(DaemonService.bundleIdentifier).cli")
     }
 
