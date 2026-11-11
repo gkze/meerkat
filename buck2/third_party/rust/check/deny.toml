@@ -25,9 +25,17 @@ ignore = [
   { id = "RUSTSEC-2026-0346", reason = "only custom ClientSessionStores that Debug-format values leak; Deno's (QUIC, which needs `net`) does not format them" },
   { id = "RUSTSEC-2026-0348", reason = "needs rustls's non-default `brotli` feature, which nothing in the graph enables" },
   # hickory-proto 0.25.2, required by deno_net and deno_fetch (^0.25); the
-  # fix is 0.26.
+  # fixes are in 0.26. Its features here are default, futures-io, serde, std
+  # and tokio (../BUCK): no `text-parsing`, so the zone-file lexer and record
+  # parsers (`serialize::txt`) are not compiled, and Deno decodes DNS only
+  # from the wire, in replies to queries a rule's `net` grant allows
+  # (op_dns_resolve checks each name server before it queries one).
   { id = "RUSTSEC-2026-0118", reason = "needs DNSSEC validation (`dnssec-*` features), which nothing in the graph enables" },
+  { id = "RUSTSEC-2026-0487", reason = "alpn panic in the zone-file SVCB/HTTPS parser (`serialize::txt`), compiled only with `text-parsing`, which nothing in the graph enables" },
+  { id = "RUSTSEC-2026-0489", reason = "lone-quote panic in the zone-file SVCB/HTTPS parser (`serialize::txt`), compiled only with `text-parsing`, which nothing in the graph enables" },
+  { id = "RUSTSEC-2026-0490", reason = "long-token panic in the zone-file lexer (`serialize::txt`), compiled only with `text-parsing`, which nothing in the graph enables" },
   { id = "RUSTSEC-2026-0119", reason = "Deno's DNS runs only for `Deno.resolveDns`, `fetch` and connections, which check `net`, never granted to rules" },
+  { id = "RUSTSEC-2026-0491", reason = "header-count memory amplification decoding DNS replies: Deno's DNS runs only for `Deno.resolveDns`, `fetch` and connections, which check `net`, never granted to rules" },
   # zstd 0.13.2, pinned by deno_node.
   { id = "RUSTSEC-2026-0391", reason = "affects only streams on a borrowed context (`with_context`); node:zlib makes each stream with its own (`Encoder::new`, `Decoder::new`)" },
   # RSA and elliptic-curve private-key operations in WebCrypto and node:crypto
