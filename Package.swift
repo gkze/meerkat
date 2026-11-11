@@ -158,7 +158,7 @@ let package = Package(
         .executableTarget(
             name: "bundle",
             dependencies: [
-                "MeerkatIPC", "MeerkatKit", "MeerkatRules", "ReleaseVersion", "ToolProcess",
+                "MeerkatIPC", "MeerkatKit", "MeerkatNetworkFilter", "MeerkatRules", "ReleaseVersion", "ToolProcess",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Tools/Bundler",

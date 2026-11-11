@@ -8,6 +8,7 @@ PARTS = {
     "cli": "//Sources/meerkat:meerkat",
     "daemon": "//Sources/meerkatd:meerkatd",
     "lint_toolchain": "//Tools/Bundler:lint-toolchain",
+    "network_filter": "//Sources/MeerkatNetworkFilterExtension:MeerkatNetworkFilterExtension",
     "runtime_types": "//Sources/meerkat-rules:deno.d.ts",
     "typescript": "//buck2/third_party/js:tsrs",
 }

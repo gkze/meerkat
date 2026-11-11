@@ -7,10 +7,11 @@ load(":parts.bzl", "PARTS")
 # Assembles, signs and installs Meerkat.app from the parts below.
 meerkat_swift_binary(
     name = "bundle",
-    srcs = ["Bundler.swift"],
+    srcs = ["Bundler.swift", "NetworkFilterBundle.swift"],
     deps = [
         "//Sources/MeerkatIPC:MeerkatIPC",
         "//Sources/MeerkatKit:MeerkatKit",
+        "//Sources/MeerkatNetworkFilter:MeerkatNetworkFilter",
         "//Sources/MeerkatRules:MeerkatRules",
         "//Tools/ReleaseVersion:ReleaseVersion",
         "//Tools/ToolProcess:ToolProcess",
