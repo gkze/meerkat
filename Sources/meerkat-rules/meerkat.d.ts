@@ -123,11 +123,15 @@ declare module "meerkat" {
     /** Unix epoch milliseconds. */
     startedAt: number;
     uid: number;
+    /** Received over the network during the window, every user's processes included; absent while the network filter is off (Meerkat › Settings › Network). */
+    networkInMB?: number;
+    /** Sent over the network during the window; absent while the network filter is off. */
+    networkOutMB?: number;
   }
 
   export interface ProcessHot {
     phase: "started" | "ended";
-    metric: "cpuPercent" | "diskWriteMBps" | "diskReadMBps" | "footprintMB" | "energyWatts";
+    metric: "cpuPercent" | "diskWriteMBps" | "diskReadMBps" | "footprintMB" | "energyWatts" | "networkInMBps" | "networkOutMBps" | "networkMBps";
     /** The metric's latest value. */
     value: number;
     threshold: number;
@@ -954,7 +958,7 @@ declare module "meerkat" {
     "process.exited": ProcessExited;
     /** A process replaced its executable image (exec). Same pid and start time, new path and name. (push, occurrence, loss: none, rules need `capabilities: { process: { observe: "own" } }`; kqueue EVFILT_PROC NOTE_EXEC) */
     "process.exec": ProcessExec;
-    /** A process's CPU, disk, memory or energy use stayed above a threshold (phase "started"), or stopped doing so ("ended"). Processes owned by other users report CPU only. (derived, occurrence, loss: lossy, rules need `capabilities: { process: { observe: "own" } }`; proc_pid_rusage, ps (other users' CPU time)) */
+    /** A process's CPU, disk, memory, energy or network use stayed above a threshold (phase "started"), or stopped doing so ("ended"). Processes owned by other users report CPU and network only. The network metrics need the network filter (Meerkat › Settings › Network); without it a subscription to one is refused. (derived, occurrence, loss: lossy, rules need `capabilities: { process: { observe: "own" } }`; proc_pid_rusage, ps (other users' CPU time), the network filter (network metrics)) */
     "process.hot": ProcessHot;
     /** The busiest processes by CPU and by disk I/O, optionally the largest by memory, with machine-wide disk rates. The first event arrives after one ranking interval. (poll, state, loss: lossy, rules need `capabilities: { process: { observe: "own" } }`; proc_pid_rusage, ps (other users' CPU time)) */
     "process.top": ProcessTop;
@@ -1123,7 +1127,7 @@ declare module "meerkat" {
     "process.exec": {};
     "process.hot": {
       /** Which per-process value to watch. Rates are per second over the sample window. */
-      metric: "cpuPercent" | "diskWriteMBps" | "diskReadMBps" | "footprintMB" | "energyWatts";
+      metric: "cpuPercent" | "diskWriteMBps" | "diskReadMBps" | "footprintMB" | "energyWatts" | "networkInMBps" | "networkOutMBps" | "networkMBps";
       /** Threshold; the episode starts when the value stays above it. At least 0. */
       above: number;
       /** How long the value must stay above `above`; 0 is one sample, 0–86400. Default 0. */

@@ -18,6 +18,7 @@ public final class SourceEnvironment: Sendable {
     public let processSnapshots = SharedProcessSnapshot()
     private let hub = Mutex<WeakHub>(WeakHub())
     private let fileScopeProvider = Mutex<@Sendable () -> FileScope>({ .standard })
+    private let networkFilterReader = Mutex<any NetworkFilterReading>(NoNetworkFilter())
 
     public init(homeDirectory: String = NSHomeDirectory()) {
         self.homeDirectory = homeDirectory
@@ -33,6 +34,15 @@ public final class SourceEnvironment: Sendable {
 
     public func provideFileScope(_ provider: @escaping @Sendable () -> FileScope) {
         fileScopeProvider.withLock { $0 = provider }
+    }
+
+    /// The network filter's totals, for the process sources' network fields
+    /// and `network.flows`. The daemon supplies its client; until then (and
+    /// in any other process) the filter reads as absent.
+    public var networkFilter: any NetworkFilterReading { networkFilterReader.withLock { $0 } }
+
+    public func provideNetworkFilter(_ reader: any NetworkFilterReading) {
+        networkFilterReader.withLock { $0 = reader }
     }
 
     func attach(hub: EventHub) {
@@ -202,13 +212,18 @@ public final class SharedProcessSnapshot: Sendable {
     public init() {}
 
     /// A snapshot no older than `maxAge` seconds, taken now when the last one
-    /// is older. Concurrent callers may both take one; the later one wins.
-    /// Throws when the process table cannot be read.
-    public func current(maxAge: TimeInterval) throws -> ProcessSnapshot {
+    /// is older, with each process's network totals where `network` has them.
+    /// Concurrent callers may both take one; the later one wins. Throws when
+    /// the process table cannot be read; a network filter that cannot be read
+    /// leaves the network fields unknown and the rest stands.
+    public func current(
+        maxAge: TimeInterval, network: any NetworkFilterReading = NoNetworkFilter()
+    ) throws -> ProcessSnapshot {
         if let snapshot = latest.withLock({ $0 }), Date().timeIntervalSince(snapshot.takenAt) <= maxAge {
             return snapshot
         }
-        let fresh = try ProcessSampler.snapshot()
+        var fresh = try ProcessSampler.snapshot()
+        if let totals = try? network.totals(wantsHosts: false) { fresh = fresh.attributing(totals) }
         latest.withLock { $0 = fresh }
         return fresh
     }

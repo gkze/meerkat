@@ -56,7 +56,7 @@ let package = Package(
         .package(url: "https://github.com/ChimeHQ/JSONRPC.git", from: "0.9.2"),
     ],
     targets: [
-        .target(name: "MeerkatKit"),
+        .target(name: "MeerkatKit", dependencies: ["MeerkatNetworkFilter"]),
         .target(
             name: "MeerkatStore",
             dependencies: [
@@ -129,6 +129,7 @@ let package = Package(
             name: "MeerkatKitTests",
             dependencies: [
                 "MeerkatKit",
+                "MeerkatNetworkFilter",
                 "MeerkatStore",
                 // The schema conformance test compares the migrated schema
                 // (GRDB) with the `@Table` column metadata (SQLiteData).

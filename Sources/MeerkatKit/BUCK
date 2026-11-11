@@ -1,4 +1,8 @@
 load("//buck2/rules:meerkat.bzl", "meerkat_swift_library")
 
-# Samplers, the event catalog, sources and the hub. System frameworks only.
-meerkat_swift_library(name = "MeerkatKit")
+# Samplers, the event catalog, sources and the hub. System frameworks, and the
+# network filter's pure core, whose totals the process sources join.
+meerkat_swift_library(
+    name = "MeerkatKit",
+    deps = ["//Sources/MeerkatNetworkFilter:MeerkatNetworkFilter"],
+)

@@ -4,6 +4,7 @@ meerkat_swift_test(
     name = "MeerkatKitTests",
     deps = [
         "//Sources/MeerkatKit:MeerkatKit",
+        "//Sources/MeerkatNetworkFilter:MeerkatNetworkFilter",
         "//Sources/MeerkatStore:MeerkatStore",
         # The schema conformance test compares the migrated schema (GRDB)
         # with the `@Table` column metadata (SQLiteData).
