@@ -282,6 +282,9 @@ struct Bundle: ParsableCommand {
             "LSUIElement": true,
         ]
         plist.merge(iconKeys) { $1 }
+        // The daemon raises the permission prompts, and its Bundle.main is
+        // this bundle, which is where macOS and Permissions.swift look.
+        plist.merge(Self.usageDescriptions.mapValues { $0 as Any }) { $1 }
         try write(plist: plist, to: notifier.appendingPathComponent("Contents/Info.plist"))
         try Data("APPL????".utf8).write(to: notifier.appendingPathComponent("Contents/PkgInfo"))
     }
@@ -438,17 +441,22 @@ struct Bundle: ParsableCommand {
             "LSApplicationCategoryType": "public.app-category.developer-tools",
             "NSPrincipalClass": "NSApplication",
             "NSHighResolutionCapable": true,
-            // Shown in the permission prompts the daemon raises when a rule
-            // first subscribes to an event that needs them (Permissions.swift).
-            // Without the Bluetooth key macOS kills a process that uses it.
-            "NSLocationUsageDescription": Self.locationUsage,
-            "NSLocationWhenInUseUsageDescription": Self.locationUsage,
-            "NSBluetoothAlwaysUsageDescription":
-                "A Meerkat rule reacts to Bluetooth devices connecting and disconnecting (bluetooth.devices).",
-            "NSAppleEventsUsageDescription":
-                "A Meerkat rule switches between light and dark mode through System Events (appearance.setDark).",
-        ]
+        ].merging(Self.usageDescriptions.mapValues { $0 as Any }) { $1 }
     }
+
+    /// Shown in the permission prompts raised when a rule first subscribes to
+    /// an event that needs them (Permissions.swift), or, for Automation, by
+    /// Settings asking on the daemon's behalf. Both the app and the daemon's
+    /// bundle carry them: each process reads its own Bundle.main. Without the
+    /// Bluetooth key macOS kills a process that uses it.
+    private static let usageDescriptions: [String: String] = [
+        "NSLocationUsageDescription": locationUsage,
+        "NSLocationWhenInUseUsageDescription": locationUsage,
+        "NSBluetoothAlwaysUsageDescription":
+            "A Meerkat rule reacts to Bluetooth devices connecting and disconnecting (bluetooth.devices).",
+        "NSAppleEventsUsageDescription":
+            "A Meerkat rule switches between light and dark mode through System Events (appearance.setDark).",
+    ]
 
     private static let locationUsage =
         "A Meerkat rule reads the name of the Wi-Fi network this Mac is on (network.wifi), which macOS treats as location data."

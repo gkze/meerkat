@@ -1015,9 +1015,11 @@ Meerkat.app's identity, and `requestAuthorization` failed at once with
 its own bundle, `Contents/Library/LoginItems/Meerkat.app`
 (`AppBundle.daemonBundle`): bundle identifier `com.gkze.meerkat.daemon`
 (the launchd label), `LSUIElement`, and the app's name, version and icon,
-which a banner and the Notifications list show. There it gets its own
-Notifications entry, posts, and receives responses through its delegate,
-which a banner closed on screen confirmed.
+which a banner and the Notifications list show, and the usage descriptions
+the permission prompts need: the daemon's `Bundle.main` is this bundle, so
+without them `Permissions.swift` reports Location and Bluetooth unavailable.
+There it gets its own Notifications entry, posts, and receives responses
+through its delegate, which a banner closed on screen confirmed.
 
 The bundle's file name is what Privacy & Security's lists show for the
 permissions charged to it (it read "MeerkatDaemon" under that name), so it
