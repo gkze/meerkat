@@ -65,14 +65,18 @@ sees.
 - **One provider, data only.** `filterSockets = true`, `filterPackets = false`,
   no control provider, no browser filtering. Statistics and close reports come
   to the data provider itself (`NEFilterVerdict.shouldReport`).
-- **Every new flow gets `allowVerdict()` at once**, with `shouldReport = true`
-  and no running totals (`statisticsReportFrequency = .none`): a flow is
-  counted when it closes. Asking for totals every few seconds keeps each flow
-  attached to the filter, and when the filter's session ends (the extension
-  crashing) the kernel resets every attached connection: seen on macOS 27,
-  a download reset the moment NetworkExtension uninstalled the session after
-  the extension was killed. The price is that a long transfer is counted when
-  it ends, so `process.hot` cannot flag it while it runs. It never returns `filterDataVerdict`,
+- **Every new flow gets `allowVerdict()` at once**, with
+  `statisticsReportFrequency = .low` (about every 5 s, the default sample
+  interval) and `shouldReport = true`. Any reporting keeps the flow attached
+  to the filter, and when the filter's session ends (the extension crashing)
+  the kernel resets every attached connection: seen on macOS 27, a download
+  reset the moment NetworkExtension uninstalled the session after the
+  extension was killed, with running totals and with only the close
+  reported alike. A filter that counts nothing has nothing to count, so the
+  totals stay at 5 s and `CrashGuard` keeps a crashing extension from
+  resetting connections again and again: after 3 crashes within 10 minutes it
+  does not start, and so holds no connection, until the window passes.
+  It never returns `filterDataVerdict`,
   `pauseVerdict`, `needRules` or `drop`, and never reads a byte of payload.
   `handleNewFlow` does no I/O and cannot throw. It records the flow's open
   there, because NetworkExtension reports no open for a flow allowed at once:
@@ -169,8 +173,10 @@ Extends [mcp.md](mcp.md) ("Harm model"):
 
 - **The extension is the most privileged code Meerkat ships.** It sees every
   connection on the Mac, as root. It is kept to the decisions above (allow,
-  count) so that a bug in it can cost accuracy, never connectivity or
-  confidentiality.
+  count) so that no decision of its can block a connection or reveal one's
+  contents. Its crashing can reset the connections in flight, once per
+  crash (see "Failure"); `CrashGuard` bounds that to three times in ten
+  minutes, after which it stays off until the window passes.
 - **Totals go to the process events; destinations only to `network.flows`.**
   Which hosts a process talks to says what the user is doing, so it is a
   named observation, never added to `process.hot` or `process.top`. The
@@ -186,7 +192,7 @@ Extends [mcp.md](mcp.md) ("Harm model"):
 
 | Failure | Effect | Behaviour |
 |---|---|---|
-| Extension crashes or is killed | macOS restarts it; flows are allowed meanwhile (to verify on this macOS) | totals restart from zero; meerkatd sees a new extension instance and skips one window instead of reporting a negative or doubled rate |
+| Extension crashes or is killed | NetworkExtension uninstalls the filter session about 5 s later, and the kernel resets the connections attached to it, once; new connections work again within a second as the session restarts (seen on macOS 27) | totals restart from zero; meerkatd sees a new extension instance and skips one window instead of reporting a negative or doubled rate; after 3 crashes in 10 minutes the extension does not start (`CrashGuard`) |
 | meerkatd absent or slow | none on traffic | ledger stays bounded; the oldest totals are evicted and counted |
 | Ledger full (flow flood) | none on traffic | least recently reported flows evicted; `evicted` counted and shown in status |
 | Malformed or out-of-range report | none on traffic | flow dropped, counted |

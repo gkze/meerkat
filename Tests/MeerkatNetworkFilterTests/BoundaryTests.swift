@@ -9,9 +9,7 @@ struct VerdictTests {
     /// return (`NewFlowVerdict` has no other value).
     @Test(arguments: FlowKind.allCases) func everyFlowIsAllowedAndCounted(kind: FlowKind) {
         #expect(FlowPolicy.verdict(for: kind) == .allowAndCount)
-        // No running totals: they keep the flow attached to the filter,
-        // which costs the connection if the extension crashes.
-        #expect(FlowPolicy.verdict(for: kind).statistics == .never)
+        #expect(FlowPolicy.verdict(for: kind).statistics == .low)
     }
 }
 

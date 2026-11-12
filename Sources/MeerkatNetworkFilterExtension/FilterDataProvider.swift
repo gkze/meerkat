@@ -16,6 +16,15 @@ final class FilterDataProvider: NEFilterDataProvider {
     private let logger = Logger(subsystem: FilterService.extensionIdentifier, category: "provider")
 
     override func startFilter(completionHandler: @escaping ((any Error)?) -> Void) {
+        // A filter that keeps crashing would reset every attached connection
+        // on each restart; past the limit it does not start (`CrashGuard`).
+        if case .refuse(let until) = CrashRecord.starting() {
+            logger.error(
+                "not starting: the filter crashed \(CrashGuard.limit, privacy: .public) times within 10 minutes; next start allowed after \(until, privacy: .public)"
+            )
+            completionHandler(CrashLoop(until: until))
+            return
+        }
         // No rules and a default of filterData: every socket flow comes to
         // handleNewFlow, which allows it at once.
         let settings = NEFilterSettings(rules: [], defaultAction: .filterData)
@@ -27,6 +36,7 @@ final class FilterDataProvider: NEFilterDataProvider {
 
     override func stopFilter(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
         logger.info("stopping: \(reason.rawValue, privacy: .public)")
+        CrashRecord.stopped()
         completionHandler()
     }
 
@@ -59,7 +69,6 @@ final class FilterDataProvider: NEFilterDataProvider {
         allow.shouldReport = true
         allow.statisticsReportFrequency =
             switch verdict.statistics {
-            case .never: .none
             case .low: .low
             case .medium: .medium
             case .high: .high
@@ -156,5 +165,45 @@ final class ReportTally: Sendable {
             + "statistics \(statistics.load(ordering: .relaxed)) closed \(closed.load(ordering: .relaxed)) "
             + "other \(other.load(ordering: .relaxed)) without flow \(withoutFlow.load(ordering: .relaxed)) "
             + "without process \(withoutProcess.load(ordering: .relaxed))"
+    }
+}
+
+struct CrashLoop: LocalizedError {
+    let until: Date
+    var errorDescription: String? { "Meerkat's network filter crashed repeatedly; it starts again after \(until)." }
+}
+
+/// `CrashGuard`'s record, kept in the extension's own container so it lasts
+/// across runs. An unreadable record is a fresh one: a corrupt file must not
+/// keep the filter from starting.
+enum CrashRecord {
+    private static var file: URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("crash-guard.json")
+    }
+
+    static func starting(at now: Date = Date()) -> CrashGuard.Decision {
+        var record = load()
+        let decision = record.starting(at: now)
+        save(record)
+        return decision
+    }
+
+    static func stopped() {
+        var record = load()
+        record.stopped()
+        save(record)
+    }
+
+    private static func load() -> CrashGuard {
+        guard let file, let data = try? Data(contentsOf: file) else { return CrashGuard() }
+        return (try? JSONDecoder().decode(CrashGuard.self, from: data)) ?? CrashGuard()
+    }
+
+    private static func save(_ record: CrashGuard) {
+        guard let file, let data = try? JSONEncoder().encode(record) else { return }
+        try? FileManager.default.createDirectory(
+            at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: file, options: .atomic)
     }
 }
