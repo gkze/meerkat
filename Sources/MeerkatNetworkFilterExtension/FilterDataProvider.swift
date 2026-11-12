@@ -59,6 +59,7 @@ final class FilterDataProvider: NEFilterDataProvider {
         allow.shouldReport = true
         allow.statisticsReportFrequency =
             switch verdict.statistics {
+            case .never: .none
             case .low: .low
             case .medium: .medium
             case .high: .high

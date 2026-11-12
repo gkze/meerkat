@@ -65,9 +65,14 @@ sees.
 - **One provider, data only.** `filterSockets = true`, `filterPackets = false`,
   no control provider, no browser filtering. Statistics and close reports come
   to the data provider itself (`NEFilterVerdict.shouldReport`).
-- **Every new flow gets `allowVerdict()` at once**, with
-  `statisticsReportFrequency = .low` (about every 5 s, the default sample
-  interval) and `shouldReport = true`. It never returns `filterDataVerdict`,
+- **Every new flow gets `allowVerdict()` at once**, with `shouldReport = true`
+  and no running totals (`statisticsReportFrequency = .none`): a flow is
+  counted when it closes. Asking for totals every few seconds keeps each flow
+  attached to the filter, and when the filter's session ends (the extension
+  crashing) the kernel resets every attached connection: seen on macOS 27,
+  a download reset the moment NetworkExtension uninstalled the session after
+  the extension was killed. The price is that a long transfer is counted when
+  it ends, so `process.hot` cannot flag it while it runs. It never returns `filterDataVerdict`,
   `pauseVerdict`, `needRules` or `drop`, and never reads a byte of payload.
   `handleNewFlow` does no I/O and cannot throw. It records the flow's open
   there, because NetworkExtension reports no open for a flow allowed at once:
