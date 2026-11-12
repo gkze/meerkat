@@ -35,6 +35,20 @@ enum FilterServer {
         logger.info("listening on \(service, privacy: .public)")
     }
 
+    private static let heartbeat = Mutex<(any DispatchSourceTimer)?>(nil)
+
+    /// One line a minute with what the provider received and what the ledger
+    /// made of it, so a filter that counts nothing says why.
+    static func startHeartbeat() {
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        timer.schedule(deadline: .now() + 60, repeating: 60)
+        timer.setEventHandler {
+            logger.info("\(ReportTally.shared.line, privacy: .public); \(FilterState.shared.summary, privacy: .public)")
+        }
+        timer.resume()
+        heartbeat.withLock { $0 = timer }
+    }
+
     struct Missing: Error, CustomStringConvertible {
         var description: String { "the extension's Info.plist names no NEMachServiceName" }
     }

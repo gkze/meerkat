@@ -63,6 +63,16 @@ final class NetworkFilterSetup: NSObject {
     private(set) var busy = false
 
     private var activationContinuation: CheckedContinuation<Void, any Error>?
+    private var upgradeRequested = false
+
+    /// An activation request whose outcome no one awaits: the launch-time
+    /// upgrade. Failures are logged by macOS and leave the running extension.
+    private static func upgrade(delegate: any OSSystemExtensionRequestDelegate) -> OSSystemExtensionRequest {
+        let request = OSSystemExtensionRequest.activationRequest(
+            forExtensionWithIdentifier: FilterService.extensionIdentifier, queue: .main)
+        request.delegate = delegate
+        return request
+    }
 
     override init() {
         status = Self.bundled ? .off : .notInThisBuild
@@ -84,6 +94,14 @@ final class NetworkFilterSetup: NSObject {
                 manager.providerConfiguration == nil ? nil : manager.isEnabled
             } ?? nil
         status = NetworkFilterStatus.of(bundled: Self.bundled, appPath: Bundle.main.bundlePath, filterEnabled: enabled)
+        // A newer Meerkat carries a newer extension, which macOS installs only
+        // when the app asks again: with the filter on, ask once per launch.
+        // The same version is a no-op; a newer one replaces the old without a
+        // prompt (`actionForReplacingExtension`).
+        if status == .on, !upgradeRequested {
+            upgradeRequested = true
+            OSSystemExtensionManager.shared.submitRequest(Self.upgrade(delegate: self))
+        }
     }
 
     func turnOn() async {

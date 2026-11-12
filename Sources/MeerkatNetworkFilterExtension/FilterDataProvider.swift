@@ -2,6 +2,7 @@ import Foundation
 import MeerkatNetworkFilter
 import Network
 import NetworkExtension
+import Synchronization
 import os
 
 /// The content filter: allows every flow and counts it. Everything that
@@ -32,10 +33,12 @@ final class FilterDataProvider: NEFilterDataProvider {
     /// Called for every new flow, in the flow's path: no I/O, no lock, no
     /// throw. The verdict cannot be anything but allow (`NewFlowVerdict`).
     override func handleNewFlow(_ flow: NEFilterFlow) -> NEFilterNewFlowVerdict {
-        Self.verdict(FlowPolicy.verdict(for: Self.kind(of: flow)))
+        ReportTally.shared.verdicts.add(1, ordering: .relaxed)
+        return Self.verdict(FlowPolicy.verdict(for: Self.kind(of: flow)))
     }
 
     override func handle(_ report: NEFilterReport) {
+        ReportTally.shared.count(report)
         guard let translated = Self.translate(report) else { return }
         FilterState.shared.record(translated)
     }
@@ -102,5 +105,44 @@ final class FilterDataProvider: NEFilterDataProvider {
         @unknown default: return nil
         }
         return RemoteEndpoint(host: address, port: port.rawValue, transport: transport)
+    }
+}
+
+/// What NetworkExtension has handed the provider, by kind, for the heartbeat
+/// (`FilterServer.startHeartbeat`): the only way to tell, on a user's Mac,
+/// whether reports arrive and why totals might be low. Relaxed atomics: the
+/// counts are a diagnostic, never part of a decision.
+final class ReportTally: Sendable {
+    static let shared = ReportTally()
+
+    let verdicts = Atomic<UInt64>(0)
+    let opened = Atomic<UInt64>(0)
+    let statistics = Atomic<UInt64>(0)
+    let closed = Atomic<UInt64>(0)
+    let other = Atomic<UInt64>(0)
+    let withoutFlow = Atomic<UInt64>(0)
+    let withoutProcess = Atomic<UInt64>(0)
+
+    func count(_ report: NEFilterReport) {
+        switch report.event {
+        case .newFlow: opened.add(1, ordering: .relaxed)
+        case .statistics: statistics.add(1, ordering: .relaxed)
+        case .flowClosed: closed.add(1, ordering: .relaxed)
+        default: other.add(1, ordering: .relaxed)
+        }
+        guard let flow = report.flow else {
+            withoutFlow.add(1, ordering: .relaxed)
+            return
+        }
+        if flow.sourceAppAuditToken.flatMap(ProcessKey.init(auditToken:)) == nil {
+            withoutProcess.add(1, ordering: .relaxed)
+        }
+    }
+
+    var line: String {
+        "verdicts \(verdicts.load(ordering: .relaxed)) reports: opened \(opened.load(ordering: .relaxed)) "
+            + "statistics \(statistics.load(ordering: .relaxed)) closed \(closed.load(ordering: .relaxed)) "
+            + "other \(other.load(ordering: .relaxed)) without flow \(withoutFlow.load(ordering: .relaxed)) "
+            + "without process \(withoutProcess.load(ordering: .relaxed))"
     }
 }

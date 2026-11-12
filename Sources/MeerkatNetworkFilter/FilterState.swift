@@ -46,6 +46,18 @@ public final class FilterState: Sendable {
         return .snapshot(FilterSnapshot(instance: instance, build: build, snapshot: snapshot, openFlows: openFlows))
     }
 
+    /// The ledger in one line, for the extension's heartbeat: its tables and
+    /// everything it set aside.
+    public var summary: String {
+        state.withLock { state in
+            let snapshot = state.ledger.snapshot()
+            let counters = snapshot.counters
+            return "ledger: open flows \(state.ledger.openFlowCount) processes \(snapshot.processes.count) "
+                + "hosts \(snapshot.hosts.count) untracked \(counters.untracked) unattributed \(counters.unattributed) "
+                + "inconsistent \(counters.inconsistent) evicted \(counters.evictedFlows)/\(counters.evictedProcesses)/\(counters.evictedHosts)"
+        }
+    }
+
     private var elapsed: Double {
         let duration = clock.now - started
         return Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18

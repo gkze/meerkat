@@ -18,6 +18,8 @@ do {
         .error("not serving totals: \(error, privacy: .public)")
 }
 
+FilterServer.startHeartbeat()
+
 autoreleasepool {
     NEProvider.startSystemExtensionMode()
 }
