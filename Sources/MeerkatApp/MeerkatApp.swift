@@ -59,7 +59,7 @@ struct MeerkatApp: App {
         // The standard Settings window: SwiftUI adds Meerkat › Settings…
         // and ⌘, for it.
         Settings {
-            SettingsView(agent: app.agent)
+            SettingsView(agent: app.agent, networkFilter: app.networkFilter)
         }
     }
 }

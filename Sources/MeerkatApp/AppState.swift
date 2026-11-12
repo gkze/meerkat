@@ -44,6 +44,9 @@ final class AppState {
     let agent: AgentControl
     /// The Rules page's editor: its file, unsaved edits, place and Try It.
     let ruleEditor = RuleEditorSession()
+    /// The network filter's state, for Settings › Network, refreshed when the
+    /// window opens: that refresh is also what installs a newer extension.
+    let networkFilter = NetworkFilterSetup()
 
     init() {
         let back = DaemonReturn()

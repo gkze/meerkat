@@ -34,7 +34,18 @@ final class FilterDataProvider: NEFilterDataProvider {
     /// throw. The verdict cannot be anything but allow (`NewFlowVerdict`).
     override func handleNewFlow(_ flow: NEFilterFlow) -> NEFilterNewFlowVerdict {
         ReportTally.shared.verdicts.add(1, ordering: .relaxed)
+        // NetworkExtension reports no open for an allowed flow, so the open
+        // is recorded here; `opened` only queues it (`FilterState`).
+        FilterState.shared.opened(Self.opening(flow))
         return Self.verdict(FlowPolicy.verdict(for: Self.kind(of: flow)))
+    }
+
+    /// The flow's open, as the ledger reads it: no bytes yet.
+    static func opening(_ flow: NEFilterFlow) -> FlowReport {
+        FlowReport(
+            flow: flow.identifier, event: .opened,
+            process: flow.sourceAppAuditToken.flatMap(ProcessKey.init(auditToken:)),
+            remote: (flow as? NEFilterSocketFlow).flatMap(remote(of:)), bytesIn: 0, bytesOut: 0)
     }
 
     override func handle(_ report: NEFilterReport) {

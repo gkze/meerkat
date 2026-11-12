@@ -69,8 +69,13 @@ sees.
   `statisticsReportFrequency = .low` (about every 5 s, the default sample
   interval) and `shouldReport = true`. It never returns `filterDataVerdict`,
   `pauseVerdict`, `needRules` or `drop`, and never reads a byte of payload.
-  `handleNewFlow` does no I/O, takes no lock shared with the XPC side, and
-  cannot throw.
+  `handleNewFlow` does no I/O and cannot throw. It records the flow's open
+  there, because NetworkExtension reports no open for a flow allowed at once:
+  on macOS 27 the provider gets statistics and closes, never a new-flow
+  report (seen on the first signed run: 652 statistics, 699 closes, 0 opens).
+  The open goes on a short queue of its own, a constant-time append that
+  never takes the ledger's lock; the ledger drains it before every report
+  and every read, and a full queue drops the open, counted.
 - **`FlowLedger` is the whole state** (MeerkatNetworkFilter), a value type
   with no I/O: open flows keyed by the report's flow identifier, and running
   totals per process keyed by `(pid, pidversion)` from the audit token, so a

@@ -27,6 +27,9 @@ struct RootView: View {
                     .navigationTitle("Daemon Health")
             }
         }
+        // At launch, with the filter on, this also asks macOS to install the
+        // bundled extension if it is newer than the running one.
+        .task { await app.networkFilter.refresh() }
         // Rule state is window-wide: it feeds the sidebar badge and the
         // explorer's "used by" list, not only the Rules page.
         .task { await app.rules.followStateChanges() }
