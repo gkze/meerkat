@@ -178,7 +178,8 @@ let package = Package(
         .testTarget(
             name: "MeerkatDaemonTests",
             dependencies: [
-                "MeerkatDaemon", "MeerkatRules", "MeerkatRuntimeBindings", "MeerkatIPC", "MeerkatKit", "MeerkatStore",
+                "MeerkatDaemon", "MeerkatRules", "MeerkatRuntimeBindings", "MeerkatIPC", "MeerkatKit",
+                "MeerkatNetworkFilter", "MeerkatStore",
             ]
         ),
     ],

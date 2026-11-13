@@ -27,6 +27,10 @@ actor RuleEngine {
         /// that could rewrite rules could widen its own grants).
         var protected = ProtectedPaths()
         var reloadDebounce: Duration = .milliseconds(250)
+        /// How often a rule waiting for the network filter asks whether it
+        /// is on (`awaitNetworkFilter`): it can be turned on, or come back
+        /// from a crash, without a word to meerkatd.
+        var networkFilterRetry: Duration = .seconds(10)
         /// `meerkat.json`, which lives in the rules directory and reloads
         /// beside the rules but never waits on their compile; nil reads none.
         var settings: DaemonSettings? = nil
@@ -153,6 +157,7 @@ actor RuleEngine {
         watcher?.cancel()
         reloadTask?.cancel()
         settingsReloadTask?.cancel()
+        networkFilterTask?.cancel()
         restartTask?.cancel()
         for rule in rules.values { rule.stop() }
         rules.removeAll()
@@ -394,8 +399,10 @@ actor RuleEngine {
             rule.markFailed("could not subscribe to \(definition.event): \(error)")
             announce(
                 RuleStatusPayload(ruleId: definition.id, file: definition.file, state: .failed, reason: "\(error)"))
+            if definition.parameters.needsNetworkFilter { awaitNetworkFilter(rule) }
             return
         }
+        rule.awaitingNetworkFilter = false
         let id = definition.id
         let token = rule.token
         let hub = self.hub
@@ -496,6 +503,45 @@ actor RuleEngine {
         rule.markFailed(reason)
         announce(RuleStatusPayload(ruleId: id, file: rule.definition.file, state: .failed, reason: reason))
         log(rule: id, level: .error, reason)
+        // A network source ends when the filter stops answering: turned
+        // off, or held off by its crash guard.
+        if rule.definition.parameters.needsNetworkFilter { awaitNetworkFilter(rule) }
+    }
+
+    private var networkFilterTask: Task<Void, Never>?
+
+    /// Resumes `rule`, failed because the network filter was off as it
+    /// subscribed or while it ran, once the filter answers. meerkatd hears
+    /// nothing when the filter starts, so it asks every
+    /// `networkFilterRetry` while any rule waits, as the filter's client
+    /// would on the rule's next subscription.
+    private func awaitNetworkFilter(_ rule: ActiveRule) {
+        rule.awaitingNetworkFilter = true
+        guard networkFilterTask == nil else { return }
+        let retry = configuration.networkFilterRetry
+        networkFilterTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: retry)
+                guard !Task.isCancelled, let self, await self.resumeIfNetworkFilterOn() else { return }
+            }
+        }
+    }
+
+    /// Whether any rule still waits for the network filter.
+    private func resumeIfNetworkFilterOn() -> Bool {
+        let waiting = rules.values.filter { $0.awaitingNetworkFilter && $0.state == .failed }
+        guard !waiting.isEmpty else {
+            networkFilterTask = nil
+            return false
+        }
+        // Asked once for them all: each failed subscription would otherwise
+        // be announced and logged again on every try.
+        guard (try? hub.environment.networkFilter.totals(wantsHosts: false)) != nil else { return true }
+        for rule in waiting {
+            rule.reset()
+            subscribe(rule)
+        }
+        return true
     }
 
     private func disable(_ rule: ActiveRule, reason: String) {

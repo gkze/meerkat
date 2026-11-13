@@ -206,6 +206,12 @@ public protocol PathObservingParameters: EventParameters {
     var observedPaths: ObservedPaths { get }
 }
 
+/// Parameters of a kind whose source reads the network filter, and refuses
+/// to start, or ends, while it is off.
+public protocol NetworkFilterParameters: EventParameters {
+    var needsNetworkFilter: Bool { get }
+}
+
 /// What a subscription watches.
 public struct ObservedPaths: Sendable, Equatable {
     /// As decoded; nil when it measures the daemon's file scope
@@ -448,6 +454,9 @@ public struct NormalizedParameters: Sendable, Equatable {
     public let observedPaths: ObservedPaths?
     /// The process they name, for a kind whose parameters name one.
     public let observedProcess: ProcessIdentity?
+    /// Whether their source reads the network filter, so a subscription
+    /// refused or ended while it is off can start once it is on again.
+    public let needsNetworkFilter: Bool
     fileprivate let instantiate:
         @Sendable (
             SourceEnvironment, @escaping @Sendable (Emission) -> Void, @escaping @Sendable (String) -> Void
@@ -458,6 +467,7 @@ public struct NormalizedParameters: Sendable, Equatable {
         json = try JSONValue(encoding: parameters)
         observedPaths = (parameters as? any PathObservingParameters)?.observedPaths
         observedProcess = (parameters as? any ProcessObservingParameters).flatMap(\.observedProcess)
+        needsNetworkFilter = (parameters as? any NetworkFilterParameters)?.needsNetworkFilter ?? false
         instantiate = { environment, sink, fail in
             // Before the source exists, on the one path to every source:
             // some touch the framework the permission guards as they are

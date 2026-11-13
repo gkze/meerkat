@@ -99,6 +99,10 @@ public struct NetworkFlowsPayload: RuleViewedPayload, Equatable {
     }
 }
 
+extension IntervalParameters: NetworkFilterParameters where Defaults == NetworkFlowsEvent {
+    public var needsNetworkFilter: Bool { true }
+}
+
 public enum NetworkFlowsEvent: EventKind, IntervalParameterDefaults {
     public static let defaultInterval = 5.0
     public static let intervalRange = 5.0...3600.0

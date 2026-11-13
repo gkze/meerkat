@@ -235,7 +235,7 @@ extension ProcessDelta: SchemaDescribed {
 
 // MARK: - process.hot
 
-public struct ProcessHotParameters: EventParameters {
+public struct ProcessHotParameters: NetworkFilterParameters {
     public enum Metric: String, Codable, Sendable, CaseIterable, SchemaDescribed {
         case cpuPercent, diskWriteMBps, diskReadMBps, footprintMB, energyWatts
         case networkInMBps, networkOutMBps, networkMBps
@@ -268,6 +268,8 @@ public struct ProcessHotParameters: EventParameters {
     public var above: Double
     public var sustainSeconds: Double
     public var interval: Double
+
+    public var needsNetworkFilter: Bool { metric.needsNetworkFilter }
 
     public static let defaultSustainSeconds = 0.0
     public static let defaultInterval = 5.0

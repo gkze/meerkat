@@ -198,8 +198,8 @@ Extends [mcp.md](mcp.md) ("Harm model"):
 | Ledger full (flow flood) | none on traffic | least recently reported flows evicted; `evicted` counted and shown in status |
 | Malformed or out-of-range report | none on traffic | flow dropped, counted |
 | Malformed reply at the daemon | the poll fails | source reports unavailable with the reason; no trap |
-| Filter not approved | none | `networkFilter` permission reads denied; rules on network metrics refused with where to turn it on |
-| Filter turned off | the session ends with the connections still attached to it: they stall and fail (a download stopped at the click and failed two minutes later, macOS 27); new connections are unaffected | as not approved, once the deactivation completes; the extension is removed at the next restart |
+| Filter not approved | none | `networkFilter` permission reads denied; rules on network metrics refused with where to turn it on, and resumed once it answers (meerkatd asks every 10 s while one waits, `RuleEngine.awaitNetworkFilter`) |
+| Filter turned off | the session ends with the connections still attached to it: they stall and fail (a download stopped at the click and failed two minutes later, macOS 27); new connections are unaffected | as not approved, once the deactivation completes: a running `network.flows` rule fails after five windows without an answer, and resumes when the filter is on again; the extension is removed at the next restart |
 | macOS update changes NE behaviour | — | the end-to-end test below fails before release |
 
 ## Integrity tests

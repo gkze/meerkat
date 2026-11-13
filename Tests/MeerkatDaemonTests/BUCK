@@ -14,6 +14,7 @@ meerkat_swift_test(
         "//Sources/MeerkatDaemon:MeerkatDaemon",
         "//Sources/MeerkatIPC:MeerkatIPC",
         "//Sources/MeerkatKit:MeerkatKit",
+        "//Sources/MeerkatNetworkFilter:MeerkatNetworkFilter",
         "//Sources/MeerkatRules:MeerkatRules",
         "//Sources/MeerkatStore:MeerkatStore",
         "//Sources/meerkat-runtime:MeerkatRuntimeBindings",
