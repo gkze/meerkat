@@ -20,7 +20,7 @@ struct MCPBridge: AsyncParsableCommand {
         discussion: """
             Configure an MCP client to start this as a stdio server:
 
-              { "command": "~/\(DaemonService.installedApp)/\(DaemonService.cliPath)", "args": ["mcp"] }
+              { "command": "\(DaemonService.installedApp)/\(DaemonService.cliPath)", "args": ["mcp"] }
 
             It must be the meerkat inside Meerkat.app: meerkatd accepts only clients signed with the app. \
             Diagnostics go to stderr. The bridge exits with status \(ExitStatus.success.code) when stdin \

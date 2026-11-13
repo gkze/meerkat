@@ -79,6 +79,28 @@ declare module "meerkat" {
     sentBytesPerSecond: number;
   }
 
+  export interface NetworkFlow {
+    pid: number;
+    uid: number;
+    /** Absent once the process exited. */
+    name?: string;
+    path?: string;
+    /** The name the process connected to where macOS knows it, otherwise the remote address. */
+    host: string;
+    port: number;
+    transport: "tcp" | "udp" | "other";
+    receivedMB: number;
+    sentMB: number;
+  }
+
+  export interface NetworkFlows {
+    windowSeconds: number;
+    /** Largest first, at most 200. */
+    flows: NetworkFlow[];
+    /** Flows the window had beyond those listed. */
+    omitted: number;
+  }
+
   export interface ProcessRef {
     pid: number;
     /** Unix epoch milliseconds; with pid, identifies the process. */
@@ -123,11 +145,15 @@ declare module "meerkat" {
     /** Unix epoch milliseconds. */
     startedAt: number;
     uid: number;
+    /** Received over the network during the window, every user's processes included; absent while the network filter is off (Meerkat › Settings › Network). */
+    networkInMB?: number;
+    /** Sent over the network during the window; absent while the network filter is off. */
+    networkOutMB?: number;
   }
 
   export interface ProcessHot {
     phase: "started" | "ended";
-    metric: "cpuPercent" | "diskWriteMBps" | "diskReadMBps" | "footprintMB" | "energyWatts";
+    metric: "cpuPercent" | "diskWriteMBps" | "diskReadMBps" | "footprintMB" | "energyWatts" | "networkInMBps" | "networkOutMBps" | "networkMBps";
     /** The metric's latest value. */
     value: number;
     threshold: number;
@@ -948,13 +974,15 @@ declare module "meerkat" {
     "disk.sample": DiskSample;
     /** Bytes and packets per second on each network interface over the last interval, with totals over physical interfaces. The first sample arrives one interval after subscribing. Which processes or hosts the traffic belongs to is not reported. (poll, state, loss: lossy; sysctl NET_RT_IFLIST2 (if_data64)) */
     "network.sample": NetworkSample;
+    /** Each process's bytes received and sent per remote host over the last interval, largest first, every user's processes included. Needs the network filter (Meerkat › Settings › Network); without it a subscription is refused. The first window after subscribing, or after the filter restarts, is not reported. No contents are read. (poll, occurrence, loss: lossy, rules need `capabilities: { observe: { allow: ["network.flows"] } }`; the network filter (NetworkExtension content filter statistics)) */
+    "network.flows": NetworkFlows;
     /** A new process appeared, any user's. Found by rescanning the process table on every observed fork (at most every 50 ms) and every 2 s; a process that starts and exits between two scans is never reported. (push, occurrence, loss: lossy, rules need `capabilities: { process: { observe: "own" } }`; kqueue EVFILT_PROC NOTE_FORK, sysctl KERN_PROC_ALL) */
     "process.spawned": ProcessSpawned;
     /** A process exited. Every process known to the tracker reports its exit; the exit status is not available for processes this daemon did not start. (push, occurrence, loss: none, rules need `capabilities: { process: { observe: "own" } }`; kqueue EVFILT_PROC NOTE_EXIT) */
     "process.exited": ProcessExited;
     /** A process replaced its executable image (exec). Same pid and start time, new path and name. (push, occurrence, loss: none, rules need `capabilities: { process: { observe: "own" } }`; kqueue EVFILT_PROC NOTE_EXEC) */
     "process.exec": ProcessExec;
-    /** A process's CPU, disk, memory or energy use stayed above a threshold (phase "started"), or stopped doing so ("ended"). Processes owned by other users report CPU only. (derived, occurrence, loss: lossy, rules need `capabilities: { process: { observe: "own" } }`; proc_pid_rusage, ps (other users' CPU time)) */
+    /** A process's CPU, disk, memory, energy or network use stayed above a threshold (phase "started"), or stopped doing so ("ended"). Processes owned by other users report CPU and network only. The network metrics need the network filter (Meerkat › Settings › Network); without it a subscription to one is refused. (derived, occurrence, loss: lossy, rules need `capabilities: { process: { observe: "own" } }`; proc_pid_rusage, ps (other users' CPU time), the network filter (network metrics)) */
     "process.hot": ProcessHot;
     /** The busiest processes by CPU and by disk I/O, optionally the largest by memory, with machine-wide disk rates. The first event arrives after one ranking interval. (poll, state, loss: lossy, rules need `capabilities: { process: { observe: "own" } }`; proc_pid_rusage, ps (other users' CPU time)) */
     "process.top": ProcessTop;
@@ -1118,12 +1146,16 @@ declare module "meerkat" {
       /** Seconds between samples, 0.25–3600. Default 1. */
       interval?: number;
     };
+    "network.flows": {
+      /** Seconds between samples, 5–3600. Default 5. */
+      interval?: number;
+    };
     "process.spawned": {};
     "process.exited": {};
     "process.exec": {};
     "process.hot": {
       /** Which per-process value to watch. Rates are per second over the sample window. */
-      metric: "cpuPercent" | "diskWriteMBps" | "diskReadMBps" | "footprintMB" | "energyWatts";
+      metric: "cpuPercent" | "diskWriteMBps" | "diskReadMBps" | "footprintMB" | "energyWatts" | "networkInMBps" | "networkOutMBps" | "networkMBps";
       /** Threshold; the episode starts when the value stays above it. At least 0. */
       above: number;
       /** How long the value must stay above `above`; 0 is one sample, 0–86400. Default 0. */
@@ -1292,6 +1324,7 @@ declare module "meerkat" {
     "cpu.sample": { mechanism: "poll"; semantics: "state"; loss: "lossy"; stability: "documented"; permission: null; observation: "open" };
     "disk.sample": { mechanism: "poll"; semantics: "state"; loss: "lossy"; stability: "documented"; permission: null; observation: "open" };
     "network.sample": { mechanism: "poll"; semantics: "state"; loss: "lossy"; stability: "documented"; permission: null; observation: "open" };
+    "network.flows": { mechanism: "poll"; semantics: "occurrence"; loss: "lossy"; stability: "documented"; permission: null; observation: "named" };
     "process.spawned": { mechanism: "push"; semantics: "occurrence"; loss: "lossy"; stability: "documented"; permission: null; observation: "processes" };
     "process.exited": { mechanism: "push"; semantics: "occurrence"; loss: "none"; stability: "documented"; permission: null; observation: "processes" };
     "process.exec": { mechanism: "push"; semantics: "occurrence"; loss: "none"; stability: "documented"; permission: null; observation: "processes" };
@@ -1369,6 +1402,7 @@ declare module "meerkat" {
 
   /** Kinds a rule observes only when `capabilities.observe.allow` names them. */
   export type NamedEvent =
+    | "network.flows"
     | "power.assertions"
     | "session.logins"
     | "window.focused"
@@ -1396,6 +1430,7 @@ declare module "meerkat" {
     "cpu.sample": {};
     "disk.sample": {};
     "network.sample": {};
+    "network.flows": { observe: { allow: readonly NamedEvent[] } };
     "process.spawned": { process: { observe: "own" | "all" } };
     "process.exited": { process: { observe: "own" | "all" } };
     "process.exec": { process: { observe: "own" | "all" } };

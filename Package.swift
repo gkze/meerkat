@@ -56,7 +56,7 @@ let package = Package(
         .package(url: "https://github.com/ChimeHQ/JSONRPC.git", from: "0.9.2"),
     ],
     targets: [
-        .target(name: "MeerkatKit"),
+        .target(name: "MeerkatKit", dependencies: ["MeerkatNetworkFilter"]),
         .target(
             name: "MeerkatStore",
             dependencies: [
@@ -89,12 +89,15 @@ let package = Package(
             name: "MeerkatDaemon",
             dependencies: [
                 "MeerkatKit", "MeerkatIPC", "MeerkatStore", "MeerkatRules", "MeerkatRuntimeBindings", "CICU",
+                "MeerkatNetworkFilter",
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Logging", package: "swift-log"),
             ]
         ),
         .executableTarget(name: "meerkatd", dependencies: ["MeerkatDaemon"]),
         .target(name: "MeerkatAgent", dependencies: ["MeerkatIPC", "MeerkatKit"]),
+        .target(name: "MeerkatNetworkFilter"),
+        .executableTarget(name: "MeerkatNetworkFilterExtension", dependencies: ["MeerkatNetworkFilter"]),
         .executableTarget(
             name: "meerkat",
             dependencies: [
@@ -109,6 +112,7 @@ let package = Package(
         .executableTarget(
             name: "MeerkatApp",
             dependencies: [
+                "MeerkatNetworkFilter",
                 "MeerkatKit", "MeerkatIPC", "MeerkatAgent", "MeerkatRules",
                 .product(name: "CodeEditSourceEditor", package: "CodeEditSourceEditor"),
                 .product(name: "CodeEditTextView", package: "CodeEditTextView"),
@@ -127,6 +131,7 @@ let package = Package(
             name: "MeerkatKitTests",
             dependencies: [
                 "MeerkatKit",
+                "MeerkatNetworkFilter",
                 "MeerkatStore",
                 // The schema conformance test compares the migrated schema
                 // (GRDB) with the `@Table` column metadata (SQLiteData).
@@ -134,8 +139,9 @@ let package = Package(
                 .product(name: "SQLiteData", package: "sqlite-data"),
             ]
         ),
-        .testTarget(name: "MeerkatIPCTests", dependencies: ["MeerkatIPC", "MeerkatKit"]),
+        .testTarget(name: "MeerkatIPCTests", dependencies: ["MeerkatIPC", "MeerkatKit", "MeerkatNetworkFilter"]),
         .testTarget(name: "MeerkatAgentTests", dependencies: ["MeerkatAgent", "MeerkatIPC", "MeerkatKit"]),
+        .testTarget(name: "MeerkatNetworkFilterTests", dependencies: ["MeerkatNetworkFilter"]),
         .testTarget(
             name: "CLITests",
             dependencies: [
@@ -153,7 +159,7 @@ let package = Package(
         .executableTarget(
             name: "bundle",
             dependencies: [
-                "MeerkatIPC", "MeerkatKit", "MeerkatRules", "ReleaseVersion", "ToolProcess",
+                "MeerkatIPC", "MeerkatKit", "MeerkatNetworkFilter", "MeerkatRules", "ReleaseVersion", "ToolProcess",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "Tools/Bundler",
@@ -172,7 +178,8 @@ let package = Package(
         .testTarget(
             name: "MeerkatDaemonTests",
             dependencies: [
-                "MeerkatDaemon", "MeerkatRules", "MeerkatRuntimeBindings", "MeerkatIPC", "MeerkatKit", "MeerkatStore",
+                "MeerkatDaemon", "MeerkatRules", "MeerkatRuntimeBindings", "MeerkatIPC", "MeerkatKit",
+                "MeerkatNetworkFilter", "MeerkatStore",
             ]
         ),
     ],

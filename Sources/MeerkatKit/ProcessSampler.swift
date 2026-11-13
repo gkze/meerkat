@@ -289,7 +289,11 @@ public enum ProcessSampler {
             let cpuDelta = max(a.cpuSeconds - b.cpuSeconds, 0)
             let readDelta = usage.map { Double($0.end.diskReadBytes - $0.start.diskReadBytes) }
             let writeDelta = usage.map { Double($0.end.diskWriteBytes - $0.start.diskWriteBytes) }
-            guard includeIdle || cpuDelta > 0 || (readDelta ?? 0) > 0 || (writeDelta ?? 0) > 0 else { continue }
+            let network = networkDelta(from: b.network, to: a.network)
+            guard
+                includeIdle || cpuDelta > 0 || (readDelta ?? 0) > 0 || (writeDelta ?? 0) > 0
+                    || (network.map { $0.bytesIn > 0 || $0.bytesOut > 0 } ?? false)
+            else { continue }
 
             rows.append(
                 ProcessDelta(
@@ -304,11 +308,26 @@ public enum ProcessSampler {
                     diskWriteMB: writeDelta.map { $0 / 1_000_000.0 },
                     energyJoules: usage.map { Double($0.end.energyNanojoules - $0.start.energyNanojoules) / 1e9 },
                     startedAt: identity.startedAt,
-                    uid: a.uid
+                    uid: a.uid,
+                    networkInMB: network.map { Double($0.bytesIn) / 1_000_000.0 },
+                    networkOutMB: network.map { Double($0.bytesOut) / 1_000_000.0 }
                 ))
         }
 
         rows.sort { $0.cpuPct > $1.cpuPct }
         return Array(rows.prefix(top))
+    }
+
+    /// Network bytes moved between two readings of one process: known only
+    /// when both ends come from the same filter instance and neither total
+    /// went down. Anything else is unknown for the window, never a negative
+    /// or wrapped amount; the rest of the row stands.
+    static func networkDelta(
+        from start: NetworkCounters?, to end: NetworkCounters?
+    ) -> (bytesIn: UInt64, bytesOut: UInt64)? {
+        guard let start, let end, start.filter == end.filter, end.bytesIn >= start.bytesIn,
+            end.bytesOut >= start.bytesOut
+        else { return nil }
+        return (end.bytesIn - start.bytesIn, end.bytesOut - start.bytesOut)
     }
 }

@@ -22,12 +22,16 @@ public struct ProcessCounters: Sendable, Equatable {
     /// nil when the kernel refuses `proc_pid_rusage`, which it does for every
     /// other user's process: unknown, not zero.
     public let usage: ResourceUsage?
+    /// Bytes this process moved over the network since the network filter
+    /// started; nil while the filter is off or cannot tell this process from
+    /// another with the same pid (`ProcessSnapshot.attributing`).
+    public let network: NetworkCounters?
 
     public var pid: pid_t { identity.pid }
 
     public init(
         identity: ProcessIdentity, uid: uid_t, name: String, path: String?,
-        cpuSeconds: Double, usage: ResourceUsage?
+        cpuSeconds: Double, usage: ResourceUsage?, network: NetworkCounters? = nil
     ) {
         self.identity = identity
         self.uid = uid
@@ -35,6 +39,28 @@ public struct ProcessCounters: Sendable, Equatable {
         self.path = path
         self.cpuSeconds = cpuSeconds
         self.usage = usage
+        self.network = network
+    }
+
+    /// These counters with the network's added.
+    func with(network: NetworkCounters?) -> ProcessCounters {
+        ProcessCounters(
+            identity: identity, uid: uid, name: name, path: path, cpuSeconds: cpuSeconds, usage: usage,
+            network: network)
+    }
+}
+
+/// A process's network bytes since the network filter started, under the
+/// filter's instance: totals from two instances are not comparable.
+public struct NetworkCounters: Sendable, Equatable {
+    public let filter: UUID
+    public let bytesIn: UInt64
+    public let bytesOut: UInt64
+
+    public init(filter: UUID, bytesIn: UInt64, bytesOut: UInt64) {
+        self.filter = filter
+        self.bytesIn = bytesIn
+        self.bytesOut = bytesOut
     }
 }
 
@@ -98,12 +124,19 @@ public struct ProcessDelta: Codable, Sendable, Equatable {
     public let startedAt: Double
     /// Owning user id.
     public let uid: UInt32
+    /// Received and sent over the network during the window; nil while the
+    /// network filter is off, or for a window it cannot account for this
+    /// process (it restarted, or the pid was reused). Unlike disk and energy,
+    /// known for every user's processes.
+    public let networkInMB: Double?
+    public let networkOutMB: Double?
 
     public init(
         pid: Int32, name: String, path: String?, cpuPct: Double,
         cpuSeconds: Double, windowSeconds: Double,
         footprintMB: Double?, diskReadMB: Double?, diskWriteMB: Double?,
-        energyJoules: Double?, startedAt: Double, uid: UInt32
+        energyJoules: Double?, startedAt: Double, uid: UInt32,
+        networkInMB: Double? = nil, networkOutMB: Double? = nil
     ) {
         self.pid = pid
         self.name = name
@@ -117,6 +150,8 @@ public struct ProcessDelta: Codable, Sendable, Equatable {
         self.energyJoules = energyJoules
         self.startedAt = startedAt
         self.uid = uid
+        self.networkInMB = networkInMB
+        self.networkOutMB = networkOutMB
     }
 
     /// Whether the executable ships as part of macOS. Decided by path,

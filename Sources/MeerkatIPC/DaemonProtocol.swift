@@ -27,9 +27,11 @@ public enum DaemonService {
     /// The agent's plist, relative to the bundle, where `SMAppService`
     /// looks for it.
     public static let agentPlist = AppBundle.launchAgents + "/" + plistName
-    /// Where the bundler's `--install` puts Meerkat.app, relative to the
-    /// home folder, and so where the help and the errors point people.
-    public static let installedApp = "Applications/Meerkat.app"
+    /// Where the bundler's `--install` puts Meerkat.app, and so where the
+    /// help and the errors point people. `/Applications`, because macOS
+    /// activates the network filter's system extension only from an app
+    /// there.
+    public static let installedApp = "/Applications/Meerkat.app"
     /// `meerkat agent install`'s exit status when the agent registered but
     /// no daemon from this build answered (sysexits' `EX_TEMPFAIL`): the one
     /// outcome worth trying again, which the Bundler does.

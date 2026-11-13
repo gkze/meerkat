@@ -2,6 +2,7 @@ import ArgumentParser
 import Foundation
 import MeerkatIPC
 import MeerkatKit
+import MeerkatNetworkFilter
 import MeerkatRules
 import ReleaseVersion
 import ToolProcess
@@ -10,7 +11,7 @@ import ToolProcess
 //
 //   buck2 run //Tools/Bundler:app                  # -> build/Meerkat.app
 //   buck2 run //Tools/Bundler:app -- --install     # also install to
-//                                                  # ~/Applications and
+//                                                  # /Applications and
 //                                                  # register the agent
 //   buck2 run //Tools/Bundler:preview              # the app alone, as its
 //                                                  # own app -> build/Meerkat
@@ -67,6 +68,8 @@ struct Bundle: ParsableCommand {
 
     @OptionGroup var parts: FullBundleParts
 
+    @OptionGroup var networkFilterProfiles: NetworkFilterProfiles
+
     @Option(help: "A resource bundle of a module the app links, copied into Contents/Resources. Repeatable.")
     var resourceBundle: [String] = []
 
@@ -104,7 +107,7 @@ struct Bundle: ParsableCommand {
     @Option(help: "Also write the finished bundle, zipped as Finder would (ditto), to this path.")
     var archive: String?
 
-    @Flag(help: "Copy the bundle to ~/\(DaemonService.installedApp) and install the agent from there.")
+    @Flag(help: "Copy the bundle to \(DaemonService.installedApp) and install the agent from there.")
     var install = false
 
     @Flag(
@@ -118,6 +121,9 @@ struct Bundle: ParsableCommand {
             throw ValidationError("--preview cannot be combined with --install")
         }
         if !preview { _ = try parts.resolved() }
+        if preview && (networkFilterProfiles.appProfile != nil || networkFilterProfiles.networkFilterProfile != nil) {
+            throw ValidationError("the preview carries no network filter")
+        }
         if notarize {
             if preview { throw ValidationError("--notarize is for Meerkat.app, not the preview") }
             _ = try NotaryKey.fromEnvironment()
@@ -139,6 +145,9 @@ struct Bundle: ParsableCommand {
             throw ValidationError("--notarize needs a Developer ID Application identity, not \"\(identity)\"")
         }
 
+        // Checked before anything is built: a profile macOS would refuse
+        // fails here, not at launch.
+        let filterProfiles = variant == .full ? try networkFilterProfiles.resolved() : nil
         let output = self.output ?? "build/\(variant.name).app"
         step("assembling \(output)")
         let app = URL(fileURLWithPath: output, relativeTo: root).standardizedFileURL
@@ -163,6 +172,13 @@ struct Bundle: ParsableCommand {
 
         let build = try buildNumber(root: root)
         if variant == .full { try assembleNotifier(iconKeys: iconKeys, build: build, staging: staging) }
+        if let filterProfiles {
+            try assembleNetworkFilter(
+                executable: parts.resolved().networkFilter, profile: filterProfiles.filter, build: build,
+                staging: staging)
+            try FileManager.default.copyItem(
+                at: filterProfiles.app.path, to: contents.appendingPathComponent("embedded.provisionprofile"))
+        }
         try write(
             plist: infoPlist(build: build).merging(iconKeys) { $1 },
             to: contents.appendingPathComponent("Info.plist"))
@@ -176,11 +192,22 @@ struct Bundle: ParsableCommand {
             try signResourceExecutables(in: resources, identity: identity)
             try signDaemonAndCLI(in: staging, identity: identity, scratch: staging)
         }
+        if let filterProfiles {
+            try signNetworkFilter(in: staging, profile: filterProfiles.filter, identity: identity)
+        }
         // The app asks for the Automation permission meerkatd's Apple Events
         // effects need (macOS prompts only a foreground app), and the
         // hardened runtime blocks Apple Events without this entitlement.
         let appEntitlements = staging.deletingLastPathComponent().appendingPathComponent(".app.entitlements")
-        try write(plist: ["com.apple.security.automation.apple-events": true], to: appEntitlements)
+        // With the network filter, the app also installs the system extension
+        // and configures the content filter, as its profile grants.
+        let appleEvents: [String: Any] = ["com.apple.security.automation.apple-events": true]
+        try write(
+            plist: filterProfiles.map {
+                $0.app.signingEntitlements(
+                    appleEvents.merging(["com.apple.developer.system-extension.install": true]) { $1 })
+            } ?? appleEvents,
+            to: appEntitlements)
         defer { try? fileManager.removeItem(at: appEntitlements) }
         try sign(staging, identity: identity, identifier: variant.identifier, entitlements: appEntitlements)
         try Subprocess("/usr/bin/codesign", ["--verify", "--strict", "--deep", staging.path]).run()
@@ -482,7 +509,7 @@ struct Bundle: ParsableCommand {
         ]
     }
 
-    private func write(plist: [String: Any], to url: URL) throws {
+    func write(plist: [String: Any], to url: URL) throws {
         let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
         try data.write(to: url)
     }
@@ -492,7 +519,7 @@ struct Bundle: ParsableCommand {
     /// The notary service requires a secure timestamp, which costs a request
     /// to Apple's timestamp server per signature, so only a notarized build
     /// asks for one.
-    private func sign(_ url: URL, identity: String, identifier: String, entitlements: URL? = nil) throws {
+    func sign(_ url: URL, identity: String, identifier: String, entitlements: URL? = nil) throws {
         var arguments = [
             "--force", "--sign", identity, "--options", "runtime", "--identifier", identifier,
             notarize ? "--timestamp" : "--timestamp=none",
@@ -547,9 +574,8 @@ struct Bundle: ParsableCommand {
     private static let registrationAttempts = 3
 
     private func installBundle(_ app: URL) throws {
-        let destination = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(DaemonService.installedApp)
+        let destination = URL(fileURLWithPath: DaemonService.installedApp)
         let applications = destination.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: applications, withIntermediateDirectories: true)
         step("installing \(destination.path)")
         let copy = applications.appendingPathComponent(".\(destination.lastPathComponent).installing")
         try? FileManager.default.removeItem(at: copy)
@@ -617,6 +643,12 @@ struct FullBundleParts: ParsableArguments {
     @Option(help: "The third-party notices (//Tools/Notices:notices). Required unless --preview.")
     var notices: String?
 
+    @Option(
+        help:
+            "The network filter's system extension executable. Required unless --preview; bundled only with the profiles."
+    )
+    var networkFilter: String?
+
     struct Resolved {
         let cli: String
         let daemon: String
@@ -624,21 +656,23 @@ struct FullBundleParts: ParsableArguments {
         let runtimeTypes: String
         let lintToolchain: String
         let notices: String
+        let networkFilter: String
     }
 
     /// Every part, or the options missing.
     func resolved() throws -> Resolved {
         let parts = [
             ("--cli", cli), ("--daemon", daemon), ("--typescript", typescript), ("--runtime-types", runtimeTypes),
-            ("--lint-toolchain", lintToolchain), ("--notices", notices),
+            ("--lint-toolchain", lintToolchain), ("--notices", notices), ("--network-filter", networkFilter),
         ]
-        guard let cli, let daemon, let typescript, let runtimeTypes, let lintToolchain, let notices else {
+        guard let cli, let daemon, let typescript, let runtimeTypes, let lintToolchain, let notices, let networkFilter
+        else {
             let missing = parts.filter { $0.1 == nil }.map(\.0)
             throw ValidationError("the full bundle needs \(missing.joined(separator: ", "))")
         }
         return Resolved(
             cli: cli, daemon: daemon, typescript: typescript, runtimeTypes: runtimeTypes,
-            lintToolchain: lintToolchain, notices: notices)
+            lintToolchain: lintToolchain, notices: notices, networkFilter: networkFilter)
     }
 }
 

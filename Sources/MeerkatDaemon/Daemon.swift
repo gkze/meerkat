@@ -83,6 +83,9 @@ public final class Daemon: Sendable {
         let settings = DaemonSettings(rulesDirectory: paths.rulesDirectory, catalog: hub.catalog)
         // fs.churn without a root measures meerkat.json's `files`, read per window.
         hub.environment.provideFileScope { settings.current.files.scope }
+        // Process events' network bytes and network.flows, from the system
+        // extension when the user has turned it on.
+        hub.environment.provideNetworkFilter(NetworkFilterClient())
         let protected = paths.protected(executable: .currentExecutable)
         // One authorizer for what runs and what a dry run simulates, so a
         // draft is refused exactly as the saved rule will be.

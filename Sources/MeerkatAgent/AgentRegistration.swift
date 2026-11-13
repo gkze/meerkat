@@ -42,7 +42,7 @@ public enum AgentRegistration {
                 return """
                     \(path) is not inside Meerkat.app, so it cannot manage the agent. \
                     Build the app with `buck2 run //Tools/Bundler:app -- --install` and run \
-                    ~/\(DaemonService.installedApp)/\(DaemonService.cliPath) agent install.
+                    \(DaemonService.installedApp)/\(DaemonService.cliPath) agent install.
                     """
             case .silent(let limit):
                 return """

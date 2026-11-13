@@ -182,6 +182,14 @@ extension ProcessDelta: SchemaDescribed {
     public var diskWriteMBps: Double? { diskWriteMB.map { $0 / rateWindow } }
     public var diskReadMBps: Double? { diskReadMB.map { $0 / rateWindow } }
     public var diskMBps: Double { diskMB / rateWindow }
+    /// Nil while the network filter is off or cannot account for this
+    /// process in the window.
+    public var networkInMBps: Double? { networkInMB.map { $0 / rateWindow } }
+    public var networkOutMBps: Double? { networkOutMB.map { $0 / rateWindow } }
+    public var networkMBps: Double? {
+        guard let networkInMB, let networkOutMB else { return nil }
+        return (networkInMB + networkOutMB) / rateWindow
+    }
 
     /// Pid plus start time: the process instance; nil for a row from JSON
     /// whose start time no process can have.
@@ -206,6 +214,14 @@ extension ProcessDelta: SchemaDescribed {
                 .optional("energyJoules", Double.self, doc: "Absent for other users' processes."),
                 .field("startedAt", Double.self, doc: "Unix epoch milliseconds."),
                 .field("uid", UInt32.self),
+                .optional(
+                    "networkInMB", Double.self,
+                    doc:
+                        "Received over the network during the window, every user's processes included; absent while the network filter is off (Meerkat › Settings › Network)."
+                ),
+                .optional(
+                    "networkOutMB", Double.self,
+                    doc: "Sent over the network during the window; absent while the network filter is off."),
             ]))
     }
 
@@ -213,15 +229,16 @@ extension ProcessDelta: SchemaDescribed {
         pid: 812, name: "mds_stores",
         path: "/System/Library/Frameworks/CoreServices.framework/Frameworks/Metadata.framework/Support/mds_stores",
         cpuPct: 63.2, cpuSeconds: 3.16, windowSeconds: 5, footprintMB: 210, diskReadMB: 120, diskWriteMB: 8,
-        energyJoules: 1.9, startedAt: 1_792_870_301_000, uid: 0
+        energyJoules: 1.9, startedAt: 1_792_870_301_000, uid: 0, networkInMB: 0.4, networkOutMB: 0.1
     )
 }
 
 // MARK: - process.hot
 
-public struct ProcessHotParameters: EventParameters {
+public struct ProcessHotParameters: NetworkFilterParameters {
     public enum Metric: String, Codable, Sendable, CaseIterable, SchemaDescribed {
         case cpuPercent, diskWriteMBps, diskReadMBps, footprintMB, energyWatts
+        case networkInMBps, networkOutMBps, networkMBps
 
         /// nil when the counter is unknown for this process.
         func value(of row: ProcessDelta) -> Double? {
@@ -231,6 +248,18 @@ public struct ProcessHotParameters: EventParameters {
             case .diskReadMBps: row.diskReadMBps
             case .footprintMB: row.footprintMB
             case .energyWatts: row.energyWatts
+            case .networkInMBps: row.networkInMBps
+            case .networkOutMBps: row.networkOutMBps
+            case .networkMBps: row.networkMBps
+            }
+        }
+
+        /// Whether the metric comes from the network filter, without which a
+        /// subscription to it is refused rather than silently never firing.
+        var needsNetworkFilter: Bool {
+            switch self {
+            case .networkInMBps, .networkOutMBps, .networkMBps: true
+            case .cpuPercent, .diskWriteMBps, .diskReadMBps, .footprintMB, .energyWatts: false
             }
         }
     }
@@ -239,6 +268,8 @@ public struct ProcessHotParameters: EventParameters {
     public var above: Double
     public var sustainSeconds: Double
     public var interval: Double
+
+    public var needsNetworkFilter: Bool { metric.needsNetworkFilter }
 
     public static let defaultSustainSeconds = 0.0
     public static let defaultInterval = 5.0
@@ -369,16 +400,23 @@ struct HotProcessDetector: Sendable {
 public enum ProcessHotEvent: EventKind {
     public static let descriptor = EventDescriptor(
         "process.hot",
-        "A process's CPU, disk, memory or energy use stayed above a threshold (phase \"started\"), or stopped doing so (\"ended\"). Processes owned by other users report CPU only.",
+        "A process's CPU, disk, memory, energy or network use stayed above a threshold (phase \"started\"), or stopped doing so (\"ended\"). Processes owned by other users report CPU and network only. The network metrics need the network filter (Meerkat › Settings › Network); without it a subscription to one is refused.",
         mechanism: .derived, semantics: .occurrence, loss: .lossy,
         observation: .processes,
-        source: "proc_pid_rusage, ps (other users' CPU time)"
+        source: "proc_pid_rusage, ps (other users' CPU time), the network filter (network metrics)"
     )
 
     public static func makeSource(
         _ parameters: ProcessHotParameters, environment: SourceEnvironment,
         emit: Emitter<ProcessHotPayload>
     ) throws -> any EventSource {
+        if parameters.metric.needsNetworkFilter {
+            do {
+                _ = try environment.networkFilter.totals(wantsHosts: false)
+            } catch {
+                throw EventError.sourceUnavailable("process.hot on \(parameters.metric.rawValue): \(error)")
+            }
+        }
         let state = Mutex<(previous: ProcessSnapshot?, detector: HotProcessDetector)>(
             (nil, HotProcessDetector(parameters: parameters))
         )
@@ -386,7 +424,8 @@ public enum ProcessHotEvent: EventKind {
             // Up to half an interval old: shared with process.top's ranking.
             // An unreadable table skips the tick (an empty snapshot would end
             // every episode), as PollingSource does with any failure.
-            let current = try environment.processSnapshots.current(maxAge: parameters.interval / 2)
+            let current = try environment.processSnapshots.current(
+                maxAge: parameters.interval / 2, network: environment.networkFilter)
             let output = state.withLock { state -> [ProcessHotPayload] in
                 defer { state.previous = current }
                 guard let previous = state.previous else { return [] }
@@ -589,7 +628,8 @@ final class ProcessTopSource: EventSource {
         // Up to half a ranking interval old: shared with process.hot. An
         // unreadable table skips this ranking (the previous one stands), as
         // PollingSource does with any failure.
-        let snapshot = try environment.processSnapshots.current(maxAge: parameters.rankInterval / 2)
+        let snapshot = try environment.processSnapshots.current(
+            maxAge: parameters.rankInterval / 2, network: environment.networkFilter)
         let payload = state.withLock { state -> ProcessTopPayload? in
             defer { state.lastFull = snapshot }
             guard let previous = state.lastFull else { return nil }
@@ -734,7 +774,8 @@ final class ProcessListSource: EventSource {
     var detail: String? { timer.withLock { $0 }?.detail }
 
     private func list() throws {
-        let snapshot = try environment.processSnapshots.current(maxAge: parameters.interval / 2)
+        let snapshot = try environment.processSnapshots.current(
+            maxAge: parameters.interval / 2, network: environment.networkFilter)
         let previous = self.previous.withLock { previous -> ProcessSnapshot? in
             defer { previous = snapshot }
             return previous

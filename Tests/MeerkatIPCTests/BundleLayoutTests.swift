@@ -1,5 +1,6 @@
 import Foundation
 import MeerkatKit
+import MeerkatNetworkFilter
 import Testing
 
 @testable import MeerkatIPC
@@ -32,5 +33,12 @@ struct BundleLayoutTests {
         #expect(AppBundle.containing(executable: lone).path == "/Applications/Other.app")
         let shallow = URL(fileURLWithPath: "/Library/LoginItems/Helper.app/Contents/MacOS/helper")
         #expect(AppBundle.containing(executable: shallow).path == "/Library/LoginItems/Helper.app")
+    }
+
+    /// The network filter accepts only meerkatd, by signing identifier; the
+    /// two names must be one.
+    @Test func theNetworkFilterKnowsTheDaemonByItsLabel() {
+        #expect(FilterService.daemonIdentifier == DaemonService.label)
+        #expect(FilterService.extensionIdentifier.hasPrefix(DaemonService.bundleIdentifier + "."))
     }
 }

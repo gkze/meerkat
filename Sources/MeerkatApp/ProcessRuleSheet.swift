@@ -135,6 +135,9 @@ extension ProcessHotParameters.Metric {
         case .energyWatts: "Energy"
         case .diskWriteMBps: "Disk writes"
         case .diskReadMBps: "Disk reads"
+        case .networkInMBps: "Network received"
+        case .networkOutMBps: "Network sent"
+        case .networkMBps: "Network"
         }
     }
 
@@ -143,7 +146,7 @@ extension ProcessHotParameters.Metric {
         case .cpuPercent: "% of a core"
         case .footprintMB: "MB"
         case .energyWatts: "W"
-        case .diskWriteMBps, .diskReadMBps: "MB/s"
+        case .diskWriteMBps, .diskReadMBps, .networkInMBps, .networkOutMBps, .networkMBps: "MB/s"
         }
     }
 
@@ -153,6 +156,7 @@ extension ProcessHotParameters.Metric {
         case .footprintMB: 4000
         case .energyWatts: 5
         case .diskWriteMBps, .diskReadMBps: 50
+        case .networkInMBps, .networkOutMBps, .networkMBps: 10
         }
     }
 
@@ -165,6 +169,9 @@ extension ProcessHotParameters.Metric {
         case .energyWatts: "is using a lot of energy"
         case .diskWriteMBps: "is writing a lot"
         case .diskReadMBps: "is reading a lot"
+        case .networkInMBps: "is downloading a lot"
+        case .networkOutMBps: "is uploading a lot"
+        case .networkMBps: "is using a lot of network"
         }
     }
 }

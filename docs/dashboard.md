@@ -4,7 +4,7 @@ Meerkat.app, the dashboard, and what its sampling costs.
 [design/app.md](design/app.md) has its design.
 
 ```bash
-open ~/Applications/Meerkat.app
+open /Applications/Meerkat.app
 ```
 
 The dashboard is a client of `meerkatd`. Its pages:

@@ -62,17 +62,25 @@ on the command line, and checks that the runtime's checked-in bindings match
 the library meerkatd links. It then assembles `build/Meerkat.app`: the app, the CLI, the daemon with
 the rule runtime embedded, the agent plist, the TypeScript compiler (tsrs), the
 lint tools and the app icon. It signs the bundle with hardened runtime,
-copies it to `~/Applications/Meerkat.app`, and registers the agent with
+copies it to `/Applications/Meerkat.app`, and registers the agent with
 `SMAppService`.
 
 Put the CLI on your PATH:
 
 ```bash
-ln -sf ~/Applications/Meerkat.app/Contents/MacOS/meerkat ~/.local/bin/meerkat
+ln -sf /Applications/Meerkat.app/Contents/MacOS/meerkat ~/.local/bin/meerkat
 ```
 
 - `--identity` (or `MEERKAT_SIGNING_IDENTITY`) picks the signing identity when
   the keychain has more than one.
+- `--app-profile` and `--network-filter-profile`, together, bundle the
+  network filter ([design/network-filter.md](design/network-filter.md)): two
+  Developer ID provisioning profiles, for `com.gkze.meerkat` (System Extension
+  and Network Extensions capabilities) and `com.gkze.meerkat.network-filter`
+  (Network Extensions), from your team's Apple Developer account. The bundler
+  checks them before building. Without them the app has no network filter and
+  no restricted entitlements, which is what anyone can build. macOS installs
+  the filter only from an app in `/Applications`.
 - Running `buck2 run //Tools/Bundler:app -- --install` again upgrades in place. It opens
   the app in the background, then registers the agent again, which restarts
   the daemon from the new build and applies plist changes.

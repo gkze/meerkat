@@ -30,24 +30,22 @@ Configure the client with the `meerkat` inside Meerkat.app (meerkatd accepts
 only clients signed with the app). Claude Code:
 
 ```bash
-claude mcp add -s user meerkat -- ~/Applications/Meerkat.app/Contents/MacOS/meerkat mcp
+claude mcp add -s user meerkat -- /Applications/Meerkat.app/Contents/MacOS/meerkat mcp
 ```
 
 Codex, in `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.meerkat]
-command = "~/Applications/Meerkat.app/Contents/MacOS/meerkat"
+command = "/Applications/Meerkat.app/Contents/MacOS/meerkat"
 args = ["mcp"]
 ```
 
 Any other client that starts a stdio server:
 
 ```json
-{ "command": "~/Applications/Meerkat.app/Contents/MacOS/meerkat", "args": ["mcp"] }
+{ "command": "/Applications/Meerkat.app/Contents/MacOS/meerkat", "args": ["mcp"] }
 ```
-
-Clients that don't expand `~` need the full path.
 
 - **No socket.** The bridge relays bytes over the daemon's XPC service, and
   the MCP server runs inside meerkatd, one session per bridge.

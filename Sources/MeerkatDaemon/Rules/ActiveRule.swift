@@ -18,6 +18,10 @@ final class ActiveRule {
     /// (`RuleEngine.subscribe`); it resumes once the grant covers the scope
     /// again (`RuleEngine.recheckFileScope`).
     var outOfScope = false
+    /// Set when the rule was failed because the network filter was off, as
+    /// it subscribed or while it ran; it resumes once the filter answers
+    /// (`RuleEngine.awaitNetworkFilter`).
+    var awaitingNetworkFilter = false
     /// Serializes this rule's invocations.
     let gate = AsyncGate()
     /// Increases with every `run()`, so a dispatcher that ends can tell
