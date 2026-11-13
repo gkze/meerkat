@@ -24,13 +24,23 @@ ignore = [
   { id = "RUSTSEC-2026-0349", reason = "ServerHello downgrade to classical key exchange: only a rule's own TLS connection, which needs `net` or a granted Unix socket" },
   { id = "RUSTSEC-2026-0346", reason = "only custom ClientSessionStores that Debug-format values leak; Deno's (QUIC, which needs `net`) does not format them" },
   { id = "RUSTSEC-2026-0348", reason = "needs rustls's non-default `brotli` feature, which nothing in the graph enables" },
-  # hickory-proto 0.25.2, required by deno_net and deno_fetch (^0.25); the
-  # fixes are in 0.26. Its features here are default, futures-io, serde, std
-  # and tokio (../BUCK): no `text-parsing`, so the zone-file lexer and record
+  # hickory-proto and hickory-resolver 0.25.2, required by deno_net and
+  # deno_fetch (^0.25); the fixes are in 0.26, DNSSEC's in hickory-net. No
+  # `dnssec-*` feature is on (../BUCK): the resolver has default, serde,
+  # system-config and tokio, and the protocol crate default, futures-io,
+  # serde, std and tokio: no `text-parsing`, so the zone-file lexer and record
   # parsers (`serialize::txt`) are not compiled, and Deno decodes DNS only
   # from the wire, in replies to queries a rule's `net` grant allows
   # (op_dns_resolve checks each name server before it queries one).
   { id = "RUSTSEC-2026-0118", reason = "needs DNSSEC validation (`dnssec-*` features), which nothing in the graph enables" },
+  { id = "RUSTSEC-2026-0504", reason = "inverted NSEC3 comparison in DNSSEC validation (`dnssec-*` features), which nothing in the graph enables" },
+  { id = "RUSTSEC-2026-0505", reason = "NSEC3 owner names not checked against the zone in DNSSEC validation (`dnssec-*` features), which nothing in the graph enables" },
+  { id = "RUSTSEC-2026-0511", reason = "NXDOMAIN accepted for a proven empty non-terminal in DNSSEC validation (`dnssec-*` features), which nothing in the graph enables" },
+  { id = "RUSTSEC-2026-0512", reason = "an unrelated signed RRset accepted as the answer in DNSSEC validation (`dnssec-*` features), which nothing in the graph enables" },
+  { id = "RUSTSEC-2026-0530", reason = "parent-side NSEC at a zone cut accepted as proof of nonexistence in DNSSEC validation (`dnssec-*` features), which nothing in the graph enables" },
+  { id = "RUSTSEC-2026-0531", reason = "child-side NSEC or NSEC3 accepted as proof of no DS record in DNSSEC validation (`dnssec-*` features), which nothing in the graph enables" },
+  { id = "RUSTSEC-2026-0532", reason = "parent-side NSEC3 at a zone cut accepted as proof of nonexistence in DNSSEC validation (`dnssec-*` features), which nothing in the graph enables" },
+  { id = "RUSTSEC-2026-0514", reason = "hickory-resolver 0.25.2: lookups returned records that failed DNSSEC validation, which needs `dnssec-*` features that nothing in the graph enables" },
   { id = "RUSTSEC-2026-0487", reason = "alpn panic in the zone-file SVCB/HTTPS parser (`serialize::txt`), compiled only with `text-parsing`, which nothing in the graph enables" },
   { id = "RUSTSEC-2026-0489", reason = "lone-quote panic in the zone-file SVCB/HTTPS parser (`serialize::txt`), compiled only with `text-parsing`, which nothing in the graph enables" },
   { id = "RUSTSEC-2026-0490", reason = "long-token panic in the zone-file lexer (`serialize::txt`), compiled only with `text-parsing`, which nothing in the graph enables" },
