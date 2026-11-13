@@ -845,10 +845,10 @@ struct SamplerCostTests {
     /// one is replaced.
     @Test func processSnapshotsAreSharedWhileFresh() throws {
         let shared = SharedProcessSnapshot()
-        let first = try shared.current(maxAge: 60)
-        #expect(try shared.current(maxAge: 60).takenAt == first.takenAt)
+        let first = try shared.current(maxAge: 60, network: NoNetworkFilter())
+        #expect(try shared.current(maxAge: 60, network: NoNetworkFilter()).takenAt == first.takenAt)
         Thread.sleep(forTimeInterval: 0.05)
-        #expect(try shared.current(maxAge: 0.01).takenAt > first.takenAt)
+        #expect(try shared.current(maxAge: 0.01, network: NoNetworkFilter()).takenAt > first.takenAt)
     }
 }
 

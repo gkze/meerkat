@@ -137,14 +137,13 @@ struct ObservationScope: Sendable {
     /// sees every event whole.
     func view(of kind: AnyEventKind, for definition: RuleDefinition) -> EventView? {
         guard let view = kind.view else { return nil }
-        let rule: RuleView
-        if kind.descriptor.observation == .processes {
-            // Seen whole, a process kind needs no decoding per event.
-            guard !Self.observes(.all, definition.grants) else { return nil }
-            rule = RuleView(file: definition.file, user: user)
-        } else {
-            rule = RuleView(file: definition.file, user: nil)
-        }
+        let all = Self.observes(.all, definition.grants)
+        // Seen whole, a process kind needs no decoding per event.
+        if kind.descriptor.observation == .processes, all { return nil }
+        // The process scope holds for whatever kind carries processes, not
+        // only `.processes` ones: `network.flows` is named for its
+        // destinations, and still lists every user's processes.
+        let rule = RuleView(file: definition.file, user: all ? nil : user)
         return EventView { envelope in
             view(envelope.payload, rule).map {
                 EventEnvelope(

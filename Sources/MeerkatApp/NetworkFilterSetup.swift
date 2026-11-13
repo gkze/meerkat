@@ -54,6 +54,28 @@ enum NetworkFilterStatus: Equatable {
     }
 }
 
+/// The system-extension request `turnOn` or `turnOff` waits on. The
+/// launch-time upgrade shares the delegate, so each callback is matched to
+/// its request: an upgrade's result must not end Turn Off, and Turn Off's
+/// must not be dropped.
+struct ExtensionRequestWait {
+    private var awaited: (request: ObjectIdentifier, continuation: CheckedContinuation<Void, any Error>)?
+
+    mutating func begin(_ request: ObjectIdentifier, _ continuation: CheckedContinuation<Void, any Error>) {
+        awaited = (request, continuation)
+    }
+
+    /// Resumes the wait when `request` is the one awaited; a result for any
+    /// other is left to macOS's log. Returns whether it resumed.
+    @discardableResult
+    mutating func finish(_ request: ObjectIdentifier, _ result: Result<Void, any Error>) -> Bool {
+        guard let awaited, awaited.request == request else { return false }
+        self.awaited = nil
+        awaited.continuation.resume(with: result)
+        return true
+    }
+}
+
 /// Installs and configures the network filter, the two steps only the app
 /// can take: activating the system extension, and saving and enabling the
 /// content filter that names it. Turning it off reverses both.
@@ -62,7 +84,7 @@ final class NetworkFilterSetup: NSObject {
     private(set) var status: NetworkFilterStatus
     private(set) var busy = false
 
-    private var activationContinuation: CheckedContinuation<Void, any Error>?
+    private var awaited = ExtensionRequestWait()
     private var upgradeRequested = false
 
     /// An activation request whose outcome no one awaits: the launch-time
@@ -145,15 +167,14 @@ final class NetworkFilterSetup: NSObject {
 
     private func submit(_ request: OSSystemExtensionRequest) async throws {
         try await withCheckedThrowingContinuation { continuation in
-            activationContinuation = continuation
+            awaited.begin(ObjectIdentifier(request), continuation)
             request.delegate = self
             OSSystemExtensionManager.shared.submitRequest(request)
         }
     }
 
-    private func finish(_ result: Result<Void, any Error>) {
-        activationContinuation?.resume(with: result)
-        activationContinuation = nil
+    private func finish(_ request: ObjectIdentifier, _ result: Result<Void, any Error>) {
+        awaited.finish(request, result)
     }
 }
 
@@ -173,10 +194,12 @@ extension NetworkFilterSetup: OSSystemExtensionRequestDelegate {
     nonisolated func request(
         _ request: OSSystemExtensionRequest, didFinishWithResult result: OSSystemExtensionRequest.Result
     ) {
-        Task { @MainActor in self.finish(.success(())) }
+        let id = ObjectIdentifier(request)
+        Task { @MainActor in self.finish(id, .success(())) }
     }
 
     nonisolated func request(_ request: OSSystemExtensionRequest, didFailWithError error: any Error) {
-        Task { @MainActor in self.finish(.failure(error)) }
+        let id = ObjectIdentifier(request)
+        Task { @MainActor in self.finish(id, .failure(error)) }
     }
 }

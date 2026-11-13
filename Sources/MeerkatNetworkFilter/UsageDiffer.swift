@@ -12,6 +12,10 @@ public struct UsageDelta: Sendable, Equatable {
     /// Keys whose totals went down since the last snapshot (evicted, then
     /// charged again): no delta is reported for them this window.
     public var restarted = 0
+    /// Endpoints the extension's full table evicted since the last snapshot
+    /// (`LedgerCounters.evictedHosts`): what they moved in the window is
+    /// gone, so the window says how many it lost rather than looking whole.
+    public var evictedHosts = 0
 
     public init() {}
 }
@@ -38,6 +42,10 @@ public struct UsageDiffer: Sendable {
             case .none: delta.restarted += 1
             }
         }
+        // The counter only grows within one instance, which the guard above
+        // ensures; clamped, as it comes from the extension.
+        let evicted = snapshot.counters.evictedHosts &- min(last.counters.evictedHosts, snapshot.counters.evictedHosts)
+        delta.evictedHosts = Int(clamping: evicted)
         let hostsBefore = Dictionary(uniqueKeysWithValues: last.hosts.map { ($0.key, $0.totals) })
         for entry in snapshot.hosts {
             switch Self.difference(entry.totals, since: hostsBefore[entry.key]) {

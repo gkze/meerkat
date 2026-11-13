@@ -199,6 +199,23 @@ struct UsageDifferTests {
         #expect(delta.restarted == 1)
     }
 
+    /// Endpoints the full table evicted between two snapshots are counted,
+    /// so a window that lost their traffic does not look whole.
+    @Test func evictedEndpointsAreCountedInTheWindow() {
+        var differ = UsageDiffer()
+        let instance = UUID()
+        let counting = { (evicted: UInt64) -> FilterSnapshot in
+            var counters = LedgerCounters()
+            counters.evictedHosts = evicted
+            return FilterSnapshot(
+                instance: instance, build: self.build,
+                snapshot: FlowLedger.Snapshot(processes: [:], hosts: [:], counters: counters), openFlows: 0)
+        }
+        _ = differ.next(counting(4))
+        #expect(differ.next(counting(7)).evictedHosts == 3)
+        #expect(differ.next(counting(7)).evictedHosts == 0)
+    }
+
     /// Readers never interfere: two daemons reading the same totals each get
     /// the full delta.
     @Test func readersAreIndependent() {

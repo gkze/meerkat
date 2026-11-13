@@ -182,10 +182,13 @@ Extends [mcp.md](mcp.md) ("Harm model"):
   Which hosts a process talks to says what the user is doing, so it is a
   named observation, never added to `process.hot` or `process.top`. The
   extension keeps no host table unless meerkatd's poll says a rule observes
-  `network.flows`, and drops it when none does. No payload byte is ever read.
+  `network.flows`, and drops it when none has asked for a minute (`HostLease`),
+  so a `network.flows` source polls at least every 30 seconds whatever its
+  interval, and reports once per interval. No payload byte is ever read.
 - Other users' processes are visible, so the new fields are subject to
   `ObservationScope` as every process field is: a rule with
-  `process.observe: "own"` sees only its user's processes.
+  `process.observe: "own"` sees only its user's processes, in `network.flows`
+  too, though it is a named kind (`ObservationScope.view`).
 - MCP: kinds that need `networkFilter` are denied by default, as kinds that
   need a TCC permission are.
 
@@ -195,7 +198,7 @@ Extends [mcp.md](mcp.md) ("Harm model"):
 |---|---|---|
 | Extension crashes or is killed | NetworkExtension uninstalls the filter session about 5 s later, and the kernel resets the connections attached to it, once; new connections work again within a second as the session restarts (seen on macOS 27) | totals restart from zero; meerkatd sees a new extension instance and skips one window instead of reporting a negative or doubled rate; after 3 crashes in 10 minutes the extension does not start (`CrashGuard`) |
 | meerkatd absent or slow | none on traffic | ledger stays bounded; the oldest totals are evicted and counted |
-| Ledger full (flow flood) | none on traffic | least recently reported flows evicted; `evicted` counted and shown in status |
+| Ledger full (flow flood) | none on traffic | least recently reported flows evicted; `evicted` counted and shown in status; a `network.flows` window counts the endpoints evicted during it in `omitted` |
 | Malformed or out-of-range report | none on traffic | flow dropped, counted |
 | Malformed reply at the daemon | the poll fails | source reports unavailable with the reason; no trap |
 | Filter not approved | none | `networkFilter` permission reads denied; rules on network metrics refused with where to turn it on, and resumed once it answers (meerkatd asks every 10 s while one waits, `RuleEngine.awaitNetworkFilter`) |

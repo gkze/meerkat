@@ -247,6 +247,33 @@ struct ObservationViewTests {
                 == nil)
     }
 
+    /// `network.flows` is a named kind, for its destinations, and lists
+    /// every user's processes: `process.observe: "own"` still holds.
+    @Test func ownSeesOnlyTheUsersNetworkFlows() throws {
+        let kind = try #require(EventCatalog.standard.kind(named: "network.flows"))
+        let flow = { (uid: uid_t) -> JSONValue in
+            [
+                "pid": 10, "uid": .number(Double(uid)), "host": "example.com", "port": 443, "transport": "tcp",
+                "receivedMB": 1, "sentMB": 0,
+            ]
+        }
+        let mine = flow(getuid())
+        let event = Self.envelope(
+            "network.flows", ["windowSeconds": 5, "flows": [mine, flow(getuid() + 1)], "omitted": 0])
+        let granting = { (level: String) -> JSONValue in
+            ["observe": ["allow": ["network.flows"]], "process": ["observe": .string(level)]]
+        }
+
+        let own = try #require(
+            scope.view(of: kind, for: try definition("network.flows", capabilities: granting("own"))))
+        let seen = try #require(own(event)).payload["flows"]?.arrayValue ?? []
+        #expect(seen.map { $0["uid"]?.numberValue } == [Double(getuid())])
+
+        let all = try #require(
+            scope.view(of: kind, for: try definition("network.flows", capabilities: granting("all"))))
+        #expect(all(event) == event)
+    }
+
     @Test func aRuleSeesOnlyItsOwnFilesDropReports() throws {
         let kind = try #require(EventCatalog.standard.kind(named: "meerkat.dropped"))
         let view = try #require(scope.view(of: kind, for: try definition("meerkat.dropped", capabilities: [:])))

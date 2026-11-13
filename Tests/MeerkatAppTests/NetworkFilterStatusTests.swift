@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 
 @testable import MeerkatApp
@@ -28,5 +29,29 @@ struct NetworkFilterStatusTests {
         #expect(
             NetworkFilterStatus.of(bundled: true, appPath: "/ApplicationsExtra/Meerkat.app", filterEnabled: true)
                 == .needsApplications(current: "/ApplicationsExtra/Meerkat.app"))
+    }
+}
+
+/// Turn On and Turn Off wait on their own system-extension request; the
+/// launch-time upgrade, which shares the delegate, cannot end the wait.
+struct ExtensionRequestWaitTests {
+    struct Failed: Error {}
+
+    @Test func anotherRequestsResultLeavesTheWait() async throws {
+        let awaited = NSObject()
+        let upgrade = NSObject()
+        var wait = ExtensionRequestWait()
+        try await withCheckedThrowingContinuation { continuation in
+            wait.begin(ObjectIdentifier(awaited), continuation)
+            // The upgrade fails and succeeds first: neither is Turn Off's.
+            let upgradeFailed = wait.finish(ObjectIdentifier(upgrade), .failure(Failed()))
+            let upgraded = wait.finish(ObjectIdentifier(upgrade), .success(()))
+            let ended = wait.finish(ObjectIdentifier(awaited), .success(()))
+            #expect(!upgradeFailed && !upgraded && ended)
+        }
+        // Once ended, a late result resumes nothing.
+        let late = wait.finish(ObjectIdentifier(awaited), .success(()))
+        #expect(!late)
+        withExtendedLifetime((awaited, upgrade)) {}
     }
 }

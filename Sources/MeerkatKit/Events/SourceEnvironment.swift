@@ -215,10 +215,10 @@ public final class SharedProcessSnapshot: Sendable {
     /// is older, with each process's network totals where `network` has them.
     /// Concurrent callers may both take one; the later one wins. Throws when
     /// the process table cannot be read; a network filter that cannot be read
-    /// leaves the network fields unknown and the rest stands.
-    public func current(
-        maxAge: TimeInterval, network: any NetworkFilterReading = NoNetworkFilter()
-    ) throws -> ProcessSnapshot {
+    /// leaves the network fields unknown and the rest stands. `network` has
+    /// no default: the snapshot is shared, and one taken without the
+    /// filter's totals would serve the next caller that wants them.
+    public func current(maxAge: TimeInterval, network: any NetworkFilterReading) throws -> ProcessSnapshot {
         if let snapshot = latest.withLock({ $0 }), Date().timeIntervalSince(snapshot.takenAt) <= maxAge {
             return snapshot
         }

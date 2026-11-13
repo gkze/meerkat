@@ -35,9 +35,10 @@ struct NetworkFlowsTests {
             delta.hosts[key(Int32(index + 1), "h\(index).example")] = ByteTotals(bytesIn: UInt64(index + 1))
         }
         delta.restarted = 3
+        delta.evictedHosts = 2
         let payload = NetworkFlowsPayload.make(from: delta, windowSeconds: 5, names: [:])
         #expect(payload.flows.count == NetworkFlowsPayload.maximumFlows)
-        #expect(payload.omitted == 28)
+        #expect(payload.omitted == 30)
         #expect(payload.flows.first?.receivedMB == Double(NetworkFlowsPayload.maximumFlows + 25) / 1_000_000)
     }
 
@@ -71,15 +72,31 @@ struct NetworkFlowsTests {
     final class SteppingFilter: NetworkFilterReading {
         let instance = UUID()
         let totals = Mutex<[HostKey: ByteTotals]>([:])
+        /// Whether each poll asked for hosts: the source's do, to keep the
+        /// table alive; the shared process snapshot's, for names, does not.
+        let askedForHosts = Mutex<[Bool]>([])
 
         func totals(wantsHosts: Bool) throws(NetworkFilterUnavailable) -> FilterSnapshot {
-            #expect(wantsHosts, "network.flows keeps the host table alive")
+            askedForHosts.withLock { $0.append(wantsHosts) }
             return FilterSnapshot(
                 instance: instance, build: "b",
                 snapshot: FlowLedger.Snapshot(
                     processes: [:], hosts: totals.withLock { $0 }, counters: LedgerCounters()),
                 openFlows: 0)
         }
+    }
+
+    /// Every allowed interval polls within the host lease, or the extension
+    /// drops the table a long window is accumulating.
+    @Test func pollsRenewTheHostLeaseForEveryInterval() {
+        let lease = HostLease.standardDuration
+        let range = NetworkFlowsEvent.intervalRange
+        for interval in [range.lowerBound, 59, 60, 120, range.upperBound] {
+            let step = NetworkFlowsEvent.pollStep(interval: interval)
+            #expect(step < lease, "interval \(interval)")
+            #expect(step <= interval, "interval \(interval)")
+        }
+        #expect(NetworkFlowsEvent.pollStep(interval: 5) == 5)
     }
 
     /// The first reading is a baseline taken at subscription; each later window
@@ -111,5 +128,8 @@ struct NetworkFlowsTests {
         }
         #expect(entry["receivedMB"] == .number(2))
         #expect(entry["sentMB"] == .number(1))
+        // The subscription's baseline and the window's poll, each renewing
+        // the host lease.
+        #expect(filter.askedForHosts.withLock { $0.filter { $0 }.count } >= 2)
     }
 }

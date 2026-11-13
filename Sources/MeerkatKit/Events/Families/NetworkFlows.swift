@@ -95,7 +95,7 @@ public struct NetworkFlowsPayload: RuleViewedPayload, Equatable {
         }
         return NetworkFlowsPayload(
             windowSeconds: windowSeconds, flows: Array(flows.prefix(maximumFlows)),
-            omitted: max(0, flows.count - maximumFlows) + delta.restarted)
+            omitted: max(0, flows.count - maximumFlows) + delta.restarted + delta.evictedHosts)
     }
 }
 
@@ -115,6 +115,12 @@ public enum NetworkFlowsEvent: EventKind, IntervalParameterDefaults {
         source: "the network filter (NetworkExtension content filter statistics)"
     )
 
+    /// Seconds between polls for a subscriber reporting every `interval`:
+    /// at most half the host lease, so the table outlives any interval.
+    static func pollStep(interval: Double) -> Double {
+        min(interval, HostLease.standardDuration / 2)
+    }
+
     public static func makeSource(
         _ parameters: IntervalParameters<NetworkFlowsEvent>, environment: SourceEnvironment,
         emit: Emitter<NetworkFlowsPayload>
@@ -130,20 +136,28 @@ public enum NetworkFlowsEvent: EventKind, IntervalParameterDefaults {
         } catch {
             throw EventError.sourceUnavailable("network.flows: \(error)")
         }
-        return PollingSource(
-            label: "network-flows", interval: parameters.interval, fireImmediately: false, failingThrough: emit
-        ) {
+        // The extension keeps its host table only while a poll asking for it
+        // came within the lease (`HostLease`), so a longer interval polls
+        // more often than it reports: each poll renews the lease, and only
+        // one an interval after the last report is diffed and reported.
+        let step = Self.pollStep(interval: parameters.interval)
+        return PollingSource(label: "network-flows", interval: step, fireImmediately: false, failingThrough: emit) {
             let snapshot = try reader.totals(wantsHosts: true)
             let now = ContinuousClock.now
-            let (delta, window) = state.withLock { state -> (UsageDelta, Duration?) in
+            let reported = state.withLock { state -> (delta: UsageDelta, window: Duration?)? in
+                if let last = state.last, now - last < .seconds(parameters.interval - step / 2) { return nil }
                 defer { state.last = now }
                 return (state.differ.next(snapshot), state.last.map { now - $0 })
             }
-            guard !delta.baseline, let window, !delta.hosts.isEmpty else { return }
+            guard let reported, !reported.delta.baseline, let window = reported.window, !reported.delta.hosts.isEmpty
+            else { return }
+            let delta = reported.delta
             // Names from the shared process snapshot; a process that exited
             // before it is listed by pid alone.
             var names: [Int32: (name: String, path: String?)] = [:]
-            if let processes = try? environment.processSnapshots.current(maxAge: parameters.interval / 2) {
+            if let processes = try? environment.processSnapshots.current(
+                maxAge: parameters.interval / 2, network: reader)
+            {
                 for counters in processes.counters.values { names[counters.pid] = (counters.name, counters.path) }
             }
             let seconds = Double(window.components.seconds) + Double(window.components.attoseconds) / 1e18
