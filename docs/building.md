@@ -62,13 +62,13 @@ on the command line, and checks that the runtime's checked-in bindings match
 the library meerkatd links. It then assembles `build/Meerkat.app`: the app, the CLI, the daemon with
 the rule runtime embedded, the agent plist, the TypeScript compiler (tsrs), the
 lint tools and the app icon. It signs the bundle with hardened runtime,
-copies it to `~/Applications/Meerkat.app`, and registers the agent with
+copies it to `/Applications/Meerkat.app`, and registers the agent with
 `SMAppService`.
 
 Put the CLI on your PATH:
 
 ```bash
-ln -sf ~/Applications/Meerkat.app/Contents/MacOS/meerkat ~/.local/bin/meerkat
+ln -sf /Applications/Meerkat.app/Contents/MacOS/meerkat ~/.local/bin/meerkat
 ```
 
 - `--identity` (or `MEERKAT_SIGNING_IDENTITY`) picks the signing identity when

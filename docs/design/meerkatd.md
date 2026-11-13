@@ -367,7 +367,7 @@ nested code inside-out with hardened runtime (`meerkatd` also gets
 the result. `--notarize` signs for distribution with a Developer ID
 identity, submits to the notary service and staples the ticket; the release
 job does that ([architecture](../architecture.md#build-and-release)).
-`--install` copies it to `~/Applications/Meerkat.app` and runs `meerkat agent install` from the
+`--install` copies it to `/Applications/Meerkat.app` and runs `meerkat agent install` from the
 installed copy. Registration is `SMAppService`, implemented once in
 `MeerkatAgent` and called by both the CLI and the app, with the wait for a
 new daemon below (`AgentRegistration.installAndAwait`).

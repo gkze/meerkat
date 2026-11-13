@@ -120,7 +120,7 @@ The client is configured with the CLI as a stdio server:
 
 ```json
 {
-  "command": "~/Applications/Meerkat.app/Contents/MacOS/meerkat",
+  "command": "/Applications/Meerkat.app/Contents/MacOS/meerkat",
   "args": ["mcp"]
 }
 ```

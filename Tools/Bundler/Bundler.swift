@@ -11,7 +11,7 @@ import ToolProcess
 //
 //   buck2 run //Tools/Bundler:app                  # -> build/Meerkat.app
 //   buck2 run //Tools/Bundler:app -- --install     # also install to
-//                                                  # ~/Applications and
+//                                                  # /Applications and
 //                                                  # register the agent
 //   buck2 run //Tools/Bundler:preview              # the app alone, as its
 //                                                  # own app -> build/Meerkat
@@ -107,7 +107,7 @@ struct Bundle: ParsableCommand {
     @Option(help: "Also write the finished bundle, zipped as Finder would (ditto), to this path.")
     var archive: String?
 
-    @Flag(help: "Copy the bundle to ~/\(DaemonService.installedApp) and install the agent from there.")
+    @Flag(help: "Copy the bundle to \(DaemonService.installedApp) and install the agent from there.")
     var install = false
 
     @Flag(
@@ -574,9 +574,8 @@ struct Bundle: ParsableCommand {
     private static let registrationAttempts = 3
 
     private func installBundle(_ app: URL) throws {
-        let destination = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(DaemonService.installedApp)
+        let destination = URL(fileURLWithPath: DaemonService.installedApp)
         let applications = destination.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: applications, withIntermediateDirectories: true)
         step("installing \(destination.path)")
         let copy = applications.appendingPathComponent(".\(destination.lastPathComponent).installing")
         try? FileManager.default.removeItem(at: copy)
