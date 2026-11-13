@@ -207,6 +207,8 @@ every action.
   running rules; installing starts one that is not running and is not
   asked about. Every surface asks through the `confirmingAgentAction`
   view modifier with a `pending` action, never with a dialog of its own.
+  The network filter's Turn Off is not an agent action and asks on its own,
+  by the same rule: it fails the connections a running filter counts.
 - **One way to wait.** Install, Turn On and Reinstall go through
   `AgentRegistration.installAndAwait`, the route `meerkat agent install`
   takes: it reads the daemon's identity, registers off the caller's actor,

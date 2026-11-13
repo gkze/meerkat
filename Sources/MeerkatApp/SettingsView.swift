@@ -142,6 +142,8 @@ private struct GeneralSettings: View {
 /// app's to do, each confirmed by the user in System Settings.
 private struct NetworkFilterSection: View {
     let setup: NetworkFilterSetup
+    /// Turn Off, while it is being confirmed.
+    @State private var confirmingTurnOff = false
 
     var body: some View {
         Section {
@@ -159,13 +161,27 @@ private struct NetworkFilterSection: View {
             switch setup.status {
             case .off, .failed:
                 Button("Turn On…") { Task { await setup.turnOn() } }.disabled(setup.busy)
-            case .on, .awaitingApproval:
+            case .on:
+                // Ending the filter's session fails the connections it is
+                // counting (measured on macOS 27), so ask first.
+                Button("Turn Off") { confirmingTurnOff = true }.disabled(setup.busy)
+            case .awaitingApproval:
+                // Not running yet: nothing is attached to it.
                 Button("Turn Off") { Task { await setup.turnOff() } }.disabled(setup.busy)
             case .notInThisBuild, .needsApplications:
                 EmptyView()
             }
         } header: {
             Text("Network")
+        }
+        .confirmationDialog("Turn off the network filter?", isPresented: $confirmingTurnOff) {
+            Button("Turn Off") { Task { await setup.turnOff() } }
+        } message: {
+            Text(
+                "Connections open now, such as downloads in progress, will stop and fail. New connections "
+                    + "are not affected. Rules on network.flows and on process.hot's network metrics stop "
+                    + "until you turn it on again."
+            )
         }
         .task { await setup.refresh() }
     }

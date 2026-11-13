@@ -161,7 +161,8 @@ Off until the user turns it on in Meerkat › Settings › Network:
 2. The app saves an `NEFilterManager` configuration naming the provider and
    enables it. macOS asks the user to allow the content filter.
 3. Turning it off disables the configuration and submits a deactivation
-   request, which removes the extension.
+   request, which removes the extension. While the filter runs, the app asks
+   first: the connections it counts fail when its session ends (Failure).
 
 Only the app can do this: macOS requires a foreground app in `/Applications`.
 meerkatd reports the filter's state (absent, awaiting approval, running,
