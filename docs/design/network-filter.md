@@ -197,7 +197,8 @@ Extends [mcp.md](mcp.md) ("Harm model"):
 | Ledger full (flow flood) | none on traffic | least recently reported flows evicted; `evicted` counted and shown in status |
 | Malformed or out-of-range report | none on traffic | flow dropped, counted |
 | Malformed reply at the daemon | the poll fails | source reports unavailable with the reason; no trap |
-| Filter not approved or turned off | none | `networkFilter` permission reads denied; rules on network metrics refused with where to turn it on |
+| Filter not approved | none | `networkFilter` permission reads denied; rules on network metrics refused with where to turn it on |
+| Filter turned off | the session ends with the connections still attached to it: they stall and fail (a download stopped at the click and failed two minutes later, macOS 27); new connections are unaffected | as not approved, once the deactivation completes; the extension is removed at the next restart |
 | macOS update changes NE behaviour | — | the end-to-end test below fails before release |
 
 ## Integrity tests
@@ -253,11 +254,13 @@ test, at the cheapest layer that can falsify it:
 - Activate and approve; generate known traffic from a known process (a
   download of a known size from a test helper) and see it attributed within
   one window, within a stated tolerance.
-- Kill the extension mid-download: the download completes; the daemon skips
-  one window and recovers.
+- Kill the extension mid-download: the download is reset once, new
+  connections work within a second, and the daemon skips one window and
+  recovers. Three kills within ten minutes: the extension declines to start
+  until the window passes, then starts by itself.
 - Kill meerkatd: traffic is unaffected; the extension's memory stays bounded.
-- Deactivate: the extension and the filter configuration are gone, and
-  traffic is unaffected.
+- Deactivate: the extension and the filter configuration are gone and new
+  connections are unaffected; connections open at the time fail.
 
 ## Prerequisites
 
