@@ -17,6 +17,8 @@ is the map; the design documents are the authority for each part:
   another Mac, and what Buck2 remote execution would need.
 - [design/app.md](design/app.md): the dashboard app: its models, feeds,
   failure handling and presentation rules.
+- [design/launchd.md](design/launchd.md): proposed: listing, controlling
+  and editing launchd jobs.
 
 [development.md](development.md) is how to change it: checks, style,
 generated files, tests, releases and CI.
