@@ -8,15 +8,10 @@ import os
 // NetworkExtension makes the provider (FilterDataProvider) when the content
 // filter is turned on (docs/design/network-filter.md).
 
-do {
-    try FilterServer.start()
-} catch {
-    // Without the service the totals cannot be read, but the filter must still
-    // run: a provider that never starts would leave the configuration enabled
-    // and the extension relaunching.
-    Logger(subsystem: FilterService.extensionIdentifier, category: "main")
-        .error("not serving totals: \(error, privacy: .public)")
-}
+// Without the service the totals cannot be read, but the filter must still
+// run: a provider that never starts would leave the configuration enabled and
+// the extension relaunching. So the listener starts, and retries, on its own.
+FilterServer.serve()
 
 FilterServer.startHeartbeat()
 

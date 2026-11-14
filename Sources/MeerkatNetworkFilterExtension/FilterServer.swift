@@ -35,6 +35,34 @@ enum FilterServer {
         logger.info("listening on \(service, privacy: .public)")
     }
 
+    /// Starts the listener, trying again until it can. While macOS replaces
+    /// the extension, the new process starts before the old one has let go
+    /// of the service, and activating the listener then fails (EPERM, seen
+    /// on macOS 27): without another try meerkatd could not read the totals
+    /// until the extension next restarted. A bundle without the name never
+    /// will, so that stops at once.
+    static func serve() {
+        serve(after: .seconds(0), backoff: .seconds(1))
+    }
+
+    private static func serve(after delay: DispatchTimeInterval, backoff: Duration) {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + delay) {
+            do {
+                try start()
+            } catch let error as Missing {
+                logger.error("not serving totals: \(error, privacy: .public)")
+            } catch {
+                logger.error(
+                    "not serving totals yet, trying again in \(backoff, privacy: .public): \(error, privacy: .public)")
+                let seconds = Int(backoff.components.seconds)
+                serve(after: .seconds(seconds), backoff: min(backoff * 2, retryLimit))
+            }
+        }
+    }
+
+    /// The longest wait between tries.
+    static let retryLimit: Duration = .seconds(30)
+
     private static let heartbeat = Mutex<(any DispatchSourceTimer)?>(nil)
 
     /// One line a minute with what the provider received and what the ledger

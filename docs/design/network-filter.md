@@ -197,6 +197,7 @@ Extends [mcp.md](mcp.md) ("Harm model"):
 | Failure | Effect | Behaviour |
 |---|---|---|
 | Extension crashes or is killed | NetworkExtension uninstalls the filter session about 5 s later, and the kernel resets the connections attached to it, once; new connections work again within a second as the session restarts (seen on macOS 27) | totals restart from zero; meerkatd sees a new extension instance and skips one window instead of reporting a negative or doubled rate; after 3 crashes in 10 minutes the extension does not start (`CrashGuard`) |
+| Extension replaced by a new build | none on traffic: the new extension filters at once | the new process can start before the old one releases the Mach service, so activating the listener fails (EPERM, macOS 27); it tries again with backoff (1 s, doubling to 30 s) until it serves, and meerkatd reads totals again on its next poll after its own 30 s backoff |
 | meerkatd absent or slow | none on traffic | ledger stays bounded; the oldest totals are evicted and counted |
 | Ledger full (flow flood) | none on traffic | least recently reported flows evicted; `evicted` counted and shown in status; a `network.flows` window counts the endpoints evicted during it in `omitted` |
 | Malformed or out-of-range report | none on traffic | flow dropped, counted |
