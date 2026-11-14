@@ -165,8 +165,13 @@ struct RemoteBuild: ParsableCommand {
         let quotedRoot = quote(remoteRoot)
         try env(
             ["rsync", "-a", "--delete"]
-                // The host's own .buckconfig.local is its settings, not this Mac's.
-                + ["/buck-out", "/.build", "/build", "/.buckd", "/.git", "node_modules", "/.buckconfig.local"]
+                // The host's own .buckconfig.local is its settings, not this Mac's;
+                // .claude holds other checkouts (Claude Code's worktrees), which
+                // Buck ignores here and must not find there.
+                + [
+                    "/buck-out", "/.build", "/build", "/.buckd", "/.git", "/.claude", "node_modules",
+                    "/.buckconfig.local",
+                ]
                 .flatMap { ["--exclude", $0] }
                 + ["--exclude", "/\(Self.marker)"]
                 + ["\(root)/", "\(host):\(remoteRoot)/"]

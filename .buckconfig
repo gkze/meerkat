@@ -31,7 +31,9 @@
   execution_platforms = root//buck2/platforms:exec
 
 [project]
-  ignore = .git, .build, .swiftpm, build, Sources/meerkat-rules/node_modules
+  # .claude holds Claude Code's worktrees of this repository: whole checkouts,
+  # BUCK files and all, that Buck would otherwise load as part of this one.
+  ignore = .git, .build, .swiftpm, build, .claude, Sources/meerkat-rules/node_modules
 
 # The Xcode the Swift toolchain uses (buck2/toolchains/BUCK). `xcode_build` is
 # `xcodebuild -version`'s build number; change it with Xcode, so cached Swift
