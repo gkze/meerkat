@@ -3,6 +3,7 @@ import MeerkatIPC
 import MeerkatKit
 import MeerkatRules
 import MeerkatStore
+import Synchronization
 import os
 
 extension DaemonPaths {
@@ -59,6 +60,11 @@ public final class Daemon: Sendable {
     let engine: RuleEngine
     let dryRunner: RuleDryRunner
     private let server: DaemonServer
+    private let mcp: MCPService
+    private let mcpHTTP: MCPHTTPServer
+    private let settings: DaemonSettings
+    /// Applies each `meerkat.json` to the MCP HTTP listener while the daemon listens.
+    private let following = Mutex<Task<Void, Never>?>(nil)
     private let responder: NotificationResponder
     private let paths: DaemonPaths
     private let startedAt = Date()
@@ -116,6 +122,9 @@ public final class Daemon: Sendable {
         responder.install()
         let startedAt = self.startedAt
         let rulesDirectory = paths.rulesDirectory.path
+        let mcpHTTP = MCPHTTPServer()
+        self.mcpHTTP = mcpHTTP
+        self.settings = settings
         let status: @Sendable () async -> DaemonStatus = {
             let report = await engine.report()
             return DaemonStatus(
@@ -127,29 +136,51 @@ public final class Daemon: Sendable {
                 handlerHost: await engine.hostStatus(),
                 sources: hub.statistics(),
                 rules: report.rules,
-                configuration: settings.status
+                configuration: settings.status,
+                mcpHTTP: await mcpHTTP.status
             )
         }
+        let mcp = MCPService(
+            hub: hub, engine: engine, dryRunner: dryRunner, sampleDatabase: paths.sampleDatabase,
+            policy: { settings.policy },
+            configuration: { settings.status }, status: status,
+            permissionStatus: authorizer.permissionStatus)
+        self.mcp = mcp
         server = DaemonServer(
-            hub: hub, engine: engine, dryRunner: dryRunner,
-            mcp: MCPService(
-                hub: hub, engine: engine, dryRunner: dryRunner, sampleDatabase: paths.sampleDatabase,
-                policy: { settings.policy },
-                configuration: { settings.status }, status: status,
-                permissionStatus: authorizer.permissionStatus),
+            hub: hub, engine: engine, dryRunner: dryRunner, mcp: mcp, mcpHTTP: mcpHTTP,
             startedAt: startedAt.timeIntervalSince1970 * 1000, status: status)
     }
 
-    /// Starts the rule engine and, when `listen` is set, the XPC listener.
+    /// Starts the rule engine and, when `listen` is set, the XPC listener and
+    /// the MCP HTTP listener `meerkat.json` asks for.
     public func start(listen: Bool = true) async throws {
         logger.info(
             "meerkatd \(Daemon.version, privacy: .public) starting; rules in \(self.paths.rulesDirectory.path, privacy: .public)"
         )
-        if listen { try server.start() }
+        if listen {
+            try server.start()
+            let (settings, mcp, mcpHTTP) = (settings, mcp, mcpHTTP)
+            following.withLock { following in
+                following = Task {
+                    for await configuration in settings.applied {
+                        await mcpHTTP.apply(configuration.mcp.http, serving: mcp)
+                    }
+                }
+            }
+        }
         await engine.start()
     }
 
     public func stop() async {
+        let follow = following.withLock { following in
+            defer { following = nil }
+            return following
+        }
+        follow?.cancel()
+        // An apply in progress finishes first, so it cannot bind again after
+        // the stop below.
+        await follow?.value
+        await mcpHTTP.stop()
         await server.stop()
         await engine.shutdown()
     }

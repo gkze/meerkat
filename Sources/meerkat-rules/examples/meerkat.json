@@ -10,7 +10,8 @@
       "sampleEvents": 1000,
       "outputKiB": 2048,
       "concurrentSamples": 2
-    }
+    },
+    "http": { "enabled": true, "port": 7438 }
   },
   "samples": {
     "maxAgeDays": 90,

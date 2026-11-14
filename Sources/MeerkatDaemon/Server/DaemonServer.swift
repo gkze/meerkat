@@ -17,6 +17,7 @@ final class DaemonServer: Sendable {
     private let engine: RuleEngine
     private let dryRunner: RuleDryRunner
     private let mcp: MCPService
+    private let mcpHTTP: MCPHTTPServer
     /// Every session's MCP server, so stopping the daemon can end them cleanly.
     private let endpoints = Mutex<[ObjectIdentifier: MCPEndpoint]>([:])
     private let status: @Sendable () async -> DaemonStatus
@@ -27,10 +28,11 @@ final class DaemonServer: Sendable {
     private let logger = Logger(subsystem: DaemonService.label, category: "xpc")
 
     init(
-        hub: EventHub, engine: RuleEngine, dryRunner: RuleDryRunner, mcp: MCPService, startedAt: Double,
-        status: @escaping @Sendable () async -> DaemonStatus
+        hub: EventHub, engine: RuleEngine, dryRunner: RuleDryRunner, mcp: MCPService, mcpHTTP: MCPHTTPServer,
+        startedAt: Double, status: @escaping @Sendable () async -> DaemonStatus
     ) {
         self.startedAt = startedAt
+        self.mcpHTTP = mcpHTTP
         self.hub = hub
         self.engine = engine
         self.dryRunner = dryRunner
@@ -156,6 +158,12 @@ final class DaemonServer: Sendable {
         case .dryRun(let request):
             do {
                 return .dryRun(try await dryRunner.run(request))
+            } catch {
+                return .failure("\(error)")
+            }
+        case .mcpHTTP(let rotateToken):
+            do {
+                return .mcpHTTP(try await mcpHTTP.access(rotateToken: rotateToken))
             } catch {
                 return .failure("\(error)")
             }

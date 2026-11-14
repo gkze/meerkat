@@ -21,7 +21,7 @@ struct Meerkat: AsyncParsableCommand {
         abstract: "Unprivileged macOS system telemetry, events and rules.",
         discussion: """
             For coding agents: `meerkat skills` has instructions on using Meerkat, and `meerkat mcp` serves \
-            it over MCP.
+            it over MCP (`meerkat mcp http` for clients that connect to a URL).
 
             Commands that print data print JSON with --json, or always. Exit statuses: \(ExitStatus.summary) \
             With --json, a failure other than a check's findings writes one JSON object to stderr, \
@@ -29,7 +29,7 @@ struct Meerkat: AsyncParsableCommand {
             """,
         subcommands: [
             Sample.self, Analyze.self, Compare.self,
-            Status.self, Events.self, Effects.self, Rules.self, Config.self, Types.self, Agent.self, MCPBridge.self,
+            Status.self, Events.self, Effects.self, Rules.self, Config.self, Types.self, Agent.self, MCPCommand.self,
             Skills.self,
         ]
     )

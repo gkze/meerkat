@@ -33,6 +33,12 @@
 
           }
         },
+        "http" : {
+          "$ref" : "#/$defs/MCPHTTP",
+          "default" : {
+
+          }
+        },
         "limits" : {
           "$ref" : "#/$defs/MCPLimits",
           "default" : {
@@ -294,12 +300,30 @@
       },
       "type" : "object"
     },
+    "MCPHTTP" : {
+      "additionalProperties" : false,
+      "properties" : {
+        "enabled" : {
+          "default" : true,
+          "description" : "Serve MCP over Streamable HTTP on the loopback address, beside `meerkat mcp`. Every request needs the bearer token `meerkat mcp http` prints.",
+          "type" : "boolean"
+        },
+        "port" : {
+          "default" : 7438,
+          "description" : "The TCP port on 127.0.0.1 the MCP HTTP server listens on",
+          "maximum" : 65535,
+          "minimum" : 1024,
+          "type" : "integer"
+        }
+      },
+      "type" : "object"
+    },
     "MCPLimits" : {
       "additionalProperties" : false,
       "properties" : {
         "concurrentSamples" : {
           "default" : 4,
-          "description" : "events_sample and system_sample calls one MCP session runs at once",
+          "description" : "events_sample and system_sample calls one MCP client runs at once. 2026-07-28 clients over HTTP that send no MCP-Client-Identity share one count.",
           "maximum" : 32,
           "minimum" : 1,
           "type" : "integer"
@@ -368,7 +392,7 @@
       "default" : {
 
       },
-      "description" : "What MCP clients (`meerkat mcp`) may sample, and how much."
+      "description" : "What MCP clients (`meerkat mcp`, or HTTP) may sample, how much, and how they connect."
     },
     "samples" : {
       "$ref" : "#/$defs/SampleStoreConfiguration",

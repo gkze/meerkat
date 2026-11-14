@@ -13,34 +13,25 @@ import os
 /// sources are shared.
 final class MCPEndpoint: Sendable {
     private let transport: SessionTransport
-    private let server: Server
-    /// Starts the server and installs the handlers before any input is let
-    /// through; `close` waits for it so it never stops a half-started server.
-    private let started: Task<Void, Never>
+    /// Starts the server, every handler installed first; input queues in the
+    /// transport until then. `close` waits for it so it never stops a
+    /// half-started server. Nil when the server did not start.
+    private let started: Task<Server?, Never>
     private static let logger = os.Logger(subsystem: DaemonService.label, category: "mcp")
 
     init(service: MCPService, push: @escaping @Sendable (Data) throws -> Void) {
         let transport = SessionTransport(push: push)
-        // Not `.strict`: the SDK's strict mode drops a request that comes before
-        // `initialize` without answering it. `MCPProtocol.isModern` rejects such
-        // a request instead.
-        let server = Server(
-            name: "meerkatd", version: Daemon.version, title: "Meerkat",
-            instructions: MCPService.instructions, capabilities: MCPService.capabilities)
-        let slots = SampleSlots { service.policy.limits.concurrentSamples }
         self.transport = transport
-        self.server = server
         started = Task {
             do {
-                try await server.start(transport: transport)
+                let server = try await service.startServer(on: transport, initialized: MCPProtocol.Initialized())
+                Self.logger.info("MCP session started")
+                return server
             } catch {
                 Self.logger.error("MCP server did not start: \(error, privacy: .public)")
                 transport.finish()
-                return
+                return nil
             }
-            await service.register(on: server, transport: transport, slots: slots)
-            await transport.open()
-            Self.logger.info("MCP session started")
         }
     }
 
@@ -54,8 +45,7 @@ final class MCPEndpoint: Sendable {
     /// included. Their subscriptions are released as those tasks end.
     func close() async {
         transport.finish()
-        await started.value
-        await server.stop()
+        await started.value?.stop()
         Self.logger.info("MCP session ended")
     }
 
@@ -63,8 +53,7 @@ final class MCPEndpoint: Sendable {
     /// `complete` first, so the client can tell a clean end from a dropped
     /// connection, then close.
     func shutdown() async {
-        await started.value
-        try? await server.completeAllSubscriptionsListen()
+        try? await started.value?.completeAllSubscriptionsListen()
         await close()
     }
 }

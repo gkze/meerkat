@@ -7,15 +7,7 @@ import MeerkatIPC
 ///
 /// Input arrives as `DaemonRequest.mcp` messages, which the XPC handler
 /// passes to `deliver` in the order the session received them; output goes
-/// back as `DaemonPush.mcp` through `push`. The transport also does two
-/// things the SDK leaves to the server (docs/design/mcp.md, "Inside the
-/// daemon"):
-///
-/// - It holds input back until `open()`, because `Server.start` installs the
-///   SDK's own `subscriptions/listen` handler, and the protocol layer's must
-///   replace it before the first message is handled.
-/// - It records the version `initialize` negotiated, which the SDK keeps
-///   private, so handlers can tell a legacy session from a modern one.
+/// back as `DaemonPush.mcp` through `push`.
 actor SessionTransport: Transport {
     /// Bounds what one session can queue ahead of its server. Messages are
     /// handled as they arrive, so a full queue means a client that floods
@@ -27,9 +19,6 @@ actor SessionTransport: Transport {
     private nonisolated let input: AsyncThrowingStream<Data, any Error>.Continuation
     private let inbound: AsyncThrowingStream<Data, any Error>
     private let push: @Sendable (Data) throws -> Void
-    private(set) var initializedVersion: String?
-    private var opened = false
-    private var waiting: [CheckedContinuation<Void, Never>] = []
 
     init(push: @escaping @Sendable (Data) throws -> Void) {
         let (stream, continuation) = AsyncThrowingStream<Data, any Error>.makeStream(
@@ -72,50 +61,5 @@ actor SessionTransport: Transport {
     func disconnect() async { input.finish() }
     func send(_ data: Data) async throws { try push(data) }
 
-    /// Lets queued input through. Call once handlers are registered.
-    func open() {
-        opened = true
-        for continuation in waiting { continuation.resume() }
-        waiting = []
-    }
-
-    private func untilOpen() async {
-        if opened { return }
-        await withCheckedContinuation { waiting.append($0) }
-    }
-
-    func receive() -> AsyncThrowingStream<Data, any Error> {
-        let upstream = inbound
-        return AsyncThrowingStream { continuation in
-            let task = Task {
-                await self.untilOpen()
-                do {
-                    for try await data in upstream {
-                        self.observe(data)
-                        continuation.yield(data)
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in task.cancel() }
-        }
-    }
-
-    /// A JSON-RPC request as far as `initialize` is read.
-    private struct Envelope: Decodable {
-        let method: String
-        let params: Value?
-    }
-
-    private func observe(_ data: Data) {
-        guard let request = try? JSONDecoder().decode(Envelope.self, from: data),
-            request.method == Initialize.name
-        else { return }
-        // The SDK's rule (its `Version.negotiate` is internal): a legacy version
-        // it serves is accepted, anything else gets the latest legacy version.
-        let requested = request.params?.objectValue?["protocolVersion"]?.stringValue ?? ""
-        initializedVersion = Version.legacy.contains(requested) ? requested : Version.latestLegacy
-    }
+    func receive() -> AsyncThrowingStream<Data, any Error> { inbound }
 }

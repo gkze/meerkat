@@ -292,7 +292,7 @@ struct OutputContractTests {
     /// prints JSON, always or with `--json`.
     static let notData: [String: String] = [
         "types": "prints TypeScript",
-        "mcp": "speaks MCP on stdout",
+        "mcp stdio": "speaks MCP on stdout",
         "skills show": "prints a SKILL.md",
         "agent install": "an action; `agent status --json` reports the result",
         "agent uninstall": "an action; `agent status --json` reports the result",
@@ -325,6 +325,35 @@ struct OutputContractTests {
             }
         }
         #expect(Set(Self.notData.keys).union(Self.alwaysJSON).isSubset(of: leaves.map(\.0)))
+    }
+
+    /// `meerkat mcp` with nothing after it is still the stdio bridge, which
+    /// every client configured with `["mcp"]` starts.
+    @Test func mcpWithoutASubcommandIsTheStdioBridge() throws {
+        #expect(try Meerkat.parseAsRoot(["mcp"]) is MCPBridge)
+        let http = try #require(
+            try Meerkat.parseAsRoot(["mcp", "http", "--rotate-token", "--json"]) as? MCPHTTPCommand)
+        #expect(http.rotateToken && http.json)
+    }
+
+    /// `meerkat status` names the MCP HTTP listener's URL, never its token.
+    @Test func statusShowsTheMCPHTTPListener() {
+        let configuration = ConfigurationStatus(
+            file: "/r/meerkat.json", source: .defaults, effective: .init(), problem: nil, appliedAt: 0)
+        func lines(_ http: MCPHTTPStatus) -> [String] {
+            Status.output(
+                DaemonStatus(
+                    version: "test", pid: 1, startedAt: 0, executablePath: "/x", rulesDirectory: "/r",
+                    handlerHost: HandlerHostStatus(state: .idle, workers: 0, restarts: 0, lastExit: nil),
+                    sources: [], rules: [], configuration: configuration, mcpHTTP: http)
+            ).lines
+        }
+        let listening = lines(
+            MCPHTTPStatus(state: .listening, url: "http://127.0.0.1:7438/mcp", problem: nil, clients: 2))
+        #expect(listening.contains("mcp http    listening at http://127.0.0.1:7438/mcp  clients 2"))
+        #expect(lines(.off).contains("mcp http    off"))
+        let failed = lines(MCPHTTPStatus(state: .failed, url: nil, problem: "port 7438 is taken", clients: 0))
+        #expect(failed.contains("mcp http    failed: port 7438 is taken"))
     }
 
     /// `main` writes what `outcome` says. A check's findings are its output,
@@ -383,7 +412,7 @@ struct OutputContractTests {
         let status = DaemonStatus(
             version: "test", pid: 1, startedAt: 0, executablePath: "/x", rulesDirectory: "/r",
             handlerHost: HandlerHostStatus(state: .idle, workers: 0, restarts: 0, lastExit: nil), sources: [],
-            rules: [], configuration: configuration)
+            rules: [], configuration: configuration, mcpHTTP: .off)
         let lines = Status.output(status).lines
         let config = try #require(lines.firstIndex { $0.hasPrefix("config ") })
         #expect(lines[config].contains("last good version"))

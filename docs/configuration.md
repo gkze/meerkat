@@ -36,7 +36,8 @@ sets them all:
       "sampleEvents": 1000,
       "outputKiB": 2048,
       "concurrentSamples": 2
-    }
+    },
+    "http": { "enabled": true, "port": 7438 }
   },
   "samples": { "maxAgeDays": 90, "maxMegabytes": 2000 },
   "files": { "root": "~", "exclude": ["~/Library/Caches", "~/Library/Biome"] }
@@ -55,6 +56,11 @@ sets them all:
   stores). `exclude` replaces that list. Paths take `~` and are matched the
   way FSEvents reports them, so `/var/folders` means `/private/var/folders`.
   A change applies at the next measurement window, without resubscribing.
+- **MCP over HTTP.** `mcp.http` turns the daemon's Streamable HTTP listener
+  on 127.0.0.1 off (`"enabled": false`) or moves it to another `port`
+  (1024 to 65535). A change ends every HTTP client and binds again; a port
+  that is taken leaves HTTP off, with the reason in `meerkat status`
+  ([MCP over HTTP](cli.md#over-http)).
 - **Rules cannot change it.** Rule code cannot write the rules directory or
   the defaults domain, so no rule can widen the policy it runs under.
 - **Commands:** `meerkat config show` prints what applies, with every default

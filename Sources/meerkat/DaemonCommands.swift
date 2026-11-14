@@ -127,6 +127,12 @@ struct Status: AsyncParsableCommand, JSONOutput {
         for (index, line) in describe(status.configuration).enumerated() {
             output.add((index == 0 ? "config      " : padField("", 12)) + line)
         }
+        let http = status.mcpHTTP
+        switch http.state {
+        case .listening: output.add("mcp http    listening at \(http.url ?? "")  clients \(http.clients)")
+        case .off: output.add("mcp http    off")
+        case .failed: output.add("mcp http    failed: \(http.problem ?? "")")
+        }
         let host = status.handlerHost
         output.add(
             "host        \(host.state.rawValue)  workers \(host.workers)  restarts \(host.restarts)"

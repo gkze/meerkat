@@ -40,10 +40,25 @@ public struct MeerkatConfiguration: Codable, Sendable, Equatable {
     public struct MCP: Codable, Sendable, Equatable {
         public var events: Events
         public var limits: Limits
+        public var http: HTTP
 
-        public init(events: Events = .init(), limits: Limits = .init()) {
+        public init(events: Events = .init(), limits: Limits = .init(), http: HTTP = .init()) {
             self.events = events
             self.limits = limits
+            self.http = http
+        }
+
+        /// The Streamable HTTP listener beside `meerkat mcp` (docs/design/mcp.md,
+        /// "Transport: Streamable HTTP"). It binds the loopback address only,
+        /// and every request needs the bearer token `meerkat mcp http` prints.
+        public struct HTTP: Codable, Sendable, Equatable {
+            public var enabled: Bool
+            public var port: Int
+
+            public init(enabled: Bool = true, port: Int = 7438) {
+                self.enabled = enabled
+                self.port = port
+            }
         }
 
         /// Which event kinds MCP clients may sample: the built-in default,
@@ -75,7 +90,7 @@ public struct MeerkatConfiguration: Codable, Sendable, Equatable {
             /// one is cut (`MCPService.bounded`). `events_sample` stops adding
             /// events at it instead.
             public var outputKiB: Int
-            /// `events_sample` and `system_sample` calls one MCP session may run at once.
+            /// `events_sample` and `system_sample` calls one MCP client may run at once.
             public var concurrentSamples: Int
 
             public init(
@@ -186,10 +201,27 @@ public struct MeerkatConfiguration: Codable, Sendable, Equatable {
                                     Field(
                                         "concurrentSamples", .bounded(.integer(1...32)),
                                         default: .number(Double(limits.concurrentSamples)),
-                                        doc: "events_sample and system_sample calls one MCP session runs at once"
+                                        doc:
+                                            "events_sample and system_sample calls one MCP client runs at once. 2026-07-28 clients over HTTP that send no MCP-Client-Identity share one count."
                                     ),
                                 ])), default: section),
-                    ])), default: section, doc: "What MCP clients (`meerkat mcp`) may sample, and how much."),
+                        Field(
+                            "http",
+                            .named(
+                                "MCPHTTP",
+                                ObjectSchema([
+                                    Field(
+                                        "enabled", .boolean, default: .bool(defaults.mcp.http.enabled),
+                                        doc:
+                                            "Serve MCP over Streamable HTTP on the loopback address, beside `meerkat mcp`. Every request needs the bearer token `meerkat mcp http` prints."
+                                    ),
+                                    Field(
+                                        "port", .bounded(.integer(1024...65_535)),
+                                        default: .number(Double(defaults.mcp.http.port)),
+                                        doc: "The TCP port on 127.0.0.1 the MCP HTTP server listens on"),
+                                ])), default: section),
+                    ])), default: section,
+                doc: "What MCP clients (`meerkat mcp`, or HTTP) may sample, how much, and how they connect."),
             Field(
                 "samples",
                 .named(

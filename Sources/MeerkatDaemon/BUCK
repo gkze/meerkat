@@ -17,5 +17,10 @@ meerkat_swift_library(
         # names swift-log's `Logger`, which the SDK's `Transport` requires.
         "//buck2/third_party/swift:Logging",
         "//buck2/third_party/swift:MCP",
+        # docs/design/mcp.md, "Streamable HTTP": the listener under the SDK's
+        # HTTP session transport, which leaves parsing HTTP to its host.
+        "//buck2/third_party/swift:NIOCore",
+        "//buck2/third_party/swift:NIOHTTP1",
+        "//buck2/third_party/swift:NIOPosix",
     ],
 )

@@ -1,6 +1,7 @@
 # meerkatd as an MCP server
 
-Status: the transport, the protocol layer, the read-only resources, the tools
+Status: both transports (the stdio bridge and Streamable HTTP on the loopback
+address), the protocol layer, the read-only resources, the tools
 `events_sample`, `system_sample`, `samples_compare`, `resource_read`,
 `rules_check` and `rules_dry_run`, the built-in prompts, and the policy in
 `meerkat.json` are implemented. User-defined
@@ -26,8 +27,12 @@ is exposed configurable at run time.
 
 Acceptance criteria:
 
-1. An MCP client connects to the running daemon without the daemon listening
-   on a network socket by default.
+1. An MCP client connects to the running daemon by starting `meerkat mcp`
+   (stdio, over XPC) or at a URL (Streamable HTTP on 127.0.0.1 with a bearer
+   token). Both are on by default; `meerkat.json` turns HTTP off or moves its
+   port. Until 2026-11-14 this criterion was "without the daemon listening on
+   a network socket by default"; George changed it so clients that cannot
+   start a process can connect without setup beyond the token (D10).
 2. A built-in, read-only surface: daemon status, the event catalog with JSON
    Schemas, the rule set with diagnostics and logs, stored samples, and
    bounded live sampling of events.
@@ -150,10 +155,104 @@ client line over the daemon's 4 MiB message limit, or a daemon of a
 different build, ends it with status 1 instead: a new bridge would meet it
 too.
 
-A Streamable HTTP transport is a possible later addition for clients that
-cannot start a process. It would need a bearer token (from the Keychain,
-not a file), `Origin` checking against DNS rebinding, and a loopback-only
-bind or a Unix socket. It is out of scope until a client needs it.
+### Transport: Streamable HTTP
+
+```mermaid
+flowchart LR
+    client["MCP client"] -- "HTTP, Bearer token" --> nio["swift-nio listener<br/>127.0.0.1:7438/mcp"]
+    subgraph daemon["meerkatd (Swift)"]
+        nio --> router["MCPHTTPClients<br/>token, Origin, routing"]
+        router --> stateful["SDK StatefulHTTPServerTransport<br/>+ Server, one per session"]
+        router --> stateless["SDK StatelessHTTPServerTransport<br/>+ Server, one per client identity"]
+        stateful --> meaning["registry, policy,<br/>dispatch"]
+        stateless --> meaning
+    end
+```
+
+The daemon also serves MCP over
+[Streamable HTTP](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#streamable-http),
+for clients that connect to a URL instead of starting a process. It serves
+the same `MCPService`; only how a client reaches it differs.
+
+```json
+{
+  "type": "http",
+  "url": "http://127.0.0.1:7438/mcp",
+  "headers": { "Authorization": "Bearer <token from `meerkat mcp http`>" }
+}
+```
+
+- **Who may connect.** A TCP port has no peer signature to check, and any
+  process can reach the loopback address, sandboxed apps with network access
+  included. So every request needs a bearer token: 32 random bytes,
+  base64url, kept in the login Keychain (`MCPHTTPToken`) and compared in
+  constant time. The daemon caches it, so no request reaches the Keychain.
+  `meerkat mcp http` gets it over XPC, from a peer the daemon already trusts,
+  and prints the URL and a client configuration; `--rotate-token` replaces
+  it and ends every HTTP client, and a request already under way is checked
+  again when its body has arrived. The token never appears in `status`,
+  which MCP clients can read. The listener binds 127.0.0.1 only, and `Host`
+  and `Origin` must name exactly that port, so neither a DNS-rebinding page
+  nor a page from another local port gets an answer.
+- **What a connection costs before the token.** Nothing beyond its head:
+  the token and `Host`/`Origin` are checked on the request's head
+  (`MCPHTTPClients.admit`), before its body is read, and a refused request
+  is answered and closed. A connection that sends no head within 10 seconds,
+  first or after its last response, is closed, and at most 128 are open
+  (`MCPHTTPListener`). Any local process can still hold those 128 by
+  reconnecting, which keeps HTTP clients out but not XPC ones. An admitted body
+  over 4 MiB, the bridge's line limit, gets 413 as soon as it passes it.
+  Refusals carry `Connection: close` and the connection is closed at once, so
+  a client still sending its body may see the connection reset rather than
+  the status.
+- **Clients.** Each HTTP client has its own `Server`, as each XPC session
+  does (`MCPHTTPClients`). `initialize` begins a session on the SDK's
+  `StatefulHTTPServerTransport`, which later requests name with
+  `Mcp-Session-Id`; it is kept only once the SDK accepts its `initialize`
+  (`MCPProtocol.Initialized`, set from the SDK's `initializeHook`). A
+  2026-07-28 client names no session and runs on the SDK's
+  `StatelessHTTPServerTransport`, told apart by the `MCP-Client-Identity`
+  header SDK clients send. That transport keys requests by JSON-RPC id
+  alone, so clients that send no identity share one server, and with it
+  their request ids, cancellations and sample slots. The SDK's HTTP
+  transports frame SSE and check the protocol's headers; the protocol layer
+  adds the era check and caching hints (`MCPProtocol`).
+- **Ending.** An HTTP client that goes away says nothing, unlike the bridge,
+  whose stdin closes. A client with no open stream that has been idle for
+  30 minutes is ended, `DELETE` ends a session at once, and at most 64
+  clients are open. The listener notices a closed connection during an SSE
+  stream and stops copying it, so a silent listen stream does not hold a
+  client forever. Ending a client stops its `Server`, which cancels its
+  samples and listen streams, as for XPC.
+- **The SDK's replay log (a workaround).** The stateful transport keeps every
+  message it sends, for clients that resume a stream, until its session
+  ends, and has no way to bound that or turn it off. A session that has been
+  sent more than 64 MiB is ended once no request is being answered, even
+  with its standalone stream open; the specification
+  has a client that gets 404 begin a new session. This goes when the SDK
+  bounds its replay log (`MCPHTTPClients.replayBudget`).
+- **Configuration.** `meerkat.json`'s `mcp.http` (`enabled`, default true;
+  `port`, default 7438) applies live: a change ends every HTTP client and
+  binds again (`MCPHTTPServer.apply`). A port that is taken or a Keychain
+  that cannot be read leaves HTTP off with the reason in `meerkat status`,
+  and the next reload of the file tries again; XPC clients are unaffected.
+- **Threads.** One event-loop thread parses HTTP (swift-nio); the work runs
+  in the servers' tasks, and each client's SSE stream is copied in its own.
+
+**Why swift-nio.** The SDK's HTTP transports take parsed requests and leave
+the listener to the host, as its own conformance server does with
+swift-nio. The parser reads input from any local process, so it is the
+maintained, fuzzed one rather than ours. swift-nio and swift-atomics were
+already in `Package.resolved` through the SDK; Buck now builds them too.
+The strongest alternative, `NWListener` with an HTTP/1.1 parser written
+here, would have meant owning that parser, keep-alive, chunking and SSE.
+
+**Why both, not HTTP alone.** The bridge costs about 4.4 MB of memory per
+client and almost no CPU (measured 2026-11-14 on 11 bridges), and XPC gives
+what HTTP cannot: authentication by code signature with no secret to
+copy into client configuration files, no reach from sandboxed apps, the
+peer's identity, cleanup the moment a client exits, and launchd starting
+the daemon on demand. HTTP is for clients that cannot start a process.
 
 ### Where the protocol lives: in the daemon
 
@@ -185,8 +284,8 @@ Swift SDK with #314 pinned (D1). Three parts, split by what each owns:
 
 | Part                                    | Owns                                                                                                                                                                                                                                                                                                                                                                                                                                        | Does not own                                                         |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| The SDK's `Server`, one per XPC session | JSON-RPC framing; `initialize` for initialize-based clients; `server/discover`; checking each 2026-07-28 request's `_meta` version and client capabilities; `UnsupportedProtocolVersionError` (`-32022`); `resultType` and server identity on 2026-07-28 results; cancellation; typed decoding of every MCP method.                                                                                                                         | Anything below.                                                      |
-| The protocol layer (`MCP/Protocol/`)    | What the SDK leaves to the server on a transport other than HTTP: `subscriptions/listen` streams (acknowledgment, filter, tagging); caching hints on list results; sending unsolicited notifications only to initialize-based sessions; the version `initialize` agreed; rejecting a request that names no version outside an initialize-based session; mapping `resources/subscribe` onto the listen model; the XPC session's `Transport`. | Any registry, policy, schema or decision about what a client may do. |
+| The SDK's `Server`, one per session     | JSON-RPC framing; `initialize` for initialize-based clients; `server/discover`; checking each 2026-07-28 request's `_meta` version and client capabilities; `UnsupportedProtocolVersionError` (`-32022`); `resultType` and server identity on 2026-07-28 results; cancellation; typed decoding of every MCP method.                                                                                                                         | Anything below.                                                      |
+| The protocol layer (`MCP/Protocol/`)    | What the SDK leaves to the server: caching hints on list results; sending unsolicited notifications only to initialize-based sessions; whether `initialize` was accepted; rejecting a request that names no version outside an initialize-based session; mapping `resources/subscribe` onto the listen model; the XPC session's `Transport`. | Any registry, policy, schema or decision about what a client may do. |
 | The server's meaning (`MCP/`)           | The registry of built-in and user-defined tools, resources and prompts; the policy (`meerkat.json`, profiles, event-kind allowlist, limits); JSON Schemas (from `TypeSchema` and user definitions); validating every call's input; dispatch to the hub, stores and rule engine; capability grants; per-session state beside `Subscriptions`; which streams get which notifications.                                                         | Wire format, protocol eras.                                          |
 
 One call, end to end:
@@ -231,19 +330,23 @@ listen stream reach it the same way.
 not cover these over a non-HTTP transport, and because the SDK keeps some
 state private:
 
-- _Listen streams._ #314 filters and tags listen streams only in its HTTP
-  transport; its own `subscriptions/listen` handler only holds the request
-  open, and it defines no `notifications/subscriptions/acknowledged`. The
-  layer replaces that handler, sends the acknowledgment, and tags each
-  notification with the stream's id. `Server.start` installs the SDK's
-  handler, overwriting one registered earlier, so the layer registers after
-  `start`, and the transport holds input back until it has.
+- _Listen streams._ The SDK's own `subscriptions/listen` handler sends
+  `notifications/subscriptions/acknowledged` with what `capabilities`
+  offers, which is nothing yet, and holds the stream; the daemon uses it on
+  both transports. The SDK filters and tags later notifications only in its
+  HTTP transports, so when the registry first sends one (step 4 or 6), the
+  XPC session will need that from the layer. Until 2026-11-14 the layer
+  replaced the handler with its own copy, written when the SDK's was
+  believed missing.
 - _Caching hints._ Only `server/discover` carries `ttlMs` and `cacheScope`
   in #314; `ListTools.Result` and the other list and read results do not
   (upstream issue #243), so the layer serves those methods through its own
   method types with them, `ttlMs: 0` while lists change at run time.
-- _Initialize-based state._ The version `initialize` agreed is private to
-  `Server`; the transport records it, applying the SDK's rule.
+- _Initialize-based state._ Whether `initialize` was accepted is private to
+  `Server`; each server records it from the SDK's own `initializeHook`
+  (`MCPProtocol.Initialized`), on every transport. Until 2026-11-14 the XPC
+  transport worked it out by reading `initialize` itself and applying a copy
+  of the SDK's negotiation rule.
 - _Unversioned requests._ The SDK serves a request with no version outside
   an initialize-based session as initialize-based, and its strict mode drops
   such a request with no response. The layer does not use strict mode and
@@ -453,10 +556,11 @@ The server's parts and their state:
 | Layer                                        | Part                                                                                                                                                                             | State                                                                                                                                                                 |
 | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Package.swift`, `//buck2/third_party/swift` | The MCP Swift SDK at #314's head commit, by revision; `MeerkatDaemon` depends on its `MCP` module.                                                                               | Done                                                                                                                                                                  |
-| `MeerkatDaemon` (`MCP/Protocol/`)            | The protocol layer: the XPC session's `Transport`, listen streams, caching hints, era gating, the initialize-based version, unversioned requests, `resources/subscribe` mapping. | Done except era-gated unsolicited notifications and `resources/subscribe` mapping, which have nothing to carry until step 4 or 6 (`SessionTransport`, `MCPProtocol`). |
-| `MeerkatDaemon` (`MCP/`)                     | Registry, policy, dispatch; one `Server` per XPC session.                                                                                                                        | Read-only built-ins and the policy from `meerkat.json` (`MCPService`, `MCPPolicy`, `EventSampler`, `MCPEndpoint`)                                                     |
-| `MeerkatIPC`, `DaemonServer`                 | `DaemonRequest.mcp`, `DaemonPush.mcp`; the session's transport finishes when the XPC session is cancelled.                                                                       | Done                                                                                                                                                                  |
-| `meerkat` CLI                                | `meerkat mcp`: the byte pump; exits when the daemon restarts.                                                                                                                    | Done (`MCPBridge`)                                                                                                                                                    |
+| `MeerkatDaemon` (`MCP/Protocol/`)            | The protocol layer: the XPC session's `Transport`, caching hints, era gating, whether `initialize` was accepted, unversioned requests, `resources/subscribe` mapping.                   | Done except era-gated unsolicited notifications and `resources/subscribe` mapping, which have nothing to carry until step 4 or 6 (`SessionTransport`, `MCPProtocol`). |
+| `MeerkatDaemon` (`MCP/`)                     | Registry, policy, dispatch; one `Server` per XPC session or HTTP client.                                                                                                             | Read-only built-ins and the policy from `meerkat.json` (`MCPService`, `MCPPolicy`, `EventSampler`, `MCPEndpoint`)                                                     |
+| `MeerkatIPC`, `DaemonServer`                 | `DaemonRequest.mcp`, `DaemonPush.mcp`; the session's transport finishes when the XPC session is cancelled. `DaemonRequest.mcpHTTP`: the URL and token.                           | Done                                                                                                                                                                  |
+| `MeerkatDaemon` (`MCP/HTTP/`)                | Streamable HTTP: the swift-nio listener, the token, routing to the SDK's HTTP transports, `meerkat.json`'s `mcp.http`.                                                           | Done (`MCPHTTPServer`, `MCPHTTPListener`, `MCPHTTPClients`, `MCPHTTPToken`)                                                                                          |
+| `meerkat` CLI                                | `meerkat mcp`: the byte pump; exits when the daemon restarts. `meerkat mcp http`: the URL, token and a client configuration.                                                     | Done (`MCPBridge`, `MCPHTTPCommand`)                                                                                                                                  |
 
 The MCP server's own policy is `meerkat.json`'s `mcp` section, in the rules
 directory (D3; docs/configuration.md):
@@ -471,7 +575,8 @@ directory (D3; docs/configuration.md):
       "sampleEvents": 500,
       "outputKiB": 1024,
       "concurrentSamples": 4
-    }
+    },
+    "http": { "enabled": true, "port": 7438 }
   }
 }
 ```
@@ -554,6 +659,14 @@ command and resolve each `meerkat://` URI and tool they name.
   (`system_sample` while a kind it reads is denied) is left out of
   `tools/list` and refused when called, whatever the tool's own call
   checks.
+- **The HTTP token is a credential.** Whoever holds it reads what an MCP
+  client may, from any process on this Mac. It is made in the daemon, kept in
+  the Keychain, handed only to same-team XPC peers, and never put in
+  `status`, logs or MCP results. Client configuration files hold it in
+  plain text, which is the cost of HTTP; `meerkat mcp http --rotate-token`
+  replaces it and ends every session opened with it. Turning HTTP off
+  (`mcp.http.enabled: false`) leaves only the XPC path, which needs no
+  secret.
 - **Mutations are marked.** Every tool carries MCP annotations: today all
   are `readOnlyHint`, and a tool that changes state will carry
   `destructiveHint` and `idempotentHint`, which mean something only then, so
@@ -584,6 +697,7 @@ command and resolve each `meerkat://` URI and tool they name.
 | D7  | Rule authoring over MCP                                                    | Never; opt-in with confirmation in the app; opt-in with MCP elicitation                                                                                             | Never for now. Elicitation is shown by the client, which the model drives, so it is not an independent confirmation.                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | D8  | Event history                                                              | Sampling only; persist chosen kinds to SQLite; expose the ring by sequence number                                                                                   | Sampling only until a client needs "what happened in the last hour"; then persist chosen kinds, which the store already has the shape for.                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | D9  | User-defined resources and prompts                                         | Ship with tools; tools first                                                                                                                                        | Tools first. Resources defined in code need their own read deadline and caching rules.                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| D10 | HTTP beside stdio                                                          | stdio only; HTTP only; the bridge proxying to a daemon-hosted HTTP server; both, side by side                                                                       | Decided 2026-11-14 (George): both, on by default. The bridge stays a byte pump over XPC, with no secret; HTTP is its own listener on 127.0.0.1 with a Keychain token, swift-nio under the SDK's HTTP transports. Rejected: the bridge proxying over HTTP (it would need the token over XPC anyway, then take the weaker path) and HTTP alone (a secret in every client's configuration, reach from sandboxed apps, no cleanup on exit). A Unix socket was rejected because few MCP clients can connect to one.                                                             |
 
 ## D1 evidence
 

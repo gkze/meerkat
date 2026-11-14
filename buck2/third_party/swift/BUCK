@@ -75,6 +75,11 @@ PACKAGES = {
         "revision": "6a52f3251125d74daf04fcbd5e6f08a75d074382",
         "sha256": "23ab82e8be3b82b199a008e0044229ae327a8824734d917b78bcdde64ce81ec1",
     },
+    "swift-atomics": {
+        "github": "apple/swift-atomics",
+        "revision": "0442cb5a3f98ab802acb777929fdb446bda11a34",
+        "sha256": "e2652977537003d50b8da1f330ef73d94e50e294b7f5a2fd0f2ddbb03fbf632f",
+    },
     "swift-clocks": {
         "github": "pointfreeco/swift-clocks",
         "revision": "82440fa0a8b1c381a6d1e8e0fc7bbba53ec63204",
@@ -114,6 +119,11 @@ PACKAGES = {
         "github": "apple/swift-log",
         "revision": "c9c6bb9d275ec0d95c3ad16391f3f045dc623104",
         "sha256": "d7627619439ea7bb0498533dde0b7735d60f2ce2352f3db3dedacbff2c668804",
+    },
+    "swift-nio": {
+        "github": "apple/swift-nio",
+        "revision": "6db9d9abd92ad7399b8a564cafbb87d3507245fa",
+        "sha256": "a3fc6ef22f61f9b85862594880263e3b5015909033d6de573b1d34accb528c72",
     },
     "swift-perception": {
         "github": "pointfreeco/swift-perception",
