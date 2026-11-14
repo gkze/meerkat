@@ -125,12 +125,22 @@ struct ConfigurationTests {
         #expect(try MeerkatConfiguration.decode(Data(pointer.utf8)) == MeerkatConfiguration())
     }
 
+    /// HTTP is on by default, beside the stdio bridge, and can be turned off
+    /// or moved.
+    @Test func mcpHTTPIsOnByDefault() throws {
+        #expect(MeerkatConfiguration().mcp.http == .init(enabled: true, port: 7438))
+        let moved = try MeerkatConfiguration.decode(Data(#"{ "mcp": { "http": { "port": 9000 } } }"#.utf8))
+        #expect(moved.mcp.http == .init(enabled: true, port: 9000))
+        let off = try MeerkatConfiguration.decode(Data(#"{ "mcp": { "http": { "enabled": false } } }"#.utf8))
+        #expect(!off.mcp.http.enabled)
+    }
+
     /// Null for a section or a setting means its default, as leaving it out
     /// does.
     @Test func nullMeansTheDefault() throws {
         for text in [
             #"{ "mcp": null }"#, #"{ "mcp": { "limits": null } }"#, #"{ "samples": { "maxMegabytes": null } }"#,
-            #"{ "files": null }"#,
+            #"{ "files": null }"#, #"{ "mcp": { "http": null } }"#,
         ] {
             #expect(try MeerkatConfiguration.decode(Data(text.utf8)) == MeerkatConfiguration(), "\(text)")
         }
@@ -145,6 +155,9 @@ struct ConfigurationTests {
         #"{ "samples": { "maxAgeDays": "30" } }"#,
         #"{ "sample": {} }"#,
         #"{ "mcp": { "limits": { "outputBytes": 1 } } }"#,
+        #"{ "mcp": { "http": { "port": 80 } } }"#,
+        #"{ "mcp": { "http": { "port": 65536 } } }"#,
+        #"{ "mcp": { "http": { "enabled": "yes" } } }"#,
         #"[]"#,
         #"{ "mcp": "#,
     ])

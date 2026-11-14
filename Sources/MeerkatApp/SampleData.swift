@@ -378,7 +378,8 @@
                      "detail": "log applies: subsystem == \\"com.apple.bluetooth\\" AND type == 1024"}
                   ],
                   "rules": \(encoded(rules.rules)),
-                  "configuration": \(encoded(configuration))
+                  "configuration": \(encoded(configuration)),
+                  "mcpHTTP": {"state": "listening", "url": "http://127.0.0.1:7438/mcp", "clients": 1}
                 }
                 """)
         }

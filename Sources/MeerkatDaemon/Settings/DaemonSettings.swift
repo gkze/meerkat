@@ -22,10 +22,16 @@ final class DaemonSettings: Sendable {
     private let catalog: EventCatalog
     private let state: Mutex<ConfigurationStatus>
     private let logger = Logger(subsystem: DaemonService.label, category: "settings")
+    /// What applies after each `reload`, changed or not, for what must act on
+    /// the file rather than read it per request: the MCP HTTP listener binds
+    /// a port. Only the latest is kept; its one reader compares.
+    let applied: AsyncStream<MeerkatConfiguration>
+    private let appliedContinuation: AsyncStream<MeerkatConfiguration>.Continuation
 
     init(rulesDirectory: URL, catalog: EventCatalog) {
         file = DaemonPaths.configurationFile(in: rulesDirectory)
         self.catalog = catalog
+        (applied, appliedContinuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
         state = Mutex(
             ConfigurationStatus(
                 file: file.path, source: .defaults, effective: MeerkatConfiguration(), problem: nil,
@@ -85,6 +91,7 @@ final class DaemonSettings: Sendable {
             }
             return (state != previous, state.problem)
         }
+        appliedContinuation.yield(current)
         guard changed else { return }
         if let problem {
             logger.error("\(MeerkatConfiguration.fileName, privacy: .public) not applied: \(problem, privacy: .public)")

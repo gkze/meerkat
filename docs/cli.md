@@ -20,6 +20,7 @@ meerkat events watch fs.change --params '{"paths":["~/Documents"]}' --count 5
 meerkat effects                  # every effect, its grant and permission; the observation grants
 meerkat types --output my.d.ts   # the declarations for this build
 meerkat mcp                      # MCP on stdin and stdout, for MCP clients
+meerkat mcp http                 # the MCP HTTP URL and token, for clients that connect to a URL
 meerkat skills                   # instructions for coding agents
 ```
 
@@ -47,8 +48,9 @@ Any other client that starts a stdio server:
 { "command": "/Applications/Meerkat.app/Contents/MacOS/meerkat", "args": ["mcp"] }
 ```
 
-- **No socket.** The bridge relays bytes over the daemon's XPC service, and
-  the MCP server runs inside meerkatd, one session per bridge.
+- **No secret.** The bridge relays bytes over the daemon's XPC service, which
+  admits only code signed with the app, and the MCP server runs inside
+  meerkatd, one session per bridge.
 - **Read-only.** The resources are `meerkat://status`, `meerkat://catalog`
   (and `meerkat://catalog/{kind}` with JSON Schemas), `meerkat://types`,
   `meerkat://config`, `meerkat://rules` with each rule's log, and
@@ -83,6 +85,44 @@ Any other client that starts a stdio server:
   status 69, and the client starts it again. A line from the client longer
   than 4 MiB, or a meerkatd of a different build, ends the session with
   status 1: a new bridge would meet it too.
+
+### Over HTTP
+
+meerkatd also serves MCP over Streamable HTTP at `http://127.0.0.1:7438/mcp`,
+for clients that connect to a URL instead of starting a process. Every
+request needs a bearer token, which `meerkat mcp http` prints with a client
+configuration:
+
+```bash
+meerkat mcp http
+```
+
+```json
+{ "type": "http", "url": "http://127.0.0.1:7438/mcp", "headers": { "Authorization": "Bearer <token>" } }
+```
+
+Claude Code takes the header on its command line, which puts the token in
+your shell history and in the process list while it runs; pasting the JSON
+above into the client's own configuration file does not:
+
+```bash
+claude mcp add -s user --transport http meerkat http://127.0.0.1:7438/mcp --header "Authorization: Bearer <token>"
+```
+
+- **The token is a secret.** Anyone who has it can read what an MCP client
+  may, from any process on this Mac. It lives in the login Keychain; a
+  client's configuration holds a copy in plain text.
+  `meerkat mcp http --rotate-token` replaces it and ends every HTTP client.
+- **Loopback only.** The listener binds 127.0.0.1, and refuses a request
+  whose `Host` or `Origin` names anything but its own port, so a web page
+  can't reach it through DNS rebinding.
+- **Same server.** HTTP clients get the same resources, tools, prompts,
+  policy and limits as the bridge. A client ends on `DELETE`, or after 30
+  minutes idle with no open stream. 2026-07-28 clients that send no
+  `MCP-Client-Identity` share one server, and with it their request ids.
+- **Configuration.** `meerkat.json`'s `mcp.http` turns it off
+  (`"enabled": false`) or moves it (`"port"`), live. `meerkat status` shows
+  whether it is listening, and why not.
 
 The design and the remaining steps are in
 [docs/design/mcp.md](design/mcp.md).

@@ -39,6 +39,7 @@ flowchart TB
         bridge["meerkat mcp<br/>stdio byte pump"]
         subgraph daemon["meerkatd (LaunchAgent)"]
             xpc["XPC listener<br/>DaemonServer"]
+            http["MCP HTTP listener<br/>127.0.0.1, bearer token"]
             mcp["MCP service<br/>one SDK Server per session"]
             hub["EventHub<br/>shared source instances, rings"]
             engine["RuleEngine<br/>match, rate, breaker"]
@@ -61,6 +62,8 @@ flowchart TB
     cli -. "agent install (SMAppService)" .-> launchd
     launchd -- "RunAtLoad, KeepAlive,<br/>launch on demand" --> daemon
     mcpclient -- "stdio JSON-RPC" --> bridge
+    mcpclient -- "Streamable HTTP" --> http
+    http --> mcp
     app <-- "XPC Mach service, same team" --> xpc
     cli <-- "XPC" --> xpc
     bridge <-- "XPC (DaemonRequest.mcp)" --> xpc
@@ -102,7 +105,10 @@ flowchart TB
 - **Clients.** The app, the CLI and `meerkat mcp` all reach the daemon
   through one XPC Mach service, `com.gkze.meerkat.daemon`. `meerkat mcp`
   copies MCP's JSON-RPC lines between stdio and XPC without parsing them;
-  the MCP server itself runs in the daemon. One-shot measurement
+  the MCP server itself runs in the daemon. MCP clients that connect to a
+  URL use the daemon's Streamable HTTP listener on 127.0.0.1 instead, with a
+  bearer token `meerkat mcp http` prints; it serves the same MCP service.
+  One-shot measurement
   (`meerkat sample`) and the dashboard use the same kit samplers as the
   daemon's sources.
 
@@ -119,7 +125,7 @@ boundary:
 | Unsaved rule code in a dry run | A request over XPC compiles a copy of the rules directory in the cache directory and runs the text in a handler host of its own, stopped at the end of the run. It has no `EffectExecutor`: effects are admitted as they would be live, then only simulated, and `fs.write` grants are dropped. | `RuleDryRunner`, `EffectSimulator` |
 | Rule source on every save | The compiler and linters run as children with deadlines (SIGTERM, then SIGKILL); a rule that fails to type-check is not run. | `RuleCompiler`, `RuleLinter` |
 | What the app's language server answers | The app runs the bundled tsrs as its own child process over stdio, with the rules directory as working directory, while the editor is open. A code action is offered only if all its edits are for the open file, need no command, fit the text without overlapping and change it. | `RuleLanguageServer`, `RuleFix.offered` |
-| Other processes on the machine | The XPC peer requirement `.isFromSameTeam()`: only binaries signed with the bundle's team reach the daemon. | `DaemonServer`, `DaemonClient` |
+| Other processes on the machine | The XPC peer requirement `.isFromSameTeam()`: only binaries signed with the bundle's team reach the daemon. The MCP HTTP listener binds 127.0.0.1 only, and refuses a request on its head, before reading its body, without its bearer token (made in the daemon, kept in the Keychain, handed only to XPC peers) or with a `Host` or `Origin` other than its own port. | `DaemonServer`, `DaemonClient`; `MCPHTTPClients`, `MCPHTTPToken` |
 
 Event payloads, rule logs and file paths come from other programs. Over MCP
 they are returned as data, and the kinds most likely to carry text others

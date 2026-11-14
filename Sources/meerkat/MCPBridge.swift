@@ -4,8 +4,79 @@ import MeerkatIPC
 
 // MARK: - mcp
 
-/// `meerkat mcp`: an MCP stdio server for clients that start one, relaying
-/// to meerkatd (docs/design/mcp.md, "Transport: a stdio bridge in the CLI").
+/// `meerkat mcp`: the ways an MCP client reaches meerkatd
+/// (docs/design/mcp.md, "Transport"). With no subcommand, the stdio bridge,
+/// so a client configured with `["mcp"]` starts it.
+struct MCPCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "mcp",
+        abstract: "Serve MCP to a client: on stdio (the default), or over HTTP.",
+        subcommands: [MCPBridge.self, MCPHTTPCommand.self],
+        defaultSubcommand: MCPBridge.self
+    )
+}
+
+/// `meerkat mcp http`: where meerkatd's MCP HTTP listener is and the token it
+/// takes, for clients that connect to a URL instead of starting a process.
+struct MCPHTTPCommand: AsyncParsableCommand, JSONOutput {
+    static let configuration = CommandConfiguration(
+        commandName: "http",
+        abstract: "Print the MCP HTTP URL and bearer token for a client's configuration.",
+        discussion: """
+            meerkatd serves MCP over Streamable HTTP on 127.0.0.1, beside `meerkat mcp`, unless \
+            meerkat.json sets mcp.http.enabled to false; mcp.http.port picks the port. Every request needs \
+            the header `Authorization: Bearer <token>`. The token is kept in the login Keychain; anyone who \
+            has it can read what meerkatd observes, so treat a client's configuration file that holds it \
+            as a secret, and --rotate-token if it leaks, which ends every HTTP client. Exits \
+            \(ExitStatus.unavailable.code), after printing the token, when the listener is off or failed to start.
+            """
+    )
+
+    @Flag(help: "Replace the token first. Clients holding the old one are refused from their next request.")
+    var rotateToken = false
+
+    @Flag(help: "Print JSON.")
+    var json = false
+
+    func run() async throws {
+        let access = try await withDaemon { try await $0.mcpHTTP(rotateToken: rotateToken) }
+        // Printed whether or not HTTP is listening: a token just replaced must
+        // reach the user either way.
+        if json { try printJSON(access, pretty: true) } else { Self.output(access).print() }
+        let status = access.status
+        switch status.state {
+        case .listening: return
+        case .off:
+            throw CommandFailure(
+                "meerkatd is not serving MCP over HTTP: meerkat.json sets mcp.http.enabled to false",
+                status: .unavailable)
+        case .failed:
+            throw CommandFailure(
+                "meerkatd is not serving MCP over HTTP: \(status.problem ?? "it failed to start")", status: .unavailable
+            )
+        }
+    }
+
+    static func output(_ access: MCPHTTPAccess) -> TerminalOutput {
+        var output = TerminalOutput()
+        guard let url = access.status.url else {
+            output.add("token  \(access.token)")
+            return output
+        }
+        output.add("url    \(url)  (\(access.status.clients) clients)")
+        output.add("token  \(access.token)")
+        output.add()
+        output.add("An MCP client's configuration:")
+        output.add()
+        output.add(
+            #"  { "type": "http", "url": "\#(url)", "headers": { "Authorization": "Bearer \#(access.token)" } }"#)
+        return output
+    }
+}
+
+/// `meerkat mcp` (`meerkat mcp stdio`): an MCP stdio server for clients that
+/// start one, relaying to meerkatd (docs/design/mcp.md, "Transport: a stdio
+/// bridge in the CLI").
 ///
 /// The bridge copies bytes and does not parse MCP: each stdin line goes to
 /// the daemon as one `DaemonRequest.mcp`, and each `DaemonPush.mcp` comes
@@ -15,7 +86,7 @@ import MeerkatIPC
 /// and the daemon releases whatever that client held.
 struct MCPBridge: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        commandName: "mcp",
+        commandName: "stdio",
         abstract: "Serve MCP on stdin and stdout, backed by meerkatd.",
         discussion: """
             Configure an MCP client to start this as a stdio server:

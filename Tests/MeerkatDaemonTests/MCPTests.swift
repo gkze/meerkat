@@ -584,6 +584,8 @@ struct MCPFixture {
 final class Peer: Sendable {
     let fixture: MCPFixture
     let hub: EventHub
+    /// What the endpoint serves; the HTTP tests serve it too.
+    let service: MCPService
     let endpoint: MCPEndpoint
     private let inbox = Inbox()
     private let ids = Atomic<Int>(0)
@@ -618,9 +620,11 @@ final class Peer: Sendable {
             status: {
                 DaemonStatus(
                     version: "test", pid: getpid(), startedAt: 0, executablePath: "", rulesDirectory: "",
-                    handlerHost: await engine.hostStatus(), sources: [], rules: [], configuration: configuration)
+                    handlerHost: await engine.hostStatus(), sources: [], rules: [], configuration: configuration,
+                    mcpHTTP: .off)
             },
             permissionStatus: permissionStatus)
+        self.service = service
         let inbox = inbox
         endpoint = MCPEndpoint(service: service) { data in
             inbox.receive(try JSONDecoder().decode(JSONValue.self, from: data))

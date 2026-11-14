@@ -30,6 +30,7 @@ MINIMUM_MACOS = {
   "rearrange" : "10.13",
   "sqlite-data" : "13.0",
   "swift-argument-parser" : "10.13",
+  "swift-atomics" : "10.13",
   "swift-clocks" : "12.0",
   "swift-collections" : "10.13",
   "swift-concurrency-extras" : "10.15",
@@ -38,6 +39,7 @@ MINIMUM_MACOS = {
   "swift-identified-collections" : "10.13",
   "swift-issue-reporting" : "10.15",
   "swift-log" : "10.13",
+  "swift-nio" : "10.13",
   "swift-perception" : "12.0",
   "swift-sdk" : "13.0",
   "swift-sharing" : "12.0",
@@ -69,6 +71,26 @@ MODULES = {
     "kind" : "library",
     "package" : "swift-argument-parser",
     "path" : "Sources/ArgumentParserToolInfo"
+  },
+  "Atomics" : {
+    "deps" : [
+      "_AtomicsShims"
+    ],
+    "exclude" : [
+      "CMakeLists.txt",
+      "Conformances/AtomicBool.swift.gyb",
+      "Conformances/IntegerConformances.swift.gyb",
+      "Conformances/PointerConformances.swift.gyb",
+      "Primitives/Primitives.native.swift.gyb",
+      "Types/IntegerOperations.swift.gyb"
+    ],
+    "experimental_features" : [
+      "BuiltinModule"
+    ],
+    "kind" : "library",
+    "language_mode" : "5",
+    "package" : "swift-atomics",
+    "path" : "Sources/Atomics"
   },
   "BitCollections" : {
     "defines" : [
@@ -106,6 +128,152 @@ MODULES = {
     "path" : "Sources/BitCollections",
     "swift_flags" : [
       "-strict-memory-safety"
+    ],
+    "upcoming_features" : [
+      "MemberImportVisibility"
+    ]
+  },
+  "CNIOAtomics" : {
+    "c_defines" : [
+      "_GNU_SOURCE"
+    ],
+    "headers" : [
+      "CNIOAtomics.h"
+    ],
+    "kind" : "c",
+    "package" : "swift-nio",
+    "path" : "Sources/CNIOAtomics",
+    "srcs" : [
+      "src/c-atomics.c",
+      "src/c-nioatomics.c"
+    ],
+    "upcoming_features" : [
+      "MemberImportVisibility"
+    ]
+  },
+  "CNIODarwin" : {
+    "c_defines" : [
+      "__APPLE_USE_RFC_3542"
+    ],
+    "headers" : [
+      "CNIODarwin.h"
+    ],
+    "kind" : "c",
+    "package" : "swift-nio",
+    "path" : "Sources/CNIODarwin",
+    "srcs" : [
+      "shim.c"
+    ],
+    "upcoming_features" : [
+      "MemberImportVisibility"
+    ]
+  },
+  "CNIOFreeBSD" : {
+    "headers" : [
+      "CNIOFreeBSD.h"
+    ],
+    "kind" : "c",
+    "package" : "swift-nio",
+    "path" : "Sources/CNIOFreeBSD",
+    "srcs" : [
+      "shim.c"
+    ],
+    "upcoming_features" : [
+      "MemberImportVisibility"
+    ]
+  },
+  "CNIOLLHTTP" : {
+    "c_defines" : [
+      "_GNU_SOURCE",
+      "LLHTTP_STRICT_MODE"
+    ],
+    "headers" : [
+      "CNIOLLHTTP.h",
+      "c_nio_llhttp.h"
+    ],
+    "kind" : "c",
+    "package" : "swift-nio",
+    "path" : "Sources/CNIOLLHTTP",
+    "srcs" : [
+      "c_nio_api.c",
+      "c_nio_http.c",
+      "c_nio_llhttp.c"
+    ],
+    "upcoming_features" : [
+      "MemberImportVisibility"
+    ]
+  },
+  "CNIOLinux" : {
+    "c_defines" : [
+      "_GNU_SOURCE"
+    ],
+    "headers" : [
+      "CNIOLinux.h",
+      "liburing_nio.h"
+    ],
+    "kind" : "c",
+    "package" : "swift-nio",
+    "path" : "Sources/CNIOLinux",
+    "srcs" : [
+      "liburing_shims.c",
+      "shim.c"
+    ],
+    "upcoming_features" : [
+      "MemberImportVisibility"
+    ]
+  },
+  "CNIOOpenBSD" : {
+    "headers" : [
+      "CNIOOpenBSD.h"
+    ],
+    "kind" : "c",
+    "package" : "swift-nio",
+    "path" : "Sources/CNIOOpenBSD",
+    "srcs" : [
+      "shim.c"
+    ],
+    "upcoming_features" : [
+      "MemberImportVisibility"
+    ]
+  },
+  "CNIOPosix" : {
+    "c_defines" : [
+      "_GNU_SOURCE"
+    ],
+    "headers" : [
+      "CNIOPosix.h"
+    ],
+    "kind" : "c",
+    "package" : "swift-nio",
+    "path" : "Sources/CNIOPosix",
+    "srcs" : [
+      "event_loop_id.c"
+    ],
+    "upcoming_features" : [
+      "MemberImportVisibility"
+    ]
+  },
+  "CNIOWASI" : {
+    "headers" : [
+      "CNIOWASI.h"
+    ],
+    "kind" : "c",
+    "package" : "swift-nio",
+    "path" : "Sources/CNIOWASI",
+    "srcs" : [
+      "CNIOWASI.c"
+    ],
+    "upcoming_features" : [
+      "MemberImportVisibility"
+    ]
+  },
+  "CNIOWindows" : {
+    "kind" : "c",
+    "package" : "swift-nio",
+    "path" : "Sources/CNIOWindows",
+    "srcs" : [
+      "WSAStartup.c",
+      "shim.c"
     ],
     "upcoming_features" : [
       "MemberImportVisibility"
@@ -583,6 +751,118 @@ MODULES = {
     "path" : "Sources/MCP",
     "upcoming_features" : [
       "StrictConcurrency"
+    ]
+  },
+  "NIO" : {
+    "deps" : [
+      "NIOCore",
+      "NIOEmbedded",
+      "NIOPosix"
+    ],
+    "experimental_features" : [
+      "Lifetimes"
+    ],
+    "kind" : "library",
+    "package" : "swift-nio",
+    "path" : "Sources/NIO",
+    "upcoming_features" : [
+      "MemberImportVisibility"
+    ]
+  },
+  "NIOConcurrencyHelpers" : {
+    "deps" : [
+      "CNIOAtomics"
+    ],
+    "experimental_features" : [
+      "Lifetimes"
+    ],
+    "kind" : "library",
+    "package" : "swift-nio",
+    "path" : "Sources/NIOConcurrencyHelpers",
+    "upcoming_features" : [
+      "MemberImportVisibility"
+    ]
+  },
+  "NIOCore" : {
+    "deps" : [
+      "NIOConcurrencyHelpers",
+      "_NIOBase64",
+      "CNIOOpenBSD",
+      "CNIOFreeBSD",
+      "CNIODarwin",
+      "CNIOLinux",
+      "CNIOWindows",
+      "CNIOWASI",
+      "_NIODataStructures",
+      "DequeModule",
+      "Atomics"
+    ],
+    "experimental_features" : [
+      "Lifetimes"
+    ],
+    "kind" : "library",
+    "package" : "swift-nio",
+    "path" : "Sources/NIOCore",
+    "upcoming_features" : [
+      "MemberImportVisibility"
+    ]
+  },
+  "NIOEmbedded" : {
+    "deps" : [
+      "NIOCore",
+      "NIOConcurrencyHelpers",
+      "_NIODataStructures",
+      "Atomics",
+      "DequeModule"
+    ],
+    "experimental_features" : [
+      "Lifetimes"
+    ],
+    "kind" : "library",
+    "package" : "swift-nio",
+    "path" : "Sources/NIOEmbedded",
+    "upcoming_features" : [
+      "MemberImportVisibility"
+    ]
+  },
+  "NIOHTTP1" : {
+    "deps" : [
+      "NIO",
+      "NIOCore",
+      "NIOConcurrencyHelpers",
+      "CNIOLLHTTP",
+      "DequeModule"
+    ],
+    "experimental_features" : [
+      "Lifetimes"
+    ],
+    "kind" : "library",
+    "package" : "swift-nio",
+    "path" : "Sources/NIOHTTP1",
+    "upcoming_features" : [
+      "MemberImportVisibility"
+    ]
+  },
+  "NIOPosix" : {
+    "deps" : [
+      "CNIOOpenBSD",
+      "CNIOLinux",
+      "CNIODarwin",
+      "CNIOWindows",
+      "NIOConcurrencyHelpers",
+      "NIOCore",
+      "_NIODataStructures",
+      "CNIOPosix",
+      "Atomics"
+    ],
+    "experimental_features" : [
+      "Lifetimes"
+    ],
+    "kind" : "library",
+    "package" : "swift-nio",
+    "path" : "Sources/NIOPosix",
+    "upcoming_features" : [
+      "MemberImportVisibility"
     ]
   },
   "OrderedCollections" : {
@@ -1213,6 +1493,36 @@ MODULES = {
       "src/tree_cursor.c",
       "src/wasm/stdlib.c",
       "src/wasm_store.c"
+    ]
+  },
+  "_AtomicsShims" : {
+    "kind" : "c",
+    "package" : "swift-atomics",
+    "path" : "Sources/_AtomicsShims",
+    "srcs" : [
+      "src/_AtomicsShims.c"
+    ]
+  },
+  "_NIOBase64" : {
+    "experimental_features" : [
+      "Lifetimes"
+    ],
+    "kind" : "library",
+    "package" : "swift-nio",
+    "path" : "Sources/_NIOBase64",
+    "upcoming_features" : [
+      "MemberImportVisibility"
+    ]
+  },
+  "_NIODataStructures" : {
+    "experimental_features" : [
+      "Lifetimes"
+    ],
+    "kind" : "library",
+    "package" : "swift-nio",
+    "path" : "Sources/_NIODataStructures",
+    "upcoming_features" : [
+      "MemberImportVisibility"
     ]
   },
   "_RopeModule" : {

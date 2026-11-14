@@ -71,6 +71,12 @@ public enum DaemonRequest: Codable, Sendable, Equatable {
     /// that can't run (one dry run at a time). The answer can take as long as
     /// the sample and the handlers do.
     case dryRun(DryRunRequest)
+    /// Where the MCP HTTP listener is and the bearer token it takes, for
+    /// `meerkat mcp http`; `rotateToken` replaces the token first, which
+    /// ends every HTTP client. Answers `mcpHTTP`. The token goes only to
+    /// peers this listener already trusts (same team), never into `status`,
+    /// which MCP clients can read.
+    case mcpHTTP(rotateToken: Bool)
 
     /// The largest `mcp` message, in bytes: larger than any request the MCP
     /// server understands needs to be. The daemon refuses larger ones, and
@@ -103,6 +109,7 @@ public enum DaemonReply: Codable, Sendable, Equatable {
     case rules(RulesReport)
     case logs([RuleLogEntry])
     case dryRun(DryRunReport)
+    case mcpHTTP(MCPHTTPAccess)
     case done
     case failure(String)
     /// The daemon could not decode the request: the client is a different
@@ -134,13 +141,17 @@ public struct DaemonStatus: Codable, Sendable, Equatable {
     public let rules: [RuleSummary]
     /// `meerkat.json` as the daemon applies it.
     public let configuration: ConfigurationStatus
+    /// The MCP HTTP listener, without its token.
+    public let mcpHTTP: MCPHTTPStatus
 
     public init(
         version: String, pid: Int32, startedAt: Double, executablePath: String,
         rulesDirectory: String, handlerHost: HandlerHostStatus,
-        sources: [SourceStatistics], rules: [RuleSummary], configuration: ConfigurationStatus
+        sources: [SourceStatistics], rules: [RuleSummary], configuration: ConfigurationStatus,
+        mcpHTTP: MCPHTTPStatus
     ) {
         self.configuration = configuration
+        self.mcpHTTP = mcpHTTP
         self.version = version
         self.pid = pid
         self.startedAt = startedAt
@@ -149,6 +160,48 @@ public struct DaemonStatus: Codable, Sendable, Equatable {
         self.handlerHost = handlerHost
         self.sources = sources
         self.rules = rules
+    }
+}
+
+/// The MCP Streamable HTTP listener (docs/design/mcp.md, "Transport:
+/// Streamable HTTP"), as `meerkat.json`'s `mcp.http` asks for it.
+public struct MCPHTTPStatus: Codable, Sendable, Equatable {
+    public enum State: String, Codable, Sendable {
+        /// `mcp.http.enabled` is false.
+        case off
+        case listening
+        /// Enabled, but not listening: the port is taken, or the token could
+        /// not be read or made. `problem` says which.
+        case failed
+    }
+
+    public let state: State
+    /// `http://127.0.0.1:<port>/mcp` while listening.
+    public let url: String?
+    public let problem: String?
+    /// HTTP clients with a server open: sessions begun with `initialize`,
+    /// and 2026-07-28 clients.
+    public let clients: Int
+
+    public init(state: State, url: String?, problem: String?, clients: Int) {
+        self.state = state
+        self.url = url
+        self.problem = problem
+        self.clients = clients
+    }
+
+    public static let off = MCPHTTPStatus(state: .off, url: nil, problem: nil, clients: 0)
+}
+
+/// What an MCP client needs to reach the HTTP listener: `meerkat mcp http`.
+public struct MCPHTTPAccess: Codable, Sendable, Equatable {
+    public let status: MCPHTTPStatus
+    /// Sent as `Authorization: Bearer <token>`.
+    public let token: String
+
+    public init(status: MCPHTTPStatus, token: String) {
+        self.status = status
+        self.token = token
     }
 }
 

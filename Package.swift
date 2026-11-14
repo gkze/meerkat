@@ -44,6 +44,10 @@ let package = Package(
         // The MCP transport names swift-log's `Logger` (the SDK's `Transport`
         // requires one).
         .package(url: "https://github.com/apple/swift-log.git", from: "1.16.2"),
+        // The MCP server's Streamable HTTP listener (docs/design/mcp.md): the
+        // SDK's HTTP transport takes parsed requests and leaves the server to
+        // its host, as its own conformance server does with swift-nio.
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.104.0"),
         // The rule editor (docs/design/rule-editor.md): CodeEditSourceEditor
         // for the view, ChimeHQ's LanguageServerProtocol (over JSONRPC) for
         // tsrs's language server. The text view and the languages are named
@@ -92,6 +96,9 @@ let package = Package(
                 "MeerkatNetworkFilter",
                 .product(name: "MCP", package: "swift-sdk"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOHTTP1", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
             ]
         ),
         .executableTarget(name: "meerkatd", dependencies: ["MeerkatDaemon"]),

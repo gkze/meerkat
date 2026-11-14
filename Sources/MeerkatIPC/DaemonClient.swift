@@ -50,6 +50,13 @@ extension DaemonConnection {
         return entries
     }
 
+    public func mcpHTTP(rotateToken: Bool = false) async throws -> MCPHTTPAccess {
+        guard case .mcpHTTP(let access) = try await send(.mcpHTTP(rotateToken: rotateToken)) else {
+            throw DaemonClient.ClientError.unexpectedReply("MCP HTTP")
+        }
+        return access
+    }
+
     public func dryRun(_ request: DryRunRequest) async throws -> DryRunReport {
         guard case .dryRun(let report) = try await send(.dryRun(request)) else {
             throw DaemonClient.ClientError.unexpectedReply("dry run")

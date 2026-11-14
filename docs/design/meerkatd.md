@@ -289,6 +289,7 @@ flowchart LR
 
     subgraph daemon["meerkatd"]
         listener["XPC listener<br/>com.gkze.meerkat.daemon"]
+        http["MCP HTTP listener<br/>127.0.0.1"]
         mcp["MCP service"]
         hub["event hub"]
         engine["rule engine"]
@@ -312,6 +313,8 @@ flowchart LR
     engine --> compiler
     engine --> lint
     listener --> mcp
+    http --> mcp
+    httpclient["MCP client over HTTP"] <--> http
     app["Meerkat (app)"] <--> listener
     cli["meerkat (CLI)"] <--> listener
     bridge["meerkat mcp"] <--> listener
@@ -357,7 +360,8 @@ Background priority was measured and rejected: a TypeScript compile ran
 12 s to load instead of under one. An idle daemon does no work, so the
 priority is free. It owns the event hub, the rule engine, the embedded rule
 runtime (the handler host), the effect executor, the rule store, and the XPC
-listener on `com.gkze.meerkat.daemon` with the MCP service (`mcp.md`).
+listener on `com.gkze.meerkat.daemon` with the MCP service, which it also
+serves over Streamable HTTP on 127.0.0.1 (`mcp.md`).
 
 `buck2 run //Tools/Bundler:app` builds every part in release mode with Buck
 (the Swift modules, the Rust library with V8, the TypeScript and lint
