@@ -22,8 +22,8 @@ rust_library = "cargo.rust_library"
 rust_binary = "cargo.rust_binary"
 buildscript_genrule = "buildscript_run"
 buckfile_imports = """
-load("@prelude//rust:cargo_buildscript.bzl", "buildscript_run")
 load("@prelude//rust:cargo_package.bzl", "cargo")
+load("//buck2/rules:buildscript.bzl", "buildscript_run")
 """
 generated_file_header = """
 ##

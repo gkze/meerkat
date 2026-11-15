@@ -3,12 +3,16 @@
 Status: `//Tools/RemoteBuild:remote` is implemented (docs/building.md, "Building
 on another Mac"), and so is toolchain identity in action keys for Rust and C
 (fix 1 below; Python's version is outside the keys by decision, see
-[Python](#python)). Buck2 remote execution itself is evaluated here, not set
-up.
+[Python](#python)). Buck2 remote execution is implemented too, off unless a
+Mac's `.buckconfig.local` turns it on (docs/building.md, "Remote
+execution"), and was first run against NativeLink with two Mac workers
+([Remote execution, as built](#remote-execution-as-built)). The sections
+before that one are the evaluation it followed.
 
 Contents: [Question](#question) · [Remote builds](#remote-builds) ·
 [What actions reference](#what-actions-reference) ·
 [What remote execution would need](#what-remote-execution-would-need) ·
+[Remote execution, as built](#remote-execution-as-built) ·
 [Cache sharing](#cache-sharing) · [Effort](#effort) ·
 [Recommendation](#recommendation) · [Python](#python)
 
@@ -152,6 +156,57 @@ The work is in making actions safe to run and to share elsewhere:
    after a day of builds reached 17 GB), eviction, and a LaunchAgent on the
    host that serves it, on a private network without TLS or behind it.
 
+## Remote execution, as built
+
+`buck2/platforms/defs.bzl` builds the execution platform's executor from
+`[meerkat] remote_execution`: off, everything runs here; on, actions run
+remotely (limited hybrid: here only when they cannot run there), asking for
+a worker by `OSFamily`, `xcode_build` and `rust_release`. A second execution
+platform, never remote, takes the targets that name `LOCAL_EXECUTION` in
+`exec_compatible_with`.
+
+Running the debug app and daemon on NativeLink 1.8.5 (CAS, action cache,
+scheduler and an 18-slot worker on one Mac, a 10-slot worker on another)
+found what a single machine hides, each an input an action reads without
+declaring it, and each fixed where it is:
+
+- **A Swift package's C headers.** swift-nio's `CNIOAtomics` includes
+  `cpp_magic.h`, beside its sources, which only the unpacked archive had.
+  Each C target now has its whole directory as an input
+  (`buck2/third_party/swift/defs.bzl`).
+- **cranelift's build scripts.** cranelift-assembler-x64's records the
+  absolute paths of the files it generates, and cranelift-codegen's reads
+  them through cranelift-codegen-meta. Both run here
+  (`buck2/rules/buildscript.bzl`, `LOCAL_BUILD_SCRIPTS`), where the paths
+  stay valid; Reindeer generates every build script's target through it.
+- **Deno's extension sources.** deno_core 0.413 records each extension
+  file's absolute path when the crate compiles (`include_js_files!`, under
+  `CARGO_MANIFEST_DIR`, which the prelude makes absolute) and deno_snapshots'
+  build script reads them back; on a worker that path is the directory it
+  compiled in. Reindeer overlays, each a copy of the release's file with a
+  few lines changed, embed the files instead: deno_core's `extensions.rs`
+  (`mode=included`) and deno_runtime's `shared.rs` (`99_main.js`). Two more
+  keep lazy loading as it was: deno_runtime's `snapshot.rs` writes an
+  embedded lazy file under `OUT_DIR` so deno_snapshots still transpiles it
+  into the residual tables the runtime loads lazy modules from, and
+  deno_core's `extension_set.rs` leaves those files to that table, so a
+  worker does not transpile them again as it starts (it did, and rules took
+  longer to load than their 5 s limit allows under load). The debug daemon
+  grows by about 0.6 MB, and rule tests run as fast as without the
+  overlays. Keeping the crates
+  that record paths here instead does not work: a crate compiled here and
+  one compiled remotely see different builds of the same proc macros, which
+  rustc rejects, so every crate they depend on would have to stay here too.
+
+Two settings mattered on the service: macOS's default open-file limit for a
+LaunchAgent is too low for a build's uploads (raise `NumberOfFiles` and
+NativeLink's `max_open_files`), and a LaunchAgent with `ProcessType`
+`Background` is throttled enough that workers miss their keepalives. A
+worker runs actions with an empty environment, so it passes `PATH` and
+`HOME` through (`additional_environment`). A Mac with the application
+firewall on must allow NativeLink, or other Macs' connections are accepted
+and then never answered.
+
 ## Cache sharing
 
 A shared action cache without remote workers is the cheaper half: every Mac
@@ -182,15 +237,15 @@ Use `//Tools/RemoteBuild:remote` for bundles; it covers the need (cold
 builds off the Mac you work on) with no service to run, and its toolchain
 check keeps it honest.
 
-Do not stand up remote execution yet. The gains depend on the Swift
-compiles moving, which needs explicit module builds first, and on every
-worker having Xcode; until then RE spreads only Rust, which one build host
-already builds in one remote run. Fix 1, the step worth taking whichever
-way this goes, is done for Rust and C: local caching is correct across
-toolchain changes, and a shared cache would not mix toolchains. A
-cache-only NativeLink on a spare Mac (which needs no Xcode just to store)
-is the next step if every Mac should reuse the others' work for everyday
-builds and tests.
+Remote execution now builds the app and daemon (see
+[Remote execution, as built](#remote-execution-as-built)), and every
+worker needs Xcode. It spreads Rust, C and links over the workers, and
+their results over every Mac through the shared cache. The Swift compiles
+still run on the Mac running Buck until explicit module builds; a
+RemoteBuild run puts that Mac on the build host, next to the service. The
+Deno overlays are the cost: they must be carried, or dropped, with each
+deno_core and deno_runtime release (Sources/meerkat-runtime/deno.bzl pins
+them).
 
 ## Python
 

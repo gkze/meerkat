@@ -3,8 +3,8 @@
 ## Do not edit by hand: see reindeer.toml.
 ##
 
-load("@prelude//rust:cargo_buildscript.bzl", "buildscript_run")
 load("@prelude//rust:cargo_package.bzl", "cargo")
+load("//buck2/rules:buildscript.bzl", "buildscript_run")
 
 http_archive(
     name = "adler2-2.0.1.crate",
@@ -7318,6 +7318,10 @@ cargo.rust_library(
         "v8",
         "v8_use_custom_libcxx",
     ],
+    mapped_srcs = {
+        "fixups/deno_core/overlay/extension_set.rs": "deno_core-0.413.0.crate/extension_set.rs",
+        "fixups/deno_core/overlay/extensions.rs": "deno_core-0.413.0.crate/extensions.rs",
+    },
     named_deps = {
         "v8": ":deno_v8-0.5",
     },
@@ -9417,6 +9421,10 @@ cargo.rust_library(
         "snapshot",
         "transpile",
     ],
+    mapped_srcs = {
+        "fixups/deno_runtime/overlay/shared.rs": "deno_runtime-0.268.0.crate/shared.rs",
+        "fixups/deno_runtime/overlay/snapshot.rs": "deno_runtime-0.268.0.crate/snapshot.rs",
+    },
     visibility = [],
     deps = [
         ":async-trait-0.1",
