@@ -30,7 +30,7 @@ def _include(module: dict) -> str:
 def _subpaths(module: dict) -> list[str]:
     path = module["path"]
     if module["kind"] == "c":
-        own = [_include(module)] + [path + "/" + src for src in module["srcs"]]
+        own = [path, _include(module)] + [path + "/" + src for src in module["srcs"]]
         own += [_include(module) + "/" + header for header in module.get("headers", [])]
         return own + [path + "/" + search for search in module.get("header_search_paths", [])]
     return [path] + [path + "/" + resource["path"] for resource in module.get("resources", [])]
@@ -77,6 +77,12 @@ def spm_modules(modules: dict, traits: dict, minimum_macos: dict):
             flags = ["-I$(location {})".format(include)]
             flags += ["-I$(location {})".format(_subtarget(module, search)) for search in module.get("header_search_paths", [])]
             flags += ["-D" + define for define in module.get("c_defines", [])]
+            # The target's whole directory as an input: a source's quoted
+            # includes find headers beside it (swift-nio's `cpp_magic.h`),
+            # which, with only the sources and the public headers declared,
+            # exist where the package archive is unpacked but not on a
+            # remote execution worker.
+            flags.append("-iquote$(location {})".format(directory))
             native.cxx_library(
                 name = name + "-c",
                 srcs = [_c_source(name, module, src) for src in module["srcs"]],
