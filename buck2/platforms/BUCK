@@ -21,8 +21,16 @@ load(":defs.bzl", "HOSTS", "execution_platform")
 # serves debug and release targets alike.
 execution_platform(
     name = "exec",
+    local = ":release-local",
     platform = ":release",
     visibility = ["PUBLIC"],
+)
+
+# The build tools' platform, for actions that must not run remotely.
+platform(
+    name = "release-local",
+    constraint_values = ["//buck2/config:execution[local]"],
+    deps = [":release"],
 )
 
 # HOSTS, which the pinned tools' downloads (buck2/third_party/tools) and

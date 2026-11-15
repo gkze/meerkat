@@ -116,8 +116,8 @@ bundler. The tool:
 
 1. Stops unless the host has the same `buck2 --version`.
 2. Copies this checkout to the host (`rsync --delete`, without `buck-out`,
-   `.build`, `build`, `.buckd`, `.git`, `node_modules` and the host's own
-   `.buckconfig.local`). The directory there must be empty or hold the
+   `.build`, `build`, `.buckd`, `.git`, `.claude` (agents' worktrees),
+   `node_modules` and the host's own `.buckconfig.local`). The directory there must be empty or hold the
    `.meerkat-remote-build` file the first copy writes, so a mistyped
    `directory` stops the tool instead of being erased.
 3. Runs the toolchain tests there (`//buck2/rules:buck2_test`,
@@ -144,6 +144,36 @@ Macs, keeps the paths in debug info valid here. The parts link only system
 libraries, so they run here.
 [docs/design/remote-execution.md](design/remote-execution.md)
 compares this with Buck2 remote execution.
+
+### Remote execution
+
+Buck can also send actions to an REAPI service, such as
+[NativeLink](https://github.com/TraceMachina/nativelink), whose workers are
+Macs with the same toolchains. It is off unless a Mac's `.buckconfig.local`
+turns it on and names the service:
+
+```ini
+[meerkat]
+  remote_execution = true
+
+[buck2_re_client]
+  engine_address = grpc://build-mac:50051
+  action_cache_address = grpc://build-mac:50051
+  cas_address = grpc://build-mac:50051
+  tls = false
+
+[buck2]
+  digest_algorithms = SHA256
+```
+
+Actions then ask for a worker whose platform properties are `OSFamily`
+`Darwin`, `xcode_build` the `[swift] xcode_build` and `rust_release` the
+`[rust] release`, so each worker must advertise those values, and the
+scheduler must match them exactly. Actions that cannot run remotely run
+here: the Swift compiles (`local_only`, see the design note) and the build
+scripts `buck2/rules/buildscript.bzl` names. A worker runs each action with
+an empty environment, so it must pass `PATH` (rustup's proxies, Python 3.12
+or later) and `HOME` through to it.
 
 ## Previewing app changes
 

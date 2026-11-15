@@ -8,3 +8,12 @@ constraint(
     values = ["debug", "release"],
     visibility = ["PUBLIC"],
 )
+
+# Where an action may run once remote execution is on: anywhere, or only on
+# the Mac running Buck (buck2/platforms/defs.bzl, LOCAL_EXECUTION).
+constraint(
+    name = "execution",
+    default = "anywhere",
+    values = ["anywhere", "local"],
+    visibility = ["PUBLIC"],
+)
