@@ -1,0 +1,5 @@
+# overlay/ replaces two of the crate's files, as deno_core's overlay embeds
+# every extension's files (fixups/deno_core/overlay/extensions.rs says why):
+# shared.rs embeds the snapshot's entry point too, and snapshot.rs still puts
+# the embedded lazy files in deno_snapshots' residual tables.
+overlay = "overlay"

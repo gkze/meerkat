@@ -1,0 +1,6 @@
+# overlay/ replaces two of the crate's files: extensions.rs embeds Deno's
+# extensions' JavaScript instead of recording paths for the snapshot build to
+# read, which remote execution's per-action directories break (the file says
+# how), and extension_set.rs keeps a worker from transpiling the embedded
+# lazy files again as it starts.
+overlay = "overlay"
