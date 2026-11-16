@@ -35,7 +35,9 @@ hooks = [
   # Whitespace in the files no formatter covers (BUCK and .bzl files have
   # none). The generators write clean files, except UniFFI, whose bindings
   # //Sources/meerkat-runtime/bindgen:bindings_current holds to its output.
-  { id = "deny-pattern", name = "no trailing whitespace", alias = "trailing-whitespace", args = ['[ \t]+$'], types = ["text"], exclude = "^Sources/meerkat-runtime/(MeerkatRuntimeBindings|CMeerkatRuntime/include)/" },
+  # A unified diff marks a blank context line with a single space, which
+  # `patch` needs, so patches keep theirs.
+  { id = "deny-pattern", name = "no trailing whitespace", alias = "trailing-whitespace", args = ['[ \t]+$'], types = ["text"], exclude = '^Sources/meerkat-runtime/(MeerkatRuntimeBindings|CMeerkatRuntime/include)/|\.patch$' },
   { id = "deny-pattern", name = "a newline at the end", alias = "end-of-file", args = ["--multiline", '[^\n]\z'], types = ["text"], exclude = "^Sources/meerkat-runtime/(MeerkatRuntimeBindings|CMeerkatRuntime/include)/" },
 ]
 
