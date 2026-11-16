@@ -144,9 +144,12 @@ struct ListenerRepair {
         }
     }
 
-    /// The user turned the filter off or on: judge it afresh, but without
-    /// another restart, which Turn Off and On has just done more thoroughly.
-    mutating func userChanged() {
+    /// Something replaced what was judged: the user turned the filter off or
+    /// on, or macOS finished installing the bundled extension. Judge it
+    /// afresh, but without a second restart this launch: Turn Off and On has
+    /// just done more than a restart would, and a new extension gets the
+    /// restart only if the old one did not use it.
+    mutating func judgeAfresh() {
         silentSince = nil
         gaveUp = false
     }
@@ -168,6 +171,10 @@ final class NetworkFilterSetup: NSObject {
 
     private var awaited = ExtensionRequestWait()
     private var upgradeRequested = false
+    /// The launch-time upgrade until macOS says it is done. Until then the
+    /// filter that answers may be the old extension, so its completion
+    /// starts a fresh watch of the new one.
+    private var pendingUpgrade: OSSystemExtensionRequest?
     private var repair = ListenerRepair()
     private var watching: Task<Void, Never>?
     /// meerkatd's view of the filter; nil when meerkatd does not answer.
@@ -179,8 +186,9 @@ final class NetworkFilterSetup: NSObject {
     /// has not applied), which a session restart would not fix.
     static let watchLimit: Duration = .seconds(600)
 
-    /// An activation request whose outcome no one awaits: the launch-time
-    /// upgrade. Failures are logged by macOS and leave the running extension.
+    /// The launch-time upgrade: an activation request no caller awaits. Its
+    /// completion starts a fresh watch (`finish`); a failure is logged by
+    /// macOS and leaves the running extension.
     private static func upgrade(delegate: any OSSystemExtensionRequestDelegate) -> OSSystemExtensionRequest {
         let request = OSSystemExtensionRequest.activationRequest(
             forExtensionWithIdentifier: FilterService.extensionIdentifier, queue: .main)
@@ -216,17 +224,26 @@ final class NetworkFilterSetup: NSObject {
         // prompt (`actionForReplacingExtension`).
         if status == .on, !upgradeRequested {
             upgradeRequested = true
-            OSSystemExtensionManager.shared.submitRequest(Self.upgrade(delegate: self))
+            let request = Self.upgrade(delegate: self)
+            pendingUpgrade = request
+            OSSystemExtensionManager.shared.submitRequest(request)
         }
-        if status == .on, watching == nil {
-            watching = Task { [weak self] in await self?.watch() }
-        }
+        startWatching()
+    }
+
+    /// Watches while the filter is on, or reported silent: a check that
+    /// then finds it answering clears the report (`ListenerRepair` keeps the
+    /// one restart per launch either way).
+    private func startWatching() {
+        guard status == .on || status == .notAnswering, watching == nil else { return }
+        watching = Task { [weak self] in await self?.watch() }
     }
 
     /// Checks until the filter answers meerkatd, restarting its session once
     /// if it stays silent (`ListenerRepair`). Started by `refresh` whenever
-    /// the filter is on: at launch, which is when an upgrade swaps it, and
-    /// after Turn On.
+    /// the filter is on or reported silent (at launch, after Turn On, on
+    /// opening Settings) and again when the launch-time upgrade completes,
+    /// which is when macOS swaps the extension.
     private func watch() async {
         defer { watching = nil }
         let deadline = ContinuousClock.now + Self.watchLimit
@@ -237,6 +254,7 @@ final class NetworkFilterSetup: NSObject {
             let step = repair.next(filterOn: on, health: await health(), at: .now)
             switch step {
             case .done:
+                if status == .notAnswering { status = on ? .on : .off }
                 return
             case .wait:
                 break
@@ -300,7 +318,7 @@ final class NetworkFilterSetup: NSObject {
     private func change(_ work: @escaping @MainActor () async throws -> Void) async {
         busy = true
         defer { busy = false }
-        repair.userChanged()
+        repair.judgeAfresh()
         do {
             try await work()
             await refresh()
@@ -318,7 +336,14 @@ final class NetworkFilterSetup: NSObject {
     }
 
     private func finish(_ request: ObjectIdentifier, _ result: Result<Void, any Error>) {
-        awaited.finish(request, result)
+        if awaited.finish(request, result) { return }
+        guard let upgrade = pendingUpgrade, ObjectIdentifier(upgrade) == request else { return }
+        pendingUpgrade = nil
+        // A failed upgrade leaves the running extension, which the watch
+        // already judges; a completed one is a new extension to judge.
+        guard case .success = result else { return }
+        repair.judgeAfresh()
+        startWatching()
     }
 }
 

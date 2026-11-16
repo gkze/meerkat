@@ -97,6 +97,18 @@ struct ListenerRepairTests {
         #expect(repair.next(filterOn: true, health: silent, at: at(160)) == .restart)
     }
 
+    /// A filter reported silent that answers later, after the user fixed it
+    /// in System Settings, say, is reported answering again.
+    @Test func anAnswerAfterGivingUpClearsTheReport() {
+        var repair = ListenerRepair()
+        _ = repair.next(filterOn: true, health: silent, at: at(0))
+        _ = repair.next(filterOn: true, health: silent, at: at(90))
+        #expect(repair.next(filterOn: true, health: silent, at: at(180)) == .giveUp)
+        #expect(repair.next(filterOn: true, health: .answering, at: at(300)) == .done)
+        #expect(!repair.gaveUp)
+        #expect(repair.restarted)
+    }
+
     /// meerkatd not answering says nothing about the filter.
     @Test func noWordFromMeerkatdKeepsWaitingWithoutCounting() {
         var repair = ListenerRepair()
@@ -111,14 +123,14 @@ struct ListenerRepairTests {
         #expect(repair.next(filterOn: true, health: unsigned, at: at(0)) == .done)
     }
 
-    /// After Turn Off and On the filter is judged afresh, without a second
-    /// automatic restart.
-    @Test func aUserChangeClearsTheReportButNotTheRestart() {
+    /// After Turn Off and On, or a completed upgrade, the filter is judged
+    /// afresh, without a second automatic restart.
+    @Test func judgingAfreshClearsTheReportButNotTheRestart() {
         var repair = ListenerRepair()
         _ = repair.next(filterOn: true, health: silent, at: at(0))
         _ = repair.next(filterOn: true, health: silent, at: at(90))
         _ = repair.next(filterOn: true, health: silent, at: at(180))
-        repair.userChanged()
+        repair.judgeAfresh()
         #expect(!repair.gaveUp)
         #expect(repair.next(filterOn: true, health: silent, at: at(200)) == .wait)
         #expect(repair.next(filterOn: true, health: silent, at: at(290)) == .giveUp)
