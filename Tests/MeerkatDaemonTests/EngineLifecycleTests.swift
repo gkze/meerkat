@@ -127,6 +127,12 @@ struct EngineLifecycleTests {
         #expect(try await eventually { try messages().contains { $0.hasPrefix("refused") || $0 == "ran" } })
         let seen = try messages()
         #expect(seen.contains("refused: the rule that asked for this was disabled or reloaded"), "\(seen)")
+        // The engine cannot tell the app's toggle from the CLI, so the
+        // reason names neither as the cause, only how to turn it back on.
+        #expect(
+            seen.contains(
+                "disabled: turned off by hand; turn it on in Meerkat › Rules or with meerkat rules enable queued.ts#queued"
+            ), "\(seen)")
         #expect(try store.value(rule: "queued.ts#queued", key: "after") == nil)
         await fixture.cleanup()
     }

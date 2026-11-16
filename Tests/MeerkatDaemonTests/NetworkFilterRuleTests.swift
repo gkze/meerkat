@@ -16,7 +16,7 @@ final class SwitchedFilter: NetworkFilterReading {
     let instance = UUID()
 
     func totals(wantsHosts _: Bool) throws(NetworkFilterUnavailable) -> FilterSnapshot {
-        guard on.withLock({ $0 }) else { throw .off }
+        guard on.withLock({ $0 }) else { throw .notAnswering }
         return FilterSnapshot(
             instance: instance, build: "b",
             snapshot: FlowLedger.Snapshot(processes: [:], hosts: [:], counters: LedgerCounters()), openFlows: 0)

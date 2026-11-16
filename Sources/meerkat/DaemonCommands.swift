@@ -133,6 +133,13 @@ struct Status: AsyncParsableCommand, JSONOutput {
         case .off: output.add("mcp http    off")
         case .failed: output.add("mcp http    failed: \(http.problem ?? "")")
         }
+        let filter = status.networkFilter
+        switch filter.cause {
+        case nil: output.add("network     answering")
+        case .notAnswering: output.add("network     not answering: \(filter.problem ?? "")")
+        case .refused: output.add("network     refused: \(filter.problem ?? "")")
+        case .unreachable: output.add("network     unreachable: \(filter.problem ?? "")")
+        }
         let host = status.handlerHost
         output.add(
             "host        \(host.state.rawValue)  workers \(host.workers)  restarts \(host.restarts)"

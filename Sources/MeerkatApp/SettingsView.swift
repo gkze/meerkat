@@ -161,7 +161,7 @@ private struct NetworkFilterSection: View {
             switch setup.status {
             case .off, .failed:
                 Button("Turn On…") { Task { await setup.turnOn() } }.disabled(setup.busy)
-            case .on:
+            case .on, .notAnswering:
                 // Ending the filter's session fails the connections it is
                 // counting (measured on macOS 27), so ask first.
                 Button("Turn Off") { confirmingTurnOff = true }.disabled(setup.busy)

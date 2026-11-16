@@ -217,7 +217,7 @@ extension ProcessDelta: SchemaDescribed {
                 .optional(
                     "networkInMB", Double.self,
                     doc:
-                        "Received over the network during the window, every user's processes included; absent while the network filter is off (Meerkat › Settings › Network)."
+                        "Received over the network during the window, every user's processes included; absent while the network filter is off (Meerkat › Settings › General › Network)."
                 ),
                 .optional(
                     "networkOutMB", Double.self,
@@ -400,7 +400,7 @@ struct HotProcessDetector: Sendable {
 public enum ProcessHotEvent: EventKind {
     public static let descriptor = EventDescriptor(
         "process.hot",
-        "A process's CPU, disk, memory, energy or network use stayed above a threshold (phase \"started\"), or stopped doing so (\"ended\"). Processes owned by other users report CPU and network only. The network metrics need the network filter (Meerkat › Settings › Network); without it a subscription to one is refused.",
+        "A process's CPU, disk, memory, energy or network use stayed above a threshold (phase \"started\"), or stopped doing so (\"ended\"). Processes owned by other users report CPU and network only. The network metrics need the network filter (Meerkat › Settings › General › Network); without it a subscription to one is refused.",
         mechanism: .derived, semantics: .occurrence, loss: .lossy,
         observation: .processes,
         source: "proc_pid_rusage, ps (other users' CPU time), the network filter (network metrics)"

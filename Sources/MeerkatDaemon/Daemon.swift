@@ -137,7 +137,10 @@ public final class Daemon: Sendable {
                 sources: hub.statistics(),
                 rules: report.rules,
                 configuration: settings.status,
-                mcpHTTP: await mcpHTTP.status
+                mcpHTTP: await mcpHTTP.status,
+                // The samplers' last read when recent; otherwise one small
+                // read, at most every 10 s (`NetworkFilterClient.reachability`).
+                networkFilter: NetworkFilterHealth(hub.environment.networkFilter.reachability(within: .seconds(10)))
             )
         }
         let mcp = MCPService(

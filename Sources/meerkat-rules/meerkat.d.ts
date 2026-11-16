@@ -145,7 +145,7 @@ declare module "meerkat" {
     /** Unix epoch milliseconds. */
     startedAt: number;
     uid: number;
-    /** Received over the network during the window, every user's processes included; absent while the network filter is off (Meerkat › Settings › Network). */
+    /** Received over the network during the window, every user's processes included; absent while the network filter is off (Meerkat › Settings › General › Network). */
     networkInMB?: number;
     /** Sent over the network during the window; absent while the network filter is off. */
     networkOutMB?: number;
@@ -974,7 +974,7 @@ declare module "meerkat" {
     "disk.sample": DiskSample;
     /** Bytes and packets per second on each network interface over the last interval, with totals over physical interfaces. The first sample arrives one interval after subscribing. Which processes or hosts the traffic belongs to is not reported. (poll, state, loss: lossy; sysctl NET_RT_IFLIST2 (if_data64)) */
     "network.sample": NetworkSample;
-    /** Each process's bytes received and sent per remote host over the last interval, largest first, every user's processes included. Needs the network filter (Meerkat › Settings › Network); without it a subscription is refused. The first window after subscribing, or after the filter restarts, is not reported. No contents are read. (poll, occurrence, loss: lossy, rules need `capabilities: { observe: { allow: ["network.flows"] } }`; the network filter (NetworkExtension content filter statistics)) */
+    /** Each process's bytes received and sent per remote host over the last interval, largest first. Only your own user's processes unless the rule also declares `capabilities: { process: { observe: "all" } }`, which root daemons and other users' processes need. Needs the network filter (Meerkat › Settings › General › Network); without it a subscription is refused. The first window after subscribing, or after the filter restarts, is not reported. No contents are read. (poll, occurrence, loss: lossy, rules need `capabilities: { observe: { allow: ["network.flows"] } }`; the network filter (NetworkExtension content filter statistics)) */
     "network.flows": NetworkFlows;
     /** A new process appeared, any user's. Found by rescanning the process table on every observed fork (at most every 50 ms) and every 2 s; a process that starts and exits between two scans is never reported. (push, occurrence, loss: lossy, rules need `capabilities: { process: { observe: "own" } }`; kqueue EVFILT_PROC NOTE_FORK, sysctl KERN_PROC_ALL) */
     "process.spawned": ProcessSpawned;
@@ -982,7 +982,7 @@ declare module "meerkat" {
     "process.exited": ProcessExited;
     /** A process replaced its executable image (exec). Same pid and start time, new path and name. (push, occurrence, loss: none, rules need `capabilities: { process: { observe: "own" } }`; kqueue EVFILT_PROC NOTE_EXEC) */
     "process.exec": ProcessExec;
-    /** A process's CPU, disk, memory, energy or network use stayed above a threshold (phase "started"), or stopped doing so ("ended"). Processes owned by other users report CPU and network only. The network metrics need the network filter (Meerkat › Settings › Network); without it a subscription to one is refused. (derived, occurrence, loss: lossy, rules need `capabilities: { process: { observe: "own" } }`; proc_pid_rusage, ps (other users' CPU time), the network filter (network metrics)) */
+    /** A process's CPU, disk, memory, energy or network use stayed above a threshold (phase "started"), or stopped doing so ("ended"). Processes owned by other users report CPU and network only. The network metrics need the network filter (Meerkat › Settings › General › Network); without it a subscription to one is refused. (derived, occurrence, loss: lossy, rules need `capabilities: { process: { observe: "own" } }`; proc_pid_rusage, ps (other users' CPU time), the network filter (network metrics)) */
     "process.hot": ProcessHot;
     /** The busiest processes by CPU and by disk I/O, optionally the largest by memory, with machine-wide disk rates. The first event arrives after one ranking interval. (poll, state, loss: lossy, rules need `capabilities: { process: { observe: "own" } }`; proc_pid_rusage, ps (other users' CPU time)) */
     "process.top": ProcessTop;
