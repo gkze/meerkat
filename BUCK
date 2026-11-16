@@ -243,12 +243,63 @@ command(
 )
 
 # prek.toml's file checks (conflict markers, large and case-clashing files,
-# shebangs, JSON and YAML syntax, line endings, whitespace) over every
-# tracked file: the pre-commit hook runs them over the staged ones. A
-# malformed prek.toml fails here too.
+# shebangs, JSON and YAML syntax, line endings, whitespace) over every file,
+# tracked or new and not ignored, generated ones too: the pre-commit hook
+# runs them over the staged ones. Not `prek run --all-files`, which reads
+# only tracked files, so a new file would pass here and fail once committed.
+# A malformed prek.toml fails here too.
+_HYGIENE = over_files([tool("prek"), "run", "--hook-stage", "manual", "--files"], ["."], generated = True)
+
 command_test(
     name = "hygiene",
-    command = [tool("prek"), "run", "--all-files", "--hook-stage", "manual"],
+    command = _HYGIENE,
+    labels = ["lint", "portable"],
+)
+
+# :hygiene's command, run in a repository of its own with this prek.toml,
+# fails on a new file with trailing whitespace, passes once the whitespace
+# is gone, and reads no ignored file. Buck's paths (prek's) are relative to
+# this repository, so they are made absolute before the command runs there.
+# Git's variables, which a hook may have left to the buck2 daemon, would aim
+# the test's commit at this repository, and a user's hooks or signing at
+# the commit itself, so neither applies.
+command_test(
+    name = "hygiene_new_files_test",
+    command = [
+        "/bin/bash",
+        "-c",
+        r"""
+        command=()
+        for arg; do
+            if [[ $arg == buck-out/* ]]; then arg=$PWD/$arg; fi
+            command+=("$arg")
+        done
+        unset "${!GIT_@}"
+        repo=`mktemp -d` || exit 1
+        trap 'rm -rf "$repo"' EXIT
+        cp prek.toml "$repo/" || exit 1
+        cd "$repo" || exit 1
+        git init -q && printf 'ignored.txt\n' > .gitignore && git add prek.toml .gitignore &&
+            git -c core.hooksPath=/dev/null -c commit.gpgSign=false -c user.name=test \
+                -c user.email=test@example.invalid commit -q -m base || exit 1
+        printf 'ignored  \n' > ignored.txt
+        printf 'new  \n' > new.txt
+        if output=`"${command[@]}" 2>&1`; then
+            echo "a new file with trailing whitespace passed :hygiene" >&2
+            exit 1
+        fi
+        if [[ $output != *new.txt* ]]; then
+            printf ':hygiene failed without naming the new file:\n%s\n' "$output" >&2
+            exit 1
+        fi
+        printf 'new\n' > new.txt
+        if ! output=`"${command[@]}" 2>&1`; then
+            printf ':hygiene failed with only an ignored file at fault:\n%s\n' "$output" >&2
+            exit 1
+        fi
+        """,
+        "hygiene_new_files_test",
+    ] + _HYGIENE,
     labels = ["lint", "portable"],
 )
 

@@ -68,7 +68,7 @@ def swift_format_test(name: str, srcs: list):
 # The files a generator writes, each with the target that rewrites it
 # (`buck2 run`), in the order //:fix runs those. They are their generator's
 # to format: no `over_files` check or fixer reads them, whatever its
-# pathspecs. AGENTS.md's table ("Generated files") lists the same files,
+# pathspecs, but //:hygiene, which holds every file to prek.toml. AGENTS.md's table ("Generated files") lists the same files,
 # which //:generated_files_test checks; a `checked_in_copy` must be here.
 GENERATED = {
     "Sources/meerkat-runtime/CMeerkatRuntime/include/meerkat_runtime.h": "//Sources/meerkat-runtime/bindgen:regenerate",
@@ -93,8 +93,9 @@ def regenerators() -> list[str]:
 
 # Runs a command with the repository's files appended: those git's
 # `pathspecs` match, tracked or new and not ignored, that exist, less
-# GENERATED. A Buck glob stops at package boundaries, and these checks read
-# every package's files.
+# GENERATED unless `generated`. A Buck glob stops at package boundaries, and
+# these checks read every package's files. New files count so that a tree
+# which passes them passes them again once those files are committed.
 # `keep`, when given, is a command that prints the ones to keep, one per
 # line (//:BUCK's shell-script filter). Every pathspec here names files the
 # repository has, so a listing git or `keep` fails, or one that comes back
@@ -133,10 +134,11 @@ fi
 exec "${command[@]}" "${files[@]}"
 """
 
-def over_files(command: list, pathspecs: list[str], keep: list = []) -> list:
-    """`command` over the files `pathspecs` match (see _OVER_FILES). Each
-    element of `command` and `keep` must be one argument."""
-    excludes = [":(exclude)" + path for path in GENERATED]
+def over_files(command: list, pathspecs: list[str], keep: list = [], generated: bool = False) -> list:
+    """`command` over the files `pathspecs` match (see _OVER_FILES), with
+    GENERATED's among them when `generated`. Each element of `command` and
+    `keep` must be one argument."""
+    excludes = [] if generated else [":(exclude)" + path for path in GENERATED]
     return ["/bin/bash", "-c", _OVER_FILES, "over_files", str(len(keep))] + keep + [str(len(command))] + command + pathspecs + excludes
 
 def files_test(name: str, command: list, pathspecs: list[str], keep: list = [], labels: list[str] = ["lint"]):

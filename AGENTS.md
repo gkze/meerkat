@@ -49,8 +49,8 @@ sees, and say so if you couldn't.
 
 Change the authority, not the output. A check fails when one is stale. `buck2 run
 //:fix` regenerates them all. `GENERATED` in `buck2/rules/check.bzl` names each
-file with the target that rewrites it. No `over_files` check or fixer reads them
-(`:hygiene` and `:gitleaks` do); `//:generated_files_test` fails when it and this
+file with the target that rewrites it. No check or fixer reads them but
+`:hygiene` and `:gitleaks`; `//:generated_files_test` fails when it and this
 table list different files.
 
 | File | From | Stale when |

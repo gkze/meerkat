@@ -42,15 +42,22 @@ Changing a version means a new digest for each asset.
 | Markdown | rumdl, with [.rumdl.toml](../.rumdl.toml) (`:markdown-lint`); lychee, offline, for links to files and headings (`:markdown-links`) |
 | Rust dependencies | cargo-deny with [deny.toml](../buck2/third_party/rust/check/deny.toml): licenses, bans and sources (`//buck2/third_party/rust/check:deny_test`), RustSec advisories (`:advisories_test`) |
 | Every commit | gitleaks, for secrets, findings redacted (`:gitleaks`); a false positive goes in `.gitleaksignore` by its fingerprint |
-| Every tracked file | prek's file checks from [prek.toml](../prek.toml): conflict markers, case-clashing files, shebangs, JSON, JSONC and YAML syntax, line endings, trailing whitespace, a final newline (`:hygiene`) |
+| Every file | prek's file checks from [prek.toml](../prek.toml): conflict markers, case-clashing files, shebangs, JSON, JSONC and YAML syntax, line endings, trailing whitespace, a final newline (`:hygiene`) |
 
 Generated files (`GENERATED` in [buck2/rules/check.bzl](../buck2/rules/check.bzl),
 the ones [AGENTS.md](../AGENTS.md#generated-files) lists, which
 `:generated_files_test` holds to it) are left to their generators: no
-`over_files` check or fixer reads them, and `//Sources/meerkat-rules:oxfmt-ignores`
+other check or fixer reads them, and `//Sources/meerkat-rules:oxfmt-ignores`
 fails when `.oxfmtrc.json` would let Oxfmt format one. `:hygiene` and
 `:gitleaks` do read them. `buck2 run //:fix` runs each regenerating target
 `GENERATED` names.
+
+The checks over the repository's files (`over_files` in
+[buck2/rules/check.bzl](../buck2/rules/check.bzl), `:hygiene` among them)
+read the files Git tracks and the new ones it does not ignore, as they are
+in the working tree: a new file fails them before it is committed, not
+after. `:hygiene_new_files_test` holds `:hygiene` to that, in a repository
+of its own.
 `:advisories_test` reads the advisory database as it is when it runs, so it
 can fail on a tree that has not changed; the other checks
 change only with the repository. The cargo-deny checks, like
