@@ -55,7 +55,7 @@ Notifications. If macOS has it turned off, `notify` fails and says so; turn
 on Meerkat there.
 
 Which processes use the network, and how much, comes from an optional network
-filter you turn on in Meerkat › Settings › Network. It is a system extension
+filter you turn on in Meerkat › Settings › General › Network. It is a system extension
 that allows all traffic and reads none of it; it needs Meerkat in
 `/Applications` ([how it works](docs/design/network-filter.md)).
 
@@ -81,7 +81,8 @@ Developer ID and notarized by Apple.
    for a privacy permission only when a rule subscribes to an event that
    needs one ([Events that need a permission](docs/rules.md#events-that-need-a-permission)).
 
-To upgrade, quit the app, replace `Meerkat.app`, open it once, then run
+To upgrade, quit the app, replace `Meerkat.app`, open it once (which also
+updates the network filter, if it is on), then run
 `meerkat agent install` again: registering again restarts the daemon from
 the new bundle ([Managing the agent](docs/cli.md#managing-the-agent)). Opening the app
 first lets macOS record the new build's signature; without it, launchd can

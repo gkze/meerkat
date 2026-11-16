@@ -345,7 +345,8 @@ struct OutputContractTests {
                 DaemonStatus(
                     version: "test", pid: 1, startedAt: 0, executablePath: "/x", rulesDirectory: "/r",
                     handlerHost: HandlerHostStatus(state: .idle, workers: 0, restarts: 0, lastExit: nil),
-                    sources: [], rules: [], configuration: configuration, mcpHTTP: http)
+                    sources: [], rules: [], configuration: configuration, mcpHTTP: http,
+                    networkFilter: .answering)
             ).lines
         }
         let listening = lines(
@@ -404,6 +405,25 @@ struct OutputContractTests {
         #expect(Set(typed) == Self.alwaysJSON)
     }
 
+    /// The network filter's line carries meerkatd's reason, remedy included.
+    @Test func statusShowsWhetherTheNetworkFilterAnswers() {
+        let configuration = ConfigurationStatus(
+            file: "/r/meerkat.json", source: .defaults, effective: .init(), problem: nil, appliedAt: 0)
+        func lines(_ filter: NetworkFilterHealth) -> [String] {
+            Status.output(
+                DaemonStatus(
+                    version: "test", pid: 1, startedAt: 0, executablePath: "/x", rulesDirectory: "/r",
+                    handlerHost: HandlerHostStatus(state: .idle, workers: 0, restarts: 0, lastExit: nil),
+                    sources: [], rules: [], configuration: configuration, mcpHTTP: .off, networkFilter: filter)
+            ).lines
+        }
+        #expect(lines(.answering).contains("network     answering"))
+        let silent = NetworkFilterHealth(NetworkFilterUnavailable.notAnswering)
+        #expect(lines(silent).contains("network     not answering: \(NetworkFilterUnavailable.notAnswering.reason)"))
+        let refused = NetworkFilterHealth(cause: .refused, problem: "another build")
+        #expect(lines(refused).contains("network     refused: another build"))
+    }
+
     /// A configuration that doesn't apply says why on a line of its own,
     /// not after an escaped newline.
     @Test func statusShowsTheConfigurationProblemOnItsOwnLine() throws {
@@ -412,7 +432,7 @@ struct OutputContractTests {
         let status = DaemonStatus(
             version: "test", pid: 1, startedAt: 0, executablePath: "/x", rulesDirectory: "/r",
             handlerHost: HandlerHostStatus(state: .idle, workers: 0, restarts: 0, lastExit: nil), sources: [],
-            rules: [], configuration: configuration, mcpHTTP: .off)
+            rules: [], configuration: configuration, mcpHTTP: .off, networkFilter: .answering)
         let lines = Status.output(status).lines
         let config = try #require(lines.firstIndex { $0.hasPrefix("config ") })
         #expect(lines[config].contains("last good version"))

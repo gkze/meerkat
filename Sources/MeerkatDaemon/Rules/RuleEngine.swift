@@ -561,7 +561,11 @@ actor RuleEngine {
             rule.reset()
             subscribe(rule)
         } else if disabled[id] == nil {
-            disable(rule, reason: "disabled with meerkat rules disable")
+            // The request does not say whether the app or the CLI sent it,
+            // so the reason names neither as the cause, only both remedies.
+            disable(
+                rule,
+                reason: "turned off by hand; turn it on in Meerkat › Rules or with meerkat rules enable \(id)")
         }
     }
 

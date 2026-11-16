@@ -74,7 +74,7 @@ public final class FilterState: Sendable {
     /// `reply(to:)` at monotonic time `now` (seconds since start).
     func reply(to request: FilterRequest, at now: Double) -> FilterReply {
         guard request.build == build else {
-            return .refused("the network filter is build \(build), meerkatd build \(request.build)")
+            return .refused(FilterSnapshot.Invalid.otherBuild(extension: build, daemon: request.build).description)
         }
         let (snapshot, openFlows) = state.withLock { state in
             state.lease.request(wantsHosts: request.wantsHosts, at: now)

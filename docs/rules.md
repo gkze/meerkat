@@ -115,10 +115,13 @@ not load, and the message names the grant to add:
 | Ambient state about this Mac: memory, CPU, power, displays, volumes, devices, the network's state, time, … | none |
 | `fs.change`, `fs.churn` | `fs: { read: [...] }` covering every watched path; nothing at, inside or above the daemon's state folder |
 | `process.*`, `app.*` | `process: { observe: "own" }` for your own processes, `"all"` for every user's |
-| `window.focused`, `input.activity`, `pasteboard.changed`, `camera.inUse`, `audio.inUse`, `network.wifi`, `bluetooth.devices`, `session.logins`, `log.entry`, `darwin.notification`, `distributed.notification`, `iokit.*`, `power.assertions` | `observe: { allow: ["window.focused", ...] }`, naming each |
+| `window.focused`, `input.activity`, `pasteboard.changed`, `camera.inUse`, `audio.inUse`, `network.wifi`, `network.flows`, `bluetooth.devices`, `session.logins`, `log.entry`, `darwin.notification`, `distributed.notification`, `iokit.*`, `power.assertions` | `observe: { allow: ["window.focused", ...] }`, naming each |
 
 With `"own"`, events about other users' processes never reach the rule, and
-their rows are left out of `process.top` and `process.list`. `fs.churn` without a `root`
+their rows are left out of `process.top` and `process.list`. The same holds
+for `network.flows`, whose grant is `observe.allow`: without `process: {
+observe: "all" }` as well, it lists only your own processes' flows, so root
+daemons are missing. `fs.churn` without a `root`
 measures `meerkat.json`'s `files` scope: if an edit moves it outside the
 grant, the rule fails and says why, and resumes when it fits again. A
 `meerkat.rule` status, a `meerkat.dropped` report and a `meerkat.notification`

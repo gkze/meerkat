@@ -143,15 +143,18 @@ public struct DaemonStatus: Codable, Sendable, Equatable {
     public let configuration: ConfigurationStatus
     /// The MCP HTTP listener, without its token.
     public let mcpHTTP: MCPHTTPStatus
+    /// Whether the network filter answered meerkatd as the status was made.
+    public let networkFilter: NetworkFilterHealth
 
     public init(
         version: String, pid: Int32, startedAt: Double, executablePath: String,
         rulesDirectory: String, handlerHost: HandlerHostStatus,
         sources: [SourceStatistics], rules: [RuleSummary], configuration: ConfigurationStatus,
-        mcpHTTP: MCPHTTPStatus
+        mcpHTTP: MCPHTTPStatus, networkFilter: NetworkFilterHealth
     ) {
         self.configuration = configuration
         self.mcpHTTP = mcpHTTP
+        self.networkFilter = networkFilter
         self.version = version
         self.pid = pid
         self.startedAt = startedAt
@@ -191,6 +194,34 @@ public struct MCPHTTPStatus: Codable, Sendable, Equatable {
     }
 
     public static let off = MCPHTTPStatus(state: .off, url: nil, problem: nil, clients: 0)
+}
+
+/// The network filter as meerkatd sees it: answering, or why not. The app
+/// joins this with the content filter's configuration, which only it can
+/// read, to tell a filter that is off from one that is on and not listening
+/// (docs/design/network-filter.md, "Failure").
+public struct NetworkFilterHealth: Codable, Sendable, Equatable {
+    /// nil while it answers.
+    public let cause: NetworkFilterUnavailable.Cause?
+    public let problem: String?
+
+    public static let answering = NetworkFilterHealth(cause: nil, problem: nil)
+
+    public init(cause: NetworkFilterUnavailable.Cause?, problem: String?) {
+        self.cause = cause
+        self.problem = problem
+    }
+
+    public init(_ unavailable: NetworkFilterUnavailable) {
+        self.init(cause: unavailable.cause, problem: unavailable.reason)
+    }
+
+    public init(_ reachability: Result<Void, NetworkFilterUnavailable>) {
+        switch reachability {
+        case .success: self = .answering
+        case .failure(let unavailable): self.init(unavailable)
+        }
+    }
 }
 
 /// What an MCP client needs to reach the HTTP listener: `meerkat mcp http`.

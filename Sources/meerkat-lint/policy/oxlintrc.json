@@ -37,6 +37,11 @@
     "import/group-exports": "off",
     // Oxfmt's sortImports owns import order.
     "eslint/sort-imports": "off",
+    // A type from a module beside its values is a second, top-level
+    // `import type { X } from "meerkat"`: consistent-type-specifier-style
+    // rejects the inline `type X`, and consistent-type-imports both
+    // `import("meerkat").X` and a value import used only as a type.
+    "eslint/no-duplicate-imports": ["error", { "allowSeparateTypeImports": true }],
 
     // Bans on language features the es2024 target has, not on mistakes.
     "eslint/no-ternary": "off",
@@ -48,6 +53,10 @@
     // field under exactOptionalPropertyTypes.
     "eslint/no-undefined": "off",
     "unicorn/no-null": "off",
+    // So `return undefined;` is how a function typed `T | undefined` ends
+    // without a value: a bare `return;` beside `return value;` fails
+    // consistent-return, which stays on.
+    "unicorn/no-useless-undefined": "off",
 
     // Key order in rule definitions is written for reading (name, on,
     // params, match, handle), not sorted.

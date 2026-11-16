@@ -1,4 +1,6 @@
 import Foundation
+import MeerkatIPC
+import MeerkatKit
 import MeerkatNetworkFilter
 import NetworkExtension
 import Observation
@@ -16,6 +18,9 @@ enum NetworkFilterStatus: Equatable {
     /// Waiting for the user to allow the extension in System Settings.
     case awaitingApproval
     case on
+    /// On, but not answering meerkatd after Meerkat restarted its session
+    /// once (`ListenerRepair`).
+    case notAnswering
     case failed(String)
 
     /// Decides from the app's own facts; `filterEnabled` is the saved
@@ -33,6 +38,7 @@ enum NetworkFilterStatus: Equatable {
         case .off: "Off"
         case .awaitingApproval: "Waiting for your approval"
         case .on: "On"
+        case .notAnswering: "On, but not answering"
         case .failed: "Could not change"
         }
     }
@@ -49,6 +55,8 @@ enum NetworkFilterStatus: Equatable {
             "Allow Meerkat's extension in System Settings › General › Login Items & Extensions › Network Extensions, then allow the content filter when macOS asks."
         case .on:
             "Meerkat counts each process's network bytes, and each process's hosts while a rule observes network.flows."
+        case .notAnswering:
+            "The filter is on, but meerkatd cannot read it. This can happen when macOS replaces it with a newer build. Meerkat restarted it once, and it still does not answer. Turn it off and on again here; if that does not help, restart the Mac."
         case .failed(let reason): reason
         }
     }
@@ -76,6 +84,80 @@ struct ExtensionRequestWait {
     }
 }
 
+/// What to do about a filter that is on and does not answer meerkatd,
+/// decided from successive checks (docs/design/network-filter.md,
+/// "Failure"). When macOS replaces the extension in place, the new launchd
+/// job can come up without the Mach service the Info.plist names (seen on
+/// macOS 27: 18→21, 30→17), and the extension's listener then never
+/// activates. Ending and restarting the content filter's session once may
+/// bring the job back with its service; if it does not, the user is told
+/// what does (Turn Off and On, or a restart).
+///
+/// `grace` covers a healthy swap: the extension retries its listener for up
+/// to 30 s, and meerkatd waits 30 s after a failed read before asking again.
+struct ListenerRepair {
+    enum Step: Equatable {
+        /// Nothing to watch: the filter answers, is off, or meerkatd can
+        /// never reach it.
+        case done
+        case wait
+        /// Restart the content filter's session.
+        case restart
+        /// Restarted once, still silent: tell the user.
+        case giveUp
+    }
+
+    static let grace: Duration = .seconds(90)
+
+    private var silentSince: ContinuousClock.Instant?
+    /// At most once per launch: a restart ends the connections attached to
+    /// the filter's session, so it is not repeated on a filter it did not
+    /// fix.
+    private(set) var restarted = false
+    private(set) var gaveUp = false
+
+    /// `health` is meerkatd's view, nil when meerkatd did not answer.
+    mutating func next(filterOn: Bool, health: NetworkFilterHealth?, at now: ContinuousClock.Instant) -> Step {
+        guard filterOn else { return settled() }
+        guard let health else { return .wait }
+        switch health.cause {
+        case nil, .unreachable:
+            return settled()
+        case .refused:
+            // Another build's extension, which the launch-time upgrade
+            // replaces: answering, so not this failure.
+            silentSince = nil
+            return .wait
+        case .notAnswering:
+            guard let since = silentSince else {
+                silentSince = now
+                return .wait
+            }
+            guard now - since >= Self.grace else { return .wait }
+            if restarted {
+                gaveUp = true
+                return .giveUp
+            }
+            restarted = true
+            silentSince = now
+            return .restart
+        }
+    }
+
+    /// The user turned the filter off or on: judge it afresh, but without
+    /// another restart, which Turn Off and On has just done more thoroughly.
+    mutating func userChanged() {
+        silentSince = nil
+        gaveUp = false
+    }
+
+    private mutating func settled() -> Step {
+        silentSince = nil
+        gaveUp = false
+        return .done
+    }
+}
+
 /// Installs and configures the network filter, the two steps only the app
 /// can take: activating the system extension, and saving and enabling the
 /// content filter that names it. Turning it off reverses both.
@@ -86,6 +168,16 @@ final class NetworkFilterSetup: NSObject {
 
     private var awaited = ExtensionRequestWait()
     private var upgradeRequested = false
+    private var repair = ListenerRepair()
+    private var watching: Task<Void, Never>?
+    /// meerkatd's view of the filter; nil when meerkatd does not answer.
+    private let health: @Sendable () async -> NetworkFilterHealth?
+
+    static let checkInterval: Duration = .seconds(15)
+    /// Past a restart's two graces with room to spare. A watch still going
+    /// then is waiting on something else (meerkatd down, an upgrade macOS
+    /// has not applied), which a session restart would not fix.
+    static let watchLimit: Duration = .seconds(600)
 
     /// An activation request whose outcome no one awaits: the launch-time
     /// upgrade. Failures are logged by macOS and leave the running extension.
@@ -96,7 +188,8 @@ final class NetworkFilterSetup: NSObject {
         return request
     }
 
-    override init() {
+    init(health: @escaping @Sendable () async -> NetworkFilterHealth?) {
+        self.health = health
         status = Self.bundled ? .off : .notInThisBuild
         super.init()
     }
@@ -116,6 +209,7 @@ final class NetworkFilterSetup: NSObject {
                 manager.providerConfiguration == nil ? nil : manager.isEnabled
             } ?? nil
         status = NetworkFilterStatus.of(bundled: Self.bundled, appPath: Bundle.main.bundlePath, filterEnabled: enabled)
+        if status == .on, repair.gaveUp { status = .notAnswering }
         // A newer Meerkat carries a newer extension, which macOS installs only
         // when the app asks again: with the filter on, ask once per launch.
         // The same version is a no-op; a newer one replaces the old without a
@@ -124,6 +218,55 @@ final class NetworkFilterSetup: NSObject {
             upgradeRequested = true
             OSSystemExtensionManager.shared.submitRequest(Self.upgrade(delegate: self))
         }
+        if status == .on, watching == nil {
+            watching = Task { [weak self] in await self?.watch() }
+        }
+    }
+
+    /// Checks until the filter answers meerkatd, restarting its session once
+    /// if it stays silent (`ListenerRepair`). Started by `refresh` whenever
+    /// the filter is on: at launch, which is when an upgrade swaps it, and
+    /// after Turn On.
+    private func watch() async {
+        defer { watching = nil }
+        let deadline = ContinuousClock.now + Self.watchLimit
+        while !Task.isCancelled, ContinuousClock.now < deadline {
+            let manager = NEFilterManager.shared()
+            let loaded = (try? await manager.loadFromPreferences()) != nil
+            let on = loaded && manager.providerConfiguration != nil && manager.isEnabled
+            let step = repair.next(filterOn: on, health: await health(), at: .now)
+            switch step {
+            case .done:
+                return
+            case .wait:
+                break
+            case .restart:
+                do {
+                    try await restartSession()
+                } catch {
+                    status = .failed("Could not restart the network filter: \(error.localizedDescription)")
+                    return
+                }
+            case .giveUp:
+                status = .notAnswering
+                return
+            }
+            try? await Task.sleep(for: Self.checkInterval)
+        }
+    }
+
+    /// Ends the content filter's session and starts a new one, without
+    /// removing the extension or its configuration, so no approval is asked.
+    /// Connections attached to the old session stall and fail, as at Turn
+    /// Off.
+    private func restartSession() async throws {
+        let manager = NEFilterManager.shared()
+        try await manager.loadFromPreferences()
+        guard manager.providerConfiguration != nil else { return }
+        manager.isEnabled = false
+        try await manager.saveToPreferences()
+        manager.isEnabled = true
+        try await manager.saveToPreferences()
     }
 
     func turnOn() async {
@@ -157,6 +300,7 @@ final class NetworkFilterSetup: NSObject {
     private func change(_ work: @escaping @MainActor () async throws -> Void) async {
         busy = true
         defer { busy = false }
+        repair.userChanged()
         do {
             try await work()
             await refresh()

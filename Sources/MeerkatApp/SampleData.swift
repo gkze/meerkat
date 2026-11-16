@@ -246,7 +246,8 @@
                  "invocations": 1893, "failures": 3, "lastInvokedAt": \(now - 4_000),
                  "lastError": "exec: /usr/bin/renice exited 1: Operation not permitted"},
                 {"id": "downloads.ts#tidy", "file": "downloads.ts", "event": "fs.change", "state": "disabled",
-                 "reason": "turned off with meerkat rules disable", "invocations": 57, "failures": 0,
+                 "reason": "turned off by hand; turn it on in Meerkat › Rules or with meerkat rules enable downloads.ts#tidy",
+                 "invocations": 57, "failures": 0,
                  "lastInvokedAt": \(now - 7_200_000)},
                 {"id": "microphone.ts#notify", "file": "microphone.ts", "event": "audio.inUse", "state": "failed",
                  "reason": "circuit breaker: 5 failures in a row", "invocations": 12, "failures": 5,
@@ -359,6 +360,7 @@
                   "startedAt": \(now - 9_480_000),
                   "executablePath": "/Users/example/Applications/Meerkat.app/Contents/Library/LoginItems/Meerkat.app/Contents/MacOS/meerkatd",
                   "rulesDirectory": "\(rulesDirectory.path)",
+                  "networkFilter": {},
                   "handlerHost": {"state": "running", "workers": 5, "restarts": 1,
                                   "lastExit": "heavy-writers.ts#renice held the JavaScript thread for 5.2 s"},
                   "sources": [

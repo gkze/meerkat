@@ -946,8 +946,8 @@ stateDiagram-v2
     evaluating --> failed: load error
     evaluating --> loaded: decoded and subscribed
     loaded --> failed: subscription refused
-    loaded --> disabled: breaker tripped, ended the host 3 times,<br/>or meerkat rules disable
-    disabled --> loaded: meerkat rules enable
+    loaded --> disabled: breaker tripped, ended the host 3 times,<br/>or turned off by hand (Rules page, meerkat rules disable)
+    disabled --> loaded: turned on by hand (Rules page, meerkat rules enable)
     loaded --> compiling: file changed
     failed --> compiling: file changed
     disabled --> compiling: file changed

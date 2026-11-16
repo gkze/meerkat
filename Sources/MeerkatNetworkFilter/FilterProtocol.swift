@@ -87,8 +87,12 @@ public struct FilterSnapshot: Codable, Sendable, Equatable {
             case .duplicateProcess: "the network filter reported a process twice"
             case .duplicateHost: "the network filter reported an endpoint twice"
             case .openFlows(let count): "the network filter reported \(count) open flows, more than it can hold"
+            // Read by rule authors and `meerkat status`, so it carries the
+            // remedy: opening Meerkat installs the extension it bundles.
             case .otherBuild(let filter, let daemon):
-                "the network filter is build \(filter) and meerkatd build \(daemon); turn the filter off and on again in Meerkat › Settings"
+                "the network filter is build \(filter) and meerkatd build \(daemon); open Meerkat to install the filter "
+                    + "from its build, and if they still differ, turn the filter off and on again in "
+                    + "Meerkat › Settings › General › Network"
             }
         }
     }

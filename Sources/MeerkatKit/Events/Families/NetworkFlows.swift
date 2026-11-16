@@ -109,7 +109,7 @@ public enum NetworkFlowsEvent: EventKind, IntervalParameterDefaults {
 
     public static let descriptor = EventDescriptor(
         "network.flows",
-        "Each process's bytes received and sent per remote host over the last interval, largest first, every user's processes included. Needs the network filter (Meerkat › Settings › Network); without it a subscription is refused. The first window after subscribing, or after the filter restarts, is not reported. No contents are read.",
+        "Each process's bytes received and sent per remote host over the last interval, largest first. Only your own user's processes unless the rule also declares `capabilities: { process: { observe: \"all\" } }`, which root daemons and other users' processes need. Needs the network filter (Meerkat › Settings › General › Network); without it a subscription is refused. The first window after subscribing, or after the filter restarts, is not reported. No contents are read.",
         mechanism: .poll, semantics: .occurrence, loss: .lossy,
         observation: .named,
         source: "the network filter (NetworkExtension content filter statistics)"

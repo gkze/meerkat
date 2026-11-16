@@ -14,12 +14,17 @@ struct FilterStateTests {
         return snapshot
     }
 
-    @Test func refusesAnotherBuild() {
+    /// The refusal is what a rule's error and `meerkat status` show, so it
+    /// names both builds and the remedy.
+    @Test func refusesAnotherBuildWithTheRemedy() throws {
         let state = FilterState(build: build)
-        #expect(
-            state.reply(to: FilterRequest(build: "other", wantsHosts: false))
-                == .refused("the network filter is build \(build), meerkatd build other"))
+        let reply = state.reply(to: FilterRequest(build: "other", wantsHosts: false))
+        guard case .refused(let reason) = reply else { throw Unexpected(reply: reply) }
+        #expect(reason.contains("build \(build)") && reason.contains("meerkatd build other"))
+        #expect(reason.contains("open Meerkat") && reason.contains("Meerkat › Settings › General › Network"))
     }
+
+    struct Unexpected: Error { let reply: FilterReply }
 
     @Test func repliesWithItsInstanceAndTotals() throws {
         let state = FilterState(build: build)

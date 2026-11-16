@@ -44,9 +44,10 @@ final class AppState {
     let agent: AgentControl
     /// The Rules page's editor: its file, unsaved edits, place and Try It.
     let ruleEditor = RuleEditorSession()
-    /// The network filter's state, for Settings › Network, refreshed when the
-    /// window opens: that refresh is also what installs a newer extension.
-    let networkFilter = NetworkFilterSetup()
+    /// The network filter's state, for Settings › General › Network. Refreshed as the
+    /// app launches, window or not: that refresh is also what installs a
+    /// newer extension and watches it come up.
+    let networkFilter: NetworkFilterSetup
 
     init() {
         let back = DaemonReturn()
@@ -59,6 +60,8 @@ final class AppState {
         dryRun = RuleDryRunModel(client: stand.daemon)
         health = HealthModel(client: stand.daemon, back: back)
         agent = AgentControl(backend: stand.agent, back: back)
+        networkFilter = NetworkFilterSetup { [daemon = stand.daemon] in try? await daemon.status().networkFilter }
+        Task { [networkFilter] in await networkFilter.refresh() }
     }
 
     /// What the models read from outside the app: the daemon, the Mac's

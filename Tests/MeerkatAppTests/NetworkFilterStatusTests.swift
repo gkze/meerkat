@@ -1,9 +1,11 @@
 import Foundation
+import MeerkatIPC
+import MeerkatKit
 import Testing
 
 @testable import MeerkatApp
 
-/// What Settings › Network shows, from the facts the app has.
+/// What Settings › General › Network shows, from the facts the app has.
 struct NetworkFilterStatusTests {
     @Test func aBuildWithoutTheProfilesHasNoFilter() {
         #expect(
@@ -53,5 +55,72 @@ struct ExtensionRequestWaitTests {
         let late = wait.finish(ObjectIdentifier(awaited), .success(()))
         #expect(!late)
         withExtendedLifetime((awaited, upgrade)) {}
+    }
+}
+
+/// A filter that is on and silent gets one session restart, then the user is
+/// told; anything that answers, or is off, ends the watch.
+struct ListenerRepairTests {
+    let start = ContinuousClock.now
+    let silent = NetworkFilterHealth(NetworkFilterUnavailable.notAnswering)
+
+    func at(_ seconds: Int) -> ContinuousClock.Instant { start + .seconds(seconds) }
+
+    @Test func aSilentFilterIsRestartedOnceAfterTheGraceThenReported() {
+        var repair = ListenerRepair()
+        #expect(repair.next(filterOn: true, health: silent, at: at(0)) == .wait)
+        #expect(repair.next(filterOn: true, health: silent, at: at(89)) == .wait)
+        #expect(repair.next(filterOn: true, health: silent, at: at(90)) == .restart)
+        // The restart gets a grace of its own.
+        #expect(repair.next(filterOn: true, health: silent, at: at(179)) == .wait)
+        #expect(repair.next(filterOn: true, health: silent, at: at(180)) == .giveUp)
+        #expect(repair.gaveUp)
+    }
+
+    /// A healthy swap: silent while the extension retries its listener.
+    @Test func anAnswerWithinTheGraceEndsTheWatch() {
+        var repair = ListenerRepair()
+        #expect(repair.next(filterOn: true, health: silent, at: at(0)) == .wait)
+        #expect(repair.next(filterOn: true, health: .answering, at: at(45)) == .done)
+        #expect(!repair.restarted)
+    }
+
+    /// Another build's extension answers: the upgrade replaces it, and its
+    /// replacement gets the full grace.
+    @Test func aRefusalIsNotSilenceAndRestartsTheGrace() {
+        var repair = ListenerRepair()
+        let refused = NetworkFilterHealth(cause: .refused, problem: "another build")
+        #expect(repair.next(filterOn: true, health: silent, at: at(0)) == .wait)
+        #expect(repair.next(filterOn: true, health: refused, at: at(60)) == .wait)
+        #expect(repair.next(filterOn: true, health: silent, at: at(70)) == .wait)
+        #expect(repair.next(filterOn: true, health: silent, at: at(159)) == .wait)
+        #expect(repair.next(filterOn: true, health: silent, at: at(160)) == .restart)
+    }
+
+    /// meerkatd not answering says nothing about the filter.
+    @Test func noWordFromMeerkatdKeepsWaitingWithoutCounting() {
+        var repair = ListenerRepair()
+        #expect(repair.next(filterOn: true, health: nil, at: at(0)) == .wait)
+        #expect(repair.next(filterOn: true, health: silent, at: at(200)) == .wait)
+    }
+
+    @Test func aFilterThatIsOffOrUnreachableEndsTheWatch() {
+        var repair = ListenerRepair()
+        #expect(repair.next(filterOn: false, health: silent, at: at(0)) == .done)
+        let unsigned = NetworkFilterHealth(cause: .unreachable, problem: "meerkatd is not signed by a team")
+        #expect(repair.next(filterOn: true, health: unsigned, at: at(0)) == .done)
+    }
+
+    /// After Turn Off and On the filter is judged afresh, without a second
+    /// automatic restart.
+    @Test func aUserChangeClearsTheReportButNotTheRestart() {
+        var repair = ListenerRepair()
+        _ = repair.next(filterOn: true, health: silent, at: at(0))
+        _ = repair.next(filterOn: true, health: silent, at: at(90))
+        _ = repair.next(filterOn: true, health: silent, at: at(180))
+        repair.userChanged()
+        #expect(!repair.gaveUp)
+        #expect(repair.next(filterOn: true, health: silent, at: at(200)) == .wait)
+        #expect(repair.next(filterOn: true, health: silent, at: at(290)) == .giveUp)
     }
 }

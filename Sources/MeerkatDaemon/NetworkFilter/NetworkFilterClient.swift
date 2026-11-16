@@ -21,6 +21,9 @@ final class NetworkFilterClient: NetworkFilterReading {
     private let timeout: Duration
     private let backoff: Duration
     private let state = Mutex<(session: XPCSession?, retryAfter: ContinuousClock.Instant?)>((nil, nil))
+    /// The outcome of the last read, whoever asked: the one record of
+    /// whether the filter answers, which `reachability` reports.
+    private let lastRead = Mutex<(at: ContinuousClock.Instant, outcome: Result<Void, NetworkFilterUnavailable>)?>(nil)
     private let logger = Logger(subsystem: DaemonService.label, category: "network-filter")
 
     /// `team` is the team that signed this process; without one (an
@@ -38,30 +41,51 @@ final class NetworkFilterClient: NetworkFilterReading {
     }
 
     func totals(wantsHosts: Bool) throws(NetworkFilterUnavailable) -> FilterSnapshot {
+        let outcome = Result { () throws(NetworkFilterUnavailable) in try read(wantsHosts: wantsHosts) }
+        lastRead.withLock { $0 = (ContinuousClock.now, outcome.map { _ in }) }
+        return try outcome.get()
+    }
+
+    /// A status asks every few seconds while the app's Daemon health page
+    /// is open: a whole snapshot each time would cost the extension a copy
+    /// and encoding of its tables to say only that it answers. The samplers'
+    /// reads answer that already; without one within `maxAge`, one small
+    /// read (no hosts) settles it, so at most one per `maxAge`, and nothing
+    /// but the backoff check while the client backs off.
+    func reachability(within maxAge: Duration) -> Result<Void, NetworkFilterUnavailable> {
+        if let last = lastRead.withLock({ $0 }), ContinuousClock.now - last.at < maxAge { return last.outcome }
+        return Result { () throws(NetworkFilterUnavailable) in _ = try totals(wantsHosts: false) }
+    }
+
+    /// When the last read was, for tests.
+    var lastReadAt: ContinuousClock.Instant? { lastRead.withLock { $0?.at } }
+
+    private func read(wantsHosts: Bool) throws(NetworkFilterUnavailable) -> FilterSnapshot {
         guard let service else {
-            throw NetworkFilterUnavailable("meerkatd is not signed by a team, so it cannot reach the network filter")
+            throw NetworkFilterUnavailable(
+                .unreachable, "meerkatd is not signed by a team, so it cannot reach the network filter")
         }
         let session: XPCSession
         do {
             session = try connect(service)
         } catch {
-            throw .off
+            throw .notAnswering
         }
         let reply: FilterReply
         do {
             reply = try exchange(FilterRequest(build: build, wantsHosts: wantsHosts), on: session)
         } catch {
             fail(session, because: error)
-            throw .off
+            throw .notAnswering
         }
         switch reply {
         case .refused(let reason):
-            throw NetworkFilterUnavailable(reason)
+            throw NetworkFilterUnavailable(.refused, reason)
         case .snapshot(let snapshot):
             do {
                 return try snapshot.validated(build: build)
             } catch {
-                throw NetworkFilterUnavailable(error.description)
+                throw NetworkFilterUnavailable(.refused, error.description)
             }
         }
     }

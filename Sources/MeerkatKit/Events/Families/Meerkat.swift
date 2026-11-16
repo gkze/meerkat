@@ -53,7 +53,8 @@ public struct RuleStatusPayload: RuleViewedPayload, Equatable {
         /// Did not load: a type error, an exception while evaluating, or an
         /// invalid definition. `reason` says which.
         case failed
-        /// Turned off by its circuit breaker or by `meerkat rules disable`.
+        /// Turned off by its circuit breaker, or by hand: the app's Rules page
+        /// or `meerkat rules disable`.
         case disabled
         /// Its file was removed or no longer defines it.
         case unloaded

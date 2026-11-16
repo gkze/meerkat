@@ -1,7 +1,7 @@
 # Network filter: which process the traffic belongs to
 
 Status: built 2026-11-11 (MeerkatNetworkFilter, MeerkatNetworkFilterExtension,
-the process events, `network.flows`, the bundler, Settings › Network). Not
+the process events, `network.flows`, the bundler, Settings › General › Network). Not
 yet run signed on a Mac: the end-to-end checks below wait on the profiles. It amends acceptance criterion 2 and
 the "Not included" list in [meerkatd.md](meerkatd.md), which ruled this out.
 
@@ -154,7 +154,7 @@ group), and meerkatd connects as a client.
 
 ## Activation
 
-Off until the user turns it on in Meerkat › Settings › Network:
+Off until the user turns it on in Meerkat › Settings › General › Network:
 
 1. The app submits `OSSystemExtensionRequest.activationRequest`. macOS asks
    the user to allow the extension in System Settings.
@@ -163,10 +163,24 @@ Off until the user turns it on in Meerkat › Settings › Network:
 3. Turning it off disables the configuration and submits a deactivation
    request, which removes the extension. While the filter runs, the app asks
    first: the connections it counts fail when its session ends (Failure).
+4. Every launch of the app with the filter on, window or not, submits the
+   activation request again: the same build is a no-op, and a newer one
+   replaces the running extension without a prompt. The app then watches it
+   answer meerkatd (Failure).
 
 Only the app can do this: macOS requires a foreground app in `/Applications`.
-meerkatd reports the filter's state (absent, awaiting approval, running,
-unreachable) in `meerkat status` and the app.
+meerkatd reports whether the filter answers it (answering, not answering,
+refused with the reason, unreachable) in `meerkat status`, the `status` IPC
+reply and MCP's status; the app adds what only it can read, the content
+filter's configuration, in Settings › General › Network. The status reports the outcome of
+the client's last read, whoever made it (`NetworkFilterClient.reachability`),
+and reads once, without hosts, only when none was in the last 10 s. The
+app's Daemon health page asks for a status every 2 s; reading the filter for
+each would have the extension copy and encode its process and host tables
+every 2 s to say only that it answers, and a silent filter would hold every
+status for the client's one-second timeout. Measuring that cost instead was
+the alternative: it would show it small at today's table sizes, but the cost
+grows with the tables, and the samplers already learn the answer for free.
 
 ## Harm model
 
@@ -187,8 +201,10 @@ Extends [mcp.md](mcp.md) ("Harm model"):
   interval, and reports once per interval. No payload byte is ever read.
 - Other users' processes are visible, so the new fields are subject to
   `ObservationScope` as every process field is: a rule with
-  `process.observe: "own"` sees only its user's processes, in `network.flows`
-  too, though it is a named kind (`ObservationScope.view`).
+  `process.observe: "own"`, or no `process` grant at all, sees only its
+  user's processes, in `network.flows` too, though that kind's own grant is
+  `observe.allow` (`ObservationScope.view`). Root daemons are another user's,
+  so the kind's description names the grant that shows them.
 - MCP: kinds that need `networkFilter` are denied by default, as kinds that
   need a TCC permission are.
 
@@ -198,11 +214,13 @@ Extends [mcp.md](mcp.md) ("Harm model"):
 |---|---|---|
 | Extension crashes or is killed | NetworkExtension uninstalls the filter session about 5 s later, and the kernel resets the connections attached to it, once; new connections work again within a second as the session restarts (seen on macOS 27) | totals restart from zero; meerkatd sees a new extension instance and skips one window instead of reporting a negative or doubled rate; after 3 crashes in 10 minutes the extension does not start (`CrashGuard`) |
 | Extension replaced by a new build | none on traffic: the new extension filters at once | the new process can start before the old one releases the Mach service, so activating the listener fails (EPERM, macOS 27); it tries again with backoff (1 s, doubling to 30 s) until it serves, and meerkatd reads totals again on its next poll after its own 30 s backoff |
+| Replaced in place, and the new launchd job has no Mach service (seen on macOS 27 for 18→21 and 30→17, not 17→18) | none on traffic: the extension filters, but its listener never activates and it retries forever | meerkatd gets no answer and says the filter is off or not answering, with both remedies. The app, which alone can see that the content filter is on, watches after every launch and Turn On (`ListenerRepair`): silent for 90 s, it ends and restarts the content filter's session once, without removing the extension, which may bring the job back with its service. Connections attached to the old session fail, as at Turn Off. Still silent 90 s later, Settings › General › Network shows "On, but not answering" and says to turn it off and on, or restart the Mac: both are known to recover. Whether the session restart alone recovers has not been seen yet |
+| Extension and meerkatd from different builds | none on traffic | the extension refuses meerkatd's request rather than guess at its totals, and the refusal says to open Meerkat, whose launch asks macOS for the bundled extension (`NetworkFilterSetup.refresh`, from `AppState`, window or not), then to turn the filter off and on if they still differ. An upgrade that never launches the app keeps the old extension until it does |
 | meerkatd absent or slow | none on traffic | ledger stays bounded; the oldest totals are evicted and counted |
 | Ledger full (flow flood) | none on traffic | least recently reported flows evicted; `evicted` counted and shown in status; a `network.flows` window counts the endpoints evicted during it in `omitted` |
 | Malformed or out-of-range report | none on traffic | flow dropped, counted |
 | Malformed reply at the daemon | the poll fails | source reports unavailable with the reason; no trap |
-| Filter not approved | none | `networkFilter` permission reads denied; rules on network metrics refused with where to turn it on, and resumed once it answers (meerkatd asks every 10 s while one waits, `RuleEngine.awaitNetworkFilter`) |
+| Filter not approved | none | the network fields are absent; rules on network metrics refused with where to turn it on, and resumed once it answers (meerkatd asks every 10 s while one waits, `RuleEngine.awaitNetworkFilter`) |
 | Filter turned off | the session ends with the connections still attached to it: they stall and fail (a download stopped at the click and failed two minutes later, macOS 27); new connections are unaffected | as not approved, once the deactivation completes: a running `network.flows` rule fails after five windows without an answer, and resumes when the filter is on again; the extension is removed at the next restart |
 | macOS update changes NE behaviour | — | the end-to-end test below fails before release |
 
@@ -291,3 +309,33 @@ Confirmed with George on 2026-11-11:
 3. Network metrics on `process.hot` and `process.top` rather than a new kind
    for totals.
 4. Off by default, turned on in Settings.
+
+Chosen on 2026-11-15, after a live test found a filter that stayed silent
+after an in-place upgrade (Failure):
+
+5. **A filter that is on and silent gets one session restart from the app,
+   then a message.** The cause is outside Meerkat: macOS's replacement can
+   leave the new launchd job without the Mach service the Info.plist names,
+   and nothing inside the extension can register it again, so retrying in
+   the extension or restarting its process cannot help. The app is the only
+   part that both sees the content filter is on and can act on it, so it
+   owns the repair (`ListenerRepair`): restart the session once, which may
+   make NetworkExtension submit the job again, and otherwise say plainly that
+   the filter is on but not answering and what recovers it. meerkatd keeps
+   reporting what it can see, an answer or the lack of one
+   (`NetworkFilterUnavailable.Cause`), and never guesses which. The
+   strongest alternative was to replace the extension on upgrade by turning
+   it fully off and on (deactivate, activate, save), which is known to
+   recover. It was rejected because it asks for approval again, removes the
+   filter's configuration while it runs, and would do that on every
+   upgrade, including the healthy swaps, which are most of them. Whether the
+   session restart alone recovers is not yet seen; if it does not, the
+   message is the remedy, and the restart can go.
+6. **Every app launch asks for the bundled extension, window or not**
+   (`AppState`, not `RootView`). meerkatd cannot ask: macOS takes the request
+   only from the app that carries the extension, and meerkatd runs from a
+   nested bundle. An upgrade that never launches the app therefore keeps the
+   old extension, and the extension's refusal says to open Meerkat. The
+   alternative, meerkatd opening the app when the builds differ, was set
+   aside until decision 5 is seen to work: an unattended swap could leave a
+   silent filter with no one to see the message.

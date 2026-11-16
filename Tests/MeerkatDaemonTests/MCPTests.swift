@@ -621,7 +621,7 @@ final class Peer: Sendable {
                 DaemonStatus(
                     version: "test", pid: getpid(), startedAt: 0, executablePath: "", rulesDirectory: "",
                     handlerHost: await engine.hostStatus(), sources: [], rules: [], configuration: configuration,
-                    mcpHTTP: .off)
+                    mcpHTTP: .off, networkFilter: .answering)
             },
             permissionStatus: permissionStatus)
         self.service = service
