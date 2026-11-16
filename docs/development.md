@@ -98,6 +98,11 @@ TypeScript; conformance tests fail when they and the BUCK files disagree.
 manifests at their pins: after changing a pin, `buck2 run
 //buck2/third_party/swift:regenerate` rewrites it, and
 `:manifest_test` fails while it is stale.
+A few files of the pinned Deno crates are patched
+(`buck2/third_party/rust/overlays`, docs/design/remote-execution.md says
+why): each patch applies, in every build, to the file in Reindeer's own
+archive of the release Cargo.lock resolves, and the build fails when a new
+release no longer fits it.
 `buck2 build //Tools/Bundler:lint-toolchain --out .build/lint-toolchain`
 stages the lint tools where development builds of meerkatd and meerkat look
 for them.

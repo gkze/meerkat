@@ -1,0 +1,35 @@
+--- a/snapshot.rs
++++ b/snapshot.rs
+@@ -182,12 +182,12 @@
+   #[allow(deprecated, reason = "matching deprecated variant we still inspect")]
+   let path = match &file.code {
+     ExtensionFileSourceCode::LoadedFromFsDuringSnapshot(p) => PathBuf::from(p),
++    ExtensionFileSourceCode::IncludedInBinary(code) => embedded_lazy_file(&file.specifier, code.as_str()),
+     // After the macro change every lazy entry is LoadedFromFsDuringSnapshot;
+     // the other variants only appear for ad-hoc entries pushed by customizers
+     // (e.g. inline sources) that have no on-disk path and therefore can't be
+     // re-embedded by the build script.
+-    ExtensionFileSourceCode::IncludedInBinary(_)
+-    | ExtensionFileSourceCode::LoadedFromMemoryDuringSnapshot(_)
++    ExtensionFileSourceCode::LoadedFromMemoryDuringSnapshot(_)
+     | ExtensionFileSourceCode::Computed(_) => return None,
+   };
+   Some(LazyExtensionFile {
+@@ -196,3 +196,17 @@
+     kind,
+   })
+ }
++
++/// An embedded lazy file's source, written under the build script's OUT_DIR
++/// for it to transpile into the residual tables as it does a file on disk.
++fn embedded_lazy_file(specifier: &str, code: &str) -> PathBuf {
++  let dir = PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("embedded_lazy_sources");
++  std::fs::create_dir_all(&dir).unwrap();
++  let name: String = specifier
++    .chars()
++    .map(|c| if c.is_ascii_alphanumeric() || c == '.' { c } else { '_' })
++    .collect();
++  let path = dir.join(name);
++  std::fs::write(&path, code).unwrap();
++  path
++}

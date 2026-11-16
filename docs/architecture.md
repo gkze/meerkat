@@ -178,7 +178,7 @@ restart.
 | `buck2/platforms`, `buck2/mode`, `buck2/config` | The debug and release platforms, and the release mode file. |
 | `buck2/toolchains` | The toolchains cell: Xcode's Swift and clang, Rust, Python for the prelude. |
 | `buck2/conformance` | The checker that `Package.swift`, `Package.resolved` and `bun.lock` agree with the BUCK files, and the generator of the Swift tables. |
-| `buck2/third_party` | Every third-party dependency, pinned by version and checksum: `rust/` (reindeer, crates.io; V8 as rusty_v8's release library), `swift/` (the SwiftPM packages from their pinned archives, `modules.bzl` generated from their manifests), `js/` (the TypeScript, Oxlint and Oxfmt release binaries), `tools/` (the release executables the checks run, none shipped, and `defs.bzl`'s `tool()`). |
+| `buck2/third_party` | Every third-party dependency, pinned by version and checksum: `rust/` (reindeer, crates.io; V8 as rusty_v8's release library; `overlays/`, patches to a few of Deno's files that remote execution needs), `swift/` (the SwiftPM packages from their pinned archives, `modules.bzl` generated from their manifests), `js/` (the TypeScript, Oxlint and Oxfmt release binaries), `tools/` (the release executables the checks run, none shipped, and `defs.bzl`'s `tool()`). |
 | `docs/design` | Design records. |
 
 ## Build and release

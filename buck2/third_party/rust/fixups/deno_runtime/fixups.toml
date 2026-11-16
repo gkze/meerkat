@@ -1,5 +1,5 @@
-# overlay/ replaces two of the crate's files, as deno_core's overlay embeds
-# every extension's files (fixups/deno_core/overlay/extensions.rs says why):
-# shared.rs embeds the snapshot's entry point too, and snapshot.rs still puts
-# the embedded lazy files in deno_snapshots' residual tables.
-overlay = "overlay"
+# Two of the crate's files come from buck2/third_party/rust/overlays: the
+# release's, patched to match deno_core's (that package says why).
+[extra_mapped_srcs]
+"//buck2/third_party/rust/overlays:deno_runtime-shared.rs" = "shared.rs"
+"//buck2/third_party/rust/overlays:deno_runtime-snapshot.rs" = "snapshot.rs"

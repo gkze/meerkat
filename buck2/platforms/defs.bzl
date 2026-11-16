@@ -5,6 +5,14 @@ load("@prelude//cfg/exec_platform:marker.bzl", "get_exec_platform_marker")
 # `portable` checks (.github/workflows/ci.yml).
 HOSTS = ["macos-arm64", "linux-arm64"]
 
+def _remote_execution() -> bool:
+    """Whether this Mac's `.buckconfig.local` turns remote execution on
+    (`[meerkat] remote_execution`, true or false)."""
+    remote = read_root_config("meerkat", "remote_execution", "false")
+    if remote not in ("true", "false"):
+        fail("[meerkat] remote_execution must be true or false, not {}".format(repr(remote)))
+    return remote == "true"
+
 def _executor_config() -> CommandExecutorConfig:
     # Remote execution is a machine's choice: `[meerkat] remote_execution =
     # true` and the `[buck2_re_client]` addresses go in .buckconfig.local
@@ -12,7 +20,7 @@ def _executor_config() -> CommandExecutorConfig:
     # workers, and here only those that cannot (`local_only`, such as the
     # Swift compiles). A worker must have the toolchains the keys name, so
     # each is asked for by the same values.
-    if read_root_config("meerkat", "remote_execution", "false") != "true":
+    if not _remote_execution():
         return CommandExecutorConfig(local_enabled = True, remote_enabled = False)
     return CommandExecutorConfig(
         local_enabled = True,

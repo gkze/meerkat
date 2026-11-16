@@ -24,6 +24,7 @@ buildscript_genrule = "buildscript_run"
 buckfile_imports = """
 load("@prelude//rust:cargo_package.bzl", "cargo")
 load("//buck2/rules:buildscript.bzl", "buildscript_run")
+load("//buck2/rules:cargo.bzl", "http_archive")
 """
 generated_file_header = """
 ##

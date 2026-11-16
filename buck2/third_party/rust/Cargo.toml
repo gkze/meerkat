@@ -26,9 +26,9 @@ camino = "1.2.6"
 # DENO_RUNTIME_VERSION in Sources/meerkat-runtime/deno.bzl, what the Deno release whose
 # declarations rules are checked against is built on, so those types describe the runtime
 # that runs them. Changing deno_runtime fails a test until deno.bzl names its release.
-# fixups/deno_core/overlay and fixups/deno_runtime/overlay hold these releases' files with
-# a few lines changed (docs/design/remote-execution.md): redo them from the new release's
-# when changing either pin.
+# Patches in buck2/third_party/rust/overlays change a few of these releases' files
+# (docs/design/remote-execution.md); the build fails until they are redone for a new
+# release of either that they no longer fit.
 deno_core = "=0.413.0"
 deno_error = "=0.7.1"
 deno_resolver = { version = "=0.91.0", features = ["sync"] }

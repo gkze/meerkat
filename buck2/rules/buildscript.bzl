@@ -5,6 +5,14 @@ load("//buck2/platforms:defs.bzl", "LOCAL_EXECUTION")
 # on. Remote execution runs each action in a directory of its own, so an
 # absolute path one action records is not there for the next; these record or
 # read such paths, and neither declares what it reads.
+#
+# A workaround, not a fix: the pair runs here as it would without remote
+# execution, and the crates their build scripts link are built a second time,
+# for this platform (`release-local`). Its intended lifetime is until
+# cranelift-assembler-x64 stops passing paths, or a patch makes it pass the
+# files' contents, as Deno's patches do (buck2/third_party/rust/overlays);
+# that is the fix, not taken yet because these two short scripts cost little
+# here and a third patched crate costs a patch to carry.
 LOCAL_BUILD_SCRIPTS = {
     # Records the absolute paths of the ISLE files it generates in Rust
     # (`generated_files()`), which cranelift-codegen-meta compiles in.
