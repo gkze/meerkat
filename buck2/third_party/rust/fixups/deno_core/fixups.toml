@@ -1,6 +1,6 @@
-# overlay/ replaces two of the crate's files: extensions.rs embeds Deno's
-# extensions' JavaScript instead of recording paths for the snapshot build to
-# read, which remote execution's per-action directories break (the file says
-# how), and extension_set.rs keeps a worker from transpiling the embedded
-# lazy files again as it starts.
-overlay = "overlay"
+# Two of the crate's files come from buck2/third_party/rust/overlays: the
+# release's, patched so that Deno's extensions embed their JavaScript (that
+# package says why).
+[extra_mapped_srcs]
+"//buck2/third_party/rust/overlays:deno_core-extension_set.rs" = "extension_set.rs"
+"//buck2/third_party/rust/overlays:deno_core-extensions.rs" = "extensions.rs"

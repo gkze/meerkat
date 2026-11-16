@@ -1,0 +1,35 @@
+--- a/extension_set.rs
++++ b/extension_set.rs
+@@ -389,7 +389,7 @@
+     // For extensions not in the snapshot (hmr / fresh runtime), load every
+     // declared file from disk, matching pre-refactor behavior.
+     for file in &*extension.lazy_loaded_esm_files {
+-      if snapshotted && !file.is_runtime_loadable() {
++      if snapshotted && skip_snapshotted_lazy(file) {
+         continue;
+       }
+       let (code, maybe_source_map) =
+@@ -403,7 +403,7 @@
+     }
+ 
+     for file in &*extension.lazy_loaded_js_files {
+-      if snapshotted && !file.is_runtime_loadable() {
++      if snapshotted && skip_snapshotted_lazy(file) {
+         continue;
+       }
+       let (mut code, maybe_source_map) =
+@@ -466,4 +466,14 @@
+     }
+   }
+   Ok(sources)
++}
++
++/// Whether a snapshotted extension's lazy file is left to the residual table:
++/// one only on the build machine's disk, as upstream, and one embedded in the
++/// binary, which deno_runtime's overlaid snapshot.rs puts in that table
++/// already transpiled, so a worker need not transpile it again as it starts.
++fn skip_snapshotted_lazy(file: &ExtensionFileSource) -> bool {
++  #[allow(deprecated, reason = "matching deprecated variant we still inspect")]
++  let embedded = matches!(file.code, crate::ExtensionFileSourceCode::IncludedInBinary(_));
++  !file.is_runtime_loadable() || embedded
+ }

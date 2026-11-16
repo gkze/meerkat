@@ -1,4 +1,4 @@
-load(":defs.bzl", "HOSTS", "execution_platform")
+load(":defs.bzl", "HOSTS", "LOCAL_EXECUTION", "execution_platform")
 
 # Target platforms: the host (macOS on Apple silicon, or Linux on arm64 for
 # the `portable` checks, from the prelude's host detection) in each build
@@ -29,7 +29,7 @@ execution_platform(
 # The build tools' platform, for actions that must not run remotely.
 platform(
     name = "release-local",
-    constraint_values = ["//buck2/config:execution[local]"],
+    constraint_values = LOCAL_EXECUTION,
     deps = [":release"],
 )
 

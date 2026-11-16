@@ -179,21 +179,44 @@ declaring it, and each fixed where it is:
   them through cranelift-codegen-meta. Both run here
   (`buck2/rules/buildscript.bzl`, `LOCAL_BUILD_SCRIPTS`), where the paths
   stay valid; Reindeer generates every build script's target through it.
+  That is a workaround, meant to last until a patch passes the files'
+  contents instead, as Deno's do: it keeps two short scripts here, and builds
+  the crates they link a second time, for the local platform.
 - **Deno's extension sources.** deno_core 0.413 records each extension
   file's absolute path when the crate compiles (`include_js_files!`, under
   `CARGO_MANIFEST_DIR`, which the prelude makes absolute) and deno_snapshots'
   build script reads them back; on a worker that path is the directory it
-  compiled in. Reindeer overlays, each a copy of the release's file with a
-  few lines changed, embed the files instead: deno_core's `extensions.rs`
-  (`mode=included`) and deno_runtime's `shared.rs` (`99_main.js`). Two more
-  keep lazy loading as it was: deno_runtime's `snapshot.rs` writes an
-  embedded lazy file under `OUT_DIR` so deno_snapshots still transpiles it
-  into the residual tables the runtime loads lazy modules from, and
-  deno_core's `extension_set.rs` leaves those files to that table, so a
-  worker does not transpile them again as it starts (it did, and rules took
-  longer to load than their 5 s limit allows under load). The debug daemon
-  grows by about 0.6 MB, and rule tests run as fast as without the
-  overlays. Keeping the crates
+  compiled in. Four files of those crates are taken from Reindeer's own
+  archive of each crate with a patch from `buck2/third_party/rust/overlays`
+  applied, and mapped back into the crates (`extra_mapped_srcs`); the
+  patches apply to whatever release Cargo.lock resolves, and the build fails
+  on one they no longer fit. `buck2/rules/cargo.bzl`, through which Reindeer
+  generates every crate's download, makes those two archives visible to that
+  package. Two embed the files instead of recording paths: deno_core's `extensions.rs` (`mode=included`) and
+  deno_runtime's `shared.rs` (`99_main.js`). Two keep lazy loading as it
+  was: deno_runtime's `snapshot.rs` writes an embedded lazy file under
+  `OUT_DIR` so deno_snapshots still transpiles it into the residual tables
+  the runtime loads lazy modules from, and deno_core's `extension_set.rs`
+  leaves those files to that table, so a worker does not transpile them
+  again as it starts (it did, and rules took longer to load than their 5 s
+  limit allows under load).
+
+  The patches apply in every build, not only with remote execution on: two
+  Deno runtimes from one tree would be a dual path (AGENTS.md), with the
+  shipped one tested by Tools/check and the patched one only where remote
+  execution is on, though the lazy-module tables and rule loading differ
+  between them. One Deno, the tested one, ships. It costs the shipped daemon
+  the extensions' sources in the binary as well as the snapshot: measured on
+  one Mac, the same tree with and without the patches, the release daemon
+  grows from 253.0 MB to 263.7 MB (+4.2%) and the debug one from 508.2 MB to
+  513.2 MB (+1.0%). Rule tests take the same time either way (6.3 to 6.4 s,
+  three alternating runs each). That cost was accepted (2026-11-15) over the
+  alternative that avoids it, a NativeLink used only as a shared cache, with
+  no remote execution and so no patches. The fix upstream would be deno_core
+  recording paths relative to something every action has; until then the
+  patches are what remote execution costs.
+
+  Keeping the crates
   that record paths here instead does not work: a crate compiled here and
   one compiled remotely see different builds of the same proc macros, which
   rustc rejects, so every crate they depend on would have to stay here too.
@@ -243,9 +266,9 @@ worker needs Xcode. It spreads Rust, C and links over the workers, and
 their results over every Mac through the shared cache. The Swift compiles
 still run on the Mac running Buck until explicit module builds; a
 RemoteBuild run puts that Mac on the build host, next to the service. The
-Deno overlays are the cost: they must be carried, or dropped, with each
+Deno patches are the cost: they must be redone, or dropped, with each
 deno_core and deno_runtime release (Sources/meerkat-runtime/deno.bzl pins
-them).
+them), and the shipped daemon is 4.2% larger for them.
 
 ## Python
 

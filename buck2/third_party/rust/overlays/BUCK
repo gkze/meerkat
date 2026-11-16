@@ -1,0 +1,22 @@
+load(":defs.bzl", "PATCHED")
+
+# Patches to a few files of Deno's crates, so that Deno's extensions embed
+# their JavaScript instead of recording paths for the snapshot build to read
+# back, which remote execution's per-action directories break
+# (docs/design/remote-execution.md, "Remote execution, as built"). Each file
+# the crates take from here (fixups/<crate>/fixups.toml) is the one in
+# Reindeer's own archive of the crate (buck2/rules/cargo.bzl makes it visible
+# here) with <crate>/<file>.patch applied, in every build, so the Deno that
+# is tested is the one that ships. A new release in Cargo.lock that a patch
+# no longer applies to fails the build here.
+[
+    genrule(
+        name = "{}-{}".format(crate, file),
+        srcs = ["{}/{}.patch".format(crate, file)],
+        out = file,
+        cmd = "patch --quiet --output=$OUT $(location //buck2/third_party/rust:{}.crate)/{} $SRCS".format(crate, file),
+        visibility = ["//buck2/third_party/rust:"],
+    )
+    for crate, files in PATCHED.items()
+    for file in files
+]
